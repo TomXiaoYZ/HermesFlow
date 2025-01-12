@@ -1,0 +1,23 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Build and Test
+        run: |
+          docker-compose build
+          docker-compose run --rm test
+          
+      - name: Deploy to K8s
+        if: github.ref == 'refs/heads/main'
+        run: |
+          kubectl apply -f k8s/ 
