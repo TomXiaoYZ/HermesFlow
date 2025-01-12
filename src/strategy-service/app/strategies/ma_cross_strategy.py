@@ -1,137 +1,140 @@
 """
-均线交叉策略
+双均线交叉策略
+
+该策略使用快速和慢速移动平均线的交叉来产生交易信号:
+1. 当快线上穿慢线时，产生做多信号
+2. 当快线下穿慢线时，产生做空信号
 """
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
-import numpy as np
-import talib
+import pandas as pd
 
-from app.models.market_data import (
-    Exchange,
-    Interval,
-    Kline,
-    OrderBook,
-    Ticker,
-    Trade,
-)
-from app.models.strategy import BaseStrategy, Signal, SignalSource, SignalType
+from app.models.strategy import BaseStrategy, Signal, SignalType
+from app.indicators.trend import MAIndicator
+from app.indicators.base import IndicatorConfig
 
 
 class MACrossStrategy(BaseStrategy):
-    """均线交叉策略"""
+    """双均线交叉策略"""
 
     def __init__(
         self,
-        name: str,
-        exchanges: Set[Exchange],
-        symbols: Set[str],
-        parameters: Dict
+        exchange: str,
+        symbol: str,
+        fast_period: int = 5,
+        slow_period: int = 20,
+        interval: str = "1m"
     ) -> None:
         """初始化策略"""
-        super().__init__(name, exchanges, symbols, parameters)
-        # 获取参数
-        self.fast_period = parameters.get("fast_period", 5)
-        self.slow_period = parameters.get("slow_period", 20)
-        self.interval = parameters.get("interval", Interval.MIN_1)
-
-        # 策略状态
-        self._positions: Dict[str, SignalType] = {}
+        super().__init__(exchange, symbol)
+        
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        self.interval = interval
+        
+        # 初始化技术指标
+        self.fast_ma = MAIndicator(
+            IndicatorConfig(window=fast_period)
+        )
+        self.slow_ma = MAIndicator(
+            IndicatorConfig(window=slow_period)
+        )
+        
+        # 当前持仓方向
+        self.position = 0  # 1: 多头, -1: 空头, 0: 空仓
+        
+        # 上一次交叉状态 1: 快线在上方, -1: 快线在下方
+        self.last_cross = 0
 
     async def initialize(self) -> None:
-        """初始化策略，加载历史数据"""
-        # 这里应该从数据服务加载历史K线数据
-        pass
+        """初始化策略"""
+        # 加载历史K线数据
+        klines = await self.load_klines(
+            interval=self.interval,
+            limit=self.slow_period * 3
+        )
+        
+        # 更新技术指标
+        self.fast_ma.update(klines)
+        self.slow_ma.update(klines)
+        
+        # 计算初始交叉状态
+        fast_value = self.fast_ma.get_value()
+        slow_value = self.slow_ma.get_value()
+        if fast_value and slow_value:
+            if fast_value.values["ma"] > slow_value.values["ma"]:
+                self.last_cross = 1
+            else:
+                self.last_cross = -1
 
-    async def on_ticker(self, ticker: Ticker) -> Optional[Signal]:
-        """处理Ticker数据"""
-        # 本策略不使用Ticker数据
-        return None
-
-    async def on_kline(self, kline: Kline) -> Optional[Signal]:
+    async def on_kline(self, kline: Dict) -> Optional[Signal]:
         """处理K线数据"""
-        # 只处理指定周期的K线
-        if kline.interval != self.interval:
+        # 检查K线间隔
+        if kline["interval"] != self.interval:
             return None
-
-        # 获取历史K线
-        klines = self.get_klines(kline.exchange, kline.symbol)
-        if len(klines) < self.slow_period:
+            
+        # 更新技术指标
+        self.fast_ma.update([kline])
+        self.slow_ma.update([kline])
+        
+        # 获取指标值
+        fast_value = self.fast_ma.get_value()
+        slow_value = self.slow_ma.get_value()
+        if not fast_value or not slow_value:
             return None
-
-        # 计算均线
-        closes = np.array([float(k.close) for k in klines])
-        fast_ma = talib.SMA(closes, timeperiod=self.fast_period)
-        slow_ma = talib.SMA(closes, timeperiod=self.slow_period)
-
-        # 检查是否有足够的数据
-        if np.isnan(fast_ma[-1]) or np.isnan(slow_ma[-1]):
-            return None
-
-        # 获取当前持仓状态
-        key = f"{kline.exchange.value}:{kline.symbol}"
-        current_position = self._positions.get(key)
-
-        # 生成信号
+            
+        fast_ma = fast_value.values["ma"]
+        slow_ma = slow_value.values["ma"]
+        
+        # 判断交叉
         signal = None
-        if fast_ma[-2] <= slow_ma[-2] and fast_ma[-1] > slow_ma[-1]:
-            # 金叉，做多
-            if not current_position:
-                signal = Signal(
-                    exchange=kline.exchange,
-                    symbol=kline.symbol,
-                    signal_type=SignalType.LONG,
-                    source=SignalSource.STRATEGY,
-                    timestamp=kline.close_time,
-                    price=kline.close,
-                    description="MA Cross: Golden Cross"
-                )
-                self._positions[key] = SignalType.LONG
-            elif current_position == SignalType.SHORT:
-                signal = Signal(
-                    exchange=kline.exchange,
-                    symbol=kline.symbol,
-                    signal_type=SignalType.CLOSE_SHORT,
-                    source=SignalSource.STRATEGY,
-                    timestamp=kline.close_time,
-                    price=kline.close,
-                    description="MA Cross: Close Short"
-                )
-                self._positions[key] = None
-        elif fast_ma[-2] >= slow_ma[-2] and fast_ma[-1] < slow_ma[-1]:
-            # 死叉，做空
-            if not current_position:
-                signal = Signal(
-                    exchange=kline.exchange,
-                    symbol=kline.symbol,
-                    signal_type=SignalType.SHORT,
-                    source=SignalSource.STRATEGY,
-                    timestamp=kline.close_time,
-                    price=kline.close,
-                    description="MA Cross: Death Cross"
-                )
-                self._positions[key] = SignalType.SHORT
-            elif current_position == SignalType.LONG:
-                signal = Signal(
-                    exchange=kline.exchange,
-                    symbol=kline.symbol,
-                    signal_type=SignalType.CLOSE_LONG,
-                    source=SignalSource.STRATEGY,
-                    timestamp=kline.close_time,
-                    price=kline.close,
-                    description="MA Cross: Close Long"
-                )
-                self._positions[key] = None
-
+        if fast_ma > slow_ma:  # 快线在上方
+            if self.last_cross == -1:  # 发生金叉
+                if self.position <= 0:  # 空仓或空头
+                    signal = Signal(
+                        exchange=self.exchange,
+                        symbol=self.symbol,
+                        signal_type=SignalType.LONG,
+                        timestamp=kline["timestamp"],
+                        price=Decimal(str(kline["close"])),
+                        volume=Decimal("1"),
+                        parameters={
+                            "fast_ma": fast_ma,
+                            "slow_ma": slow_ma
+                        }
+                    )
+                    self.position = 1
+            self.last_cross = 1
+        else:  # 快线在下方
+            if self.last_cross == 1:  # 发生死叉
+                if self.position >= 0:  # 空仓或多头
+                    signal = Signal(
+                        exchange=self.exchange,
+                        symbol=self.symbol,
+                        signal_type=SignalType.SHORT,
+                        timestamp=kline["timestamp"],
+                        price=Decimal(str(kline["close"])),
+                        volume=Decimal("1"),
+                        parameters={
+                            "fast_ma": fast_ma,
+                            "slow_ma": slow_ma
+                        }
+                    )
+                    self.position = -1
+            self.last_cross = -1
+            
         return signal
 
-    async def on_orderbook(self, orderbook: OrderBook) -> Optional[Signal]:
-        """处理订单簿数据"""
-        # 本策略不使用订单簿数据
+    async def on_ticker(self, ticker: Dict) -> Optional[Signal]:
+        """处理Ticker数据"""
         return None
 
-    async def on_trade(self, trade: Trade) -> Optional[Signal]:
-        """处理成交记录"""
-        # 本策略不使用成交记录
+    async def on_orderbook(self, orderbook: Dict) -> Optional[Signal]:
+        """处理订单簿数据"""
+        return None
+
+    async def on_trade(self, trade: Dict) -> Optional[Signal]:
+        """处理成交数据"""
         return None 
