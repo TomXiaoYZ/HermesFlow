@@ -20,6 +20,7 @@ from ...common.exchange import ExchangeAPI
 from ...common.decorators import retry
 from .websocket import BinanceWebsocketClient
 from .handlers import OrderUpdateHandler
+from .config import BINANCE_API_URL, BINANCE_WS_URL
 
 class BinanceAPIError(Exception):
     """Binance API错误"""
@@ -78,8 +79,8 @@ class BinanceAPI(ExchangeAPI):
         super().__init__(api_key, api_secret, testnet)
         
         # API接口地址
-        self.base_url = "https://testnet.binance.vision/api" if testnet else "https://api.binance.com/api"
-        self.ws_url = "wss://testnet.binance.vision/ws" if testnet else "wss://stream.binance.com:9443/ws"
+        self.base_url = BINANCE_API_URL["testnet"] if testnet else BINANCE_API_URL["mainnet"]
+        self.ws_url = BINANCE_WS_URL["testnet"] if testnet else BINANCE_WS_URL["mainnet"]
         
         # 请求头
         self.headers = {

@@ -56,6 +56,7 @@ class BinanceWebsocketClient:
         self.listen_key: Optional[str] = None
         self.handlers: Dict[str, List[Callable]] = {}
         self.running = False
+        self.connected = asyncio.Event()
         
         # 设置基础URL
         self.ws_url = BINANCE_WS_URL["testnet"] if testnet else BINANCE_WS_URL["mainnet"]
@@ -150,10 +151,14 @@ class BinanceWebsocketClient:
                 # 启动续期任务
                 asyncio.create_task(self._keep_alive_listen_key())
                 # 连接用户数据流
-                self.ws = await self.session.ws_connect(f"{self.ws_url}/ws/{self.listen_key}")
+                self.ws = await self.session.ws_connect(f"{self.ws_url}/stream?streams={self.listen_key}")
             else:
                 # 连接公共数据流
-                self.ws = await self.session.ws_connect(f"{self.ws_url}/ws")
+                self.ws = await self.session.ws_connect(f"{self.ws_url}/stream")
+            
+            # 设置连接成功标志
+            self.connected.set()
+            
         except aiohttp.ClientError as e:
             raise BinanceWebSocketError(f"WebSocket连接错误: {str(e)}")
         except Exception as e:
@@ -166,6 +171,7 @@ class BinanceWebsocketClient:
             
         self.running = True
         self.session = aiohttp.ClientSession()
+        self.connected.clear()
         
         while self.running:
             try:
@@ -180,6 +186,7 @@ class BinanceWebsocketClient:
                         
             except Exception as e:
                 print(f"WebSocket连接错误: {str(e)}")
+                self.connected.clear()
             
             if self.running:
                 print("WebSocket连接断开，5秒后重连...")
@@ -192,6 +199,7 @@ class BinanceWebsocketClient:
             await self.ws.close()
         if self.session:
             await self.session.close()
+        self.connected.clear()
     
     def add_handler(self, event_type: str, handler: Callable):
         """添加消息处理器
@@ -218,6 +226,9 @@ class BinanceWebsocketClient:
         Args:
             streams: 数据流列表
         """
+        # 等待连接成功
+        await self.connected.wait()
+        
         if not self.ws:
             raise BinanceWebSocketError("WebSocket未连接")
             
@@ -245,6 +256,9 @@ class BinanceWebsocketClient:
         Args:
             streams: 数据流列表
         """
+        # 等待连接成功
+        await self.connected.wait()
+        
         if not self.ws:
             raise BinanceWebSocketError("WebSocket未连接")
             

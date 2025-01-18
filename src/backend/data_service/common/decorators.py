@@ -3,6 +3,7 @@
 """
 import asyncio
 import functools
+import json
 from typing import Type, Optional, Callable, Any, List, Union
 from datetime import datetime, timedelta
 
@@ -67,6 +68,36 @@ def retry(
             
             # 不应该到达这里
             raise RetryError("未知错误")
+        
+        return wrapper
+    
+    return decorator
+
+def publish_event(event_type: str):
+    """事件发布装饰器
+    
+    Args:
+        event_type: 事件类型
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            # 调用原函数
+            result = func(*args, **kwargs)
+            
+            if result is not None:
+                # 构造事件数据
+                event_data = {
+                    "type": event_type,
+                    "timestamp": datetime.now().isoformat(),
+                    "data": result
+                }
+                
+                # 打印事件数据
+                print(f"事件: {event_type}")
+                print(json.dumps(event_data, default=str, indent=2, ensure_ascii=False))
+            
+            return result
         
         return wrapper
     

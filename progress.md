@@ -23,7 +23,7 @@
       - 基础框架 [已完成]
       - 订单更新订阅 [已完成]
       - 错误重试机制 [已完成]
-      - 市场数据订阅 [规划中]
+      - 市场数据订阅 [已完成]
     - 单元测试 [已完成]
     - 命令行工具 [已完成]
   - OKX [规划中]
@@ -511,3 +511,50 @@ python -m src.backend.data_service.exchanges.binance.cli --testnet get_order --s
    - [ ] 性能指标监控
    - [ ] 业务指标监控
    - [ ] 告警规则设置 
+
+### 2024-03-23
+1. WebSocket订单更新订阅测试
+- 测试环境: Binance Spot测试网
+- 测试步骤:
+  1. 启动订单更新订阅
+  2. 创建测试订单
+  3. 验证收到订单状态更新
+- 测试结果: 成功
+  - WebSocket连接正常
+  - 订单更新事件正确触发
+  - 数据格式符合预期
+
+### 2024-03-24
+1. 错误重试机制测试
+- 测试环境: Binance Spot测试网
+- 测试内容:
+  1. REST API重试
+  2. WebSocket重试
+- 测试结果: 成功
+  - 自动重试功能正常
+  - 指数退避策略生效
+  - 日志记录完整
+
+2. WebSocket市场数据订阅测试
+- 测试环境: Binance Spot测试网
+- 测试内容:
+  1. 交易数据订阅 (BTCUSDT)
+     - 命令: `python -m src.backend.data_service.exchanges.binance.cli --testnet subscribe --type trade --symbol BTCUSDT`
+     - 结果: 成功接收实时交易数据
+  
+  2. Ticker数据订阅 (BTCUSDT)
+     - 命令: `python -m src.backend.data_service.exchanges.binance.cli --testnet subscribe --type ticker --symbol BTCUSDT`
+     - 结果: 成功接收24小时价格变动数据
+  
+  3. 深度数据订阅 (BTCUSDT)
+     - 命令: `python -m src.backend.data_service.exchanges.binance.cli --testnet subscribe --type depth --symbol BTCUSDT --depth 20`
+     - 结果: 成功接收20档深度数据更新
+  
+  4. K线数据订阅 (BTCUSDT)
+     - 命令: `python -m src.backend.data_service.exchanges.binance.cli --testnet subscribe --type kline --symbol BTCUSDT --interval 1m`
+     - 结果: 成功接收1分钟K线数据
+- 测试结果: 成功
+  - WebSocket连接稳定
+  - 数据格式正确
+  - 错误处理正常
+  - 日志输出清晰 
