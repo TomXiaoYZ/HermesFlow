@@ -1,28 +1,14 @@
 version: '3.8'
 
 services:
-  frontend:
+  data-service:
     build:
-      context: ./src/frontend
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./src/frontend:/app
-      - /app/node_modules
-    environment:
-      - NODE_ENV=development
-    depends_on:
-      - api
-
-  api:
-    build:
-      context: ./src/backend
-      dockerfile: Dockerfile.dev
+      context: ./src/data_service
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
-      - ./src/backend:/app
+      - ./src/data_service:/app
     environment:
       - APP_ENV=development
     depends_on:
@@ -31,17 +17,54 @@ services:
       - clickhouse
       - kafka
 
-  trading-engine:
+  strategy-engine:
     build:
-      context: ./src/backend/trading-engine
-      dockerfile: Dockerfile.dev
+      context: ./src/strategy_engine
+      dockerfile: Dockerfile
     volumes:
-      - ./src/backend/trading-engine:/app
+      - ./src/strategy_engine:/app
     environment:
       - RUST_LOG=debug
     depends_on:
       - kafka
       - redis
+
+  risk-management:
+    build:
+      context: ./src/risk_management
+      dockerfile: Dockerfile
+    volumes:
+      - ./src/risk_management:/app
+    environment:
+      - APP_ENV=development
+    depends_on:
+      - postgres
+      - redis
+
+  execution:
+    build:
+      context: ./src/execution
+      dockerfile: Dockerfile
+    volumes:
+      - ./src/execution:/app
+    environment:
+      - APP_ENV=development
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+
+  monitoring:
+    build:
+      context: ./src/monitoring
+      dockerfile: Dockerfile
+    volumes:
+      - ./src/monitoring:/app
+    environment:
+      - APP_ENV=development
+    depends_on:
+      - prometheus
+      - elasticsearch
 
   postgres:
     image: postgres:15-alpine
