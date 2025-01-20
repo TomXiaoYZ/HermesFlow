@@ -1,0 +1,192 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-config
+  namespace: hermesflow-dev
+data:
+  KAFKA_BROKER_ID: "1"
+  KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+  KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092"
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+  KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zookeeper-config
+  namespace: hermesflow-dev
+data:
+  ZOOKEEPER_CLIENT_PORT: "2181"
+  ZOOKEEPER_TICK_TIME: "2000"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-pvc
+  namespace: hermesflow-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp2
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zookeeper-pvc
+  namespace: hermesflow-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: gp2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: hermesflow-dev
+spec:
+  serviceName: zookeeper
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      containers:
+      - name: zookeeper
+        image: confluentinc/cp-zookeeper:7.3.0
+        envFrom:
+        - configMapRef:
+            name: zookeeper-config
+        ports:
+        - containerPort: 2181
+          name: client
+        volumeMounts:
+        - name: zookeeper-storage
+          mountPath: /var/lib/zookeeper/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 2181
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 2181
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: zookeeper-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: gp2
+      resources:
+        requests:
+          storage: 5Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: hermesflow-dev
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+      - name: kafka
+        image: confluentinc/cp-kafka:7.3.0
+        envFrom:
+        - configMapRef:
+            name: kafka-config
+        ports:
+        - containerPort: 9092
+          name: kafka
+        - containerPort: 29092
+          name: kafka-internal
+        volumeMounts:
+        - name: kafka-storage
+          mountPath: /var/lib/kafka/data
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "1000m"
+        livenessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 9092
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: kafka-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: gp2
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: hermesflow-dev
+spec:
+  selector:
+    app: zookeeper
+  ports:
+    - protocol: TCP
+      port: 2181
+      targetPort: 2181
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: hermesflow-dev
+spec:
+  selector:
+    app: kafka
+  ports:
+    - name: kafka
+      protocol: TCP
+      port: 9092
+      targetPort: 9092
+    - name: kafka-internal
+      protocol: TCP
+      port: 29092
+      targetPort: 29092
+  type: ClusterIP 

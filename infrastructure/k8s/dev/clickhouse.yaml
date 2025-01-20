@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: hermesflow-dev
+data:
+  config.xml: |
+    <?xml version="1.0"?>
+    <clickhouse>
+        <logger>
+            <level>information</level>
+            <console>1</console>
+        </logger>
+        <http_port>8123</http_port>
+        <tcp_port>9000</tcp_port>
+        <max_memory_usage>8589934592</max_memory_usage>
+        <max_concurrent_queries>100</max_concurrent_queries>
+    </clickhouse>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-pvc
+  namespace: hermesflow-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: gp2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: hermesflow-dev
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:latest
+        ports:
+        - containerPort: 8123
+          name: http
+        - containerPort: 9000
+          name: tcp
+        volumeMounts:
+        - name: clickhouse-storage
+          mountPath: /var/lib/clickhouse
+        - name: clickhouse-config
+          mountPath: /etc/clickhouse-server/config.d
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1000m"
+          limits:
+            memory: "8Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: clickhouse-config
+        configMap:
+          name: clickhouse-config
+  volumeClaimTemplates:
+  - metadata:
+      name: clickhouse-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: gp2
+      resources:
+        requests:
+          storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: hermesflow-dev
+spec:
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8123
+      targetPort: 8123
+    - name: tcp
+      protocol: TCP
+      port: 9000
+      targetPort: 9000
+  type: ClusterIP 
