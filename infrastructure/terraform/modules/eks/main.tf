@@ -2,48 +2,113 @@ locals {
   name = var.cluster_name
 }
 
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 19.0"
+resource "aws_iam_role" "cluster" {
+  name = "${local.name}-cluster"
 
-  cluster_name                   = local.name
-  cluster_version               = var.cluster_version
-  cluster_endpoint_public_access = true
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "eks.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
 
-  vpc_id     = var.vpc_id
-  subnet_ids = var.private_subnet_ids
+resource "aws_iam_role_policy_attachment" "cluster_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.cluster.name
+}
 
-  eks_managed_node_groups = {
-    for name, config in var.node_groups : name => {
-      name = "${local.name}-${name}"
+resource "aws_eks_cluster" "main" {
+  name     = local.name
+  role_arn = aws_iam_role.cluster.arn
+  version  = "1.27"
 
-      min_size     = config.min_size
-      max_size     = config.max_size
-      desired_size = config.desired_size
+  vpc_config {
+    subnet_ids              = var.private_subnet_ids
+    endpoint_private_access = true
+    endpoint_public_access  = true
+  }
 
-      instance_types = config.instance_types
-      capacity_type  = config.capacity_type
+  depends_on = [
+    aws_iam_role_policy_attachment.cluster_policy
+  ]
 
-      labels = merge(
-        {
-          "node-group" = name
-        },
-        config.labels
-      )
+  tags = {
+    Environment = var.environment
+    Project     = "hermesflow"
+    ManagedBy   = "terraform"
+  }
+}
 
-      taints = config.taints
+resource "aws_iam_role" "node_group" {
+  name = "${local.name}-node-group"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_policies" {
+  for_each = toset([
+    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+    "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  ])
+
+  policy_arn = each.value
+  role       = aws_iam_role.node_group.name
+}
+
+resource "aws_eks_node_group" "main" {
+  for_each = var.node_groups
+
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${local.name}-${each.key}"
+  node_role_arn   = aws_iam_role.node_group.arn
+  subnet_ids      = var.private_subnet_ids
+
+  scaling_config {
+    desired_size = each.value.desired_size
+    max_size     = each.value.max_size
+    min_size     = each.value.min_size
+  }
+
+  instance_types = each.value.instance_types
+  capacity_type  = each.value.capacity_type
+
+  labels = merge(
+    {
+      "node-group" = each.key
+    },
+    each.value.labels
+  )
+
+  dynamic "taint" {
+    for_each = each.value.taints
+    content {
+      key    = taint.value.key
+      value  = taint.value.value
+      effect = taint.value.effect
     }
   }
 
-  # aws-auth configmap
-  manage_aws_auth_configmap = true
-
-  aws_auth_roles = [
-    {
-      rolearn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/admin"
-      username = "admin"
-      groups   = ["system:masters"]
-    },
+  depends_on = [
+    aws_iam_role_policy_attachment.node_policies
   ]
 
   tags = {

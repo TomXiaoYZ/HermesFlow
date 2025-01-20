@@ -4,7 +4,7 @@ variable "environment" {
 }
 
 variable "vpc_cidr" {
-  description = "VPC CIDR block"
+  description = "CIDR block for VPC"
   type        = string
 }
 

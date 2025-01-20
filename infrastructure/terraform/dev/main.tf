@@ -12,10 +12,8 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket = "hermesflow-terraform-state"
-    key    = "dev/terraform.tfstate"
-    region = "us-west-2"
+  backend "local" {
+    path = "terraform.tfstate"
   }
 }
 

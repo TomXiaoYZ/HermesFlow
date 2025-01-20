@@ -15,7 +15,7 @@ variable "cluster_version" {
 }
 
 variable "vpc_id" {
-  description = "VPC ID"
+  description = "ID of the VPC"
   type        = string
 }
 
@@ -25,15 +25,15 @@ variable "private_subnet_ids" {
 }
 
 variable "node_groups" {
-  description = "EKS node groups configuration"
+  description = "Map of node group configurations"
   type = map(object({
-    min_size       = number
-    max_size       = number
-    desired_size   = number
-    instance_types = list(string)
-    capacity_type  = string
-    labels         = map(string)
-    taints        = list(object({
+    desired_size    = number
+    min_size        = number
+    max_size        = number
+    instance_types  = list(string)
+    capacity_type   = string
+    labels          = map(string)
+    taints          = list(object({
       key    = string
       value  = string
       effect = string
