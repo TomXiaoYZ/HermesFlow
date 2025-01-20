@@ -139,77 +139,110 @@ HermesFlow 是一个高性能的量化交易系统，支持多交易所、多策
 ## 3. 技术架构
 
 ### 3.1 基础设施
-- 容器化部署：Docker + Kubernetes
-- 消息队列：Kafka
-- 缓存系统：Redis
-- 数据库：
-  - PostgreSQL：关系型数据
-  - ClickHouse：时序数据
-- 监控系统：
-  - Prometheus + Grafana
-  - ELK Stack
+- 容器化部署
+  - Docker: 20.10+
+  - Kubernetes: 1.27+
+- 数据存储
+  - PostgreSQL: 13.0 (关系型数据)
+  - ClickHouse: 23.8 (时序数据)
+  - Redis: 7.0 (缓存系统)
+- 消息队列
+  - Kafka: 3.5
+  - ZooKeeper: 3.8
+- 监控系统
+  - Prometheus: 2.45
+  - Grafana: 10.0
+  - ELK Stack: 8.10
+    - Elasticsearch
+    - Logstash
+    - Kibana
+    - Filebeat
 
 ### 3.2 核心服务与技术栈
 
-#### 3.2.1 数据采集服务
-- 市场数据采集器 (Rust)
-  - 高性能WebSocket客户端
-  - 低延迟数据处理
-  - 内存安全保证
-- REST API网关 (Go)
-  - 并发请求处理
-  - 数据规范化
-  - 限流和重试
-- 区块链监听器 (Rust)
-  - 区块事件订阅
-  - 智能合约监控
-  - 交易追踪
-- 情绪数据收集器 (Python)
-  - 社交媒体API集成
-  - 自然语言处理
-  - 情绪分析
+#### 3.2.1 前端技术栈
+- 核心框架
+  - React: 18.2
+  - TypeScript: 5.0
+  - Vite: 4.4
+- 状态管理
+  - Redux Toolkit: 1.9
+  - Redux Saga: 1.2
+- UI组件
+  - Ant Design: 5.8
+  - TradingView Charts: 24
+  - ECharts: 5.4
+- 工具库
+  - Axios: 1.4
+  - Dayjs: 1.11
+  - Decimal.js: 10.4
+- 开发工具
+  - ESLint: 8.45
+  - Prettier: 3.0
+  - Jest: 29.6
 
-#### 3.2.2 策略引擎服务
-- 策略开发框架 (Python)
-  - 策略编写接口
-  - 回测环境
-  - 性能分析工具
-- 策略执行引擎 (Rust)
-  - 信号处理
-  - 订单生成
-  - 性能优化
+#### 3.2.2 后端技术栈
 
-#### 3.2.3 风控服务 (Go + Rust)
-- 实时风控检查 (Go)
-  - 限额管理
-  - 风险评估
-  - 预警触发
-- 风险计算引擎 (Rust)
-  - 组合风险计算
-  - 压力测试
-  - 情景分析
+##### 数据采集服务 (Rust/Go)
+- Rust服务
+  - tokio: 1.32 (异步运行时)
+  - tungstenite: 0.20 (WebSocket)
+  - serde: 1.0 (序列化)
+  - rust-decimal: 1.31 (精确计算)
+- Go服务
+  - gin: 1.9 (Web框架)
+  - sarama: 1.38 (Kafka)
+  - zap: 1.25 (日志)
+  - sqlx: 1.20 (数据库)
 
-#### 3.2.4 交易执行服务
-- 订单路由系统 (Rust)
-  - 智能订单路由
-  - 最优执行
-  - 订单分拆
-- 交易网关 (Go)
-  - 多交易所接入
-  - 状态同步
-  - 错误处理
+##### 策略引擎服务 (Python/Rust)
+- Python服务
+  - FastAPI: 0.100
+  - pandas: 2.0
+  - numpy: 1.24
+  - scikit-learn: 1.3
+  - pytorch: 2.0
+- Rust服务
+  - actix-web: 4.3
+  - rdkafka: 0.34
+  - diesel: 2.1
 
-#### 3.2.5 监控分析服务
-- 指标收集器 (Go)
-  - 性能指标
-  - 业务指标
-  - 系统指标
-- 分析报表系统 (Python)
-  - 数据分析
-  - 报表生成
-  - 可视化展示
+##### 风控服务 (Go/Rust)
+- **Go服务**:
+  - gin: Web框架
+  - gorm: ORM框架
+  - redis: 缓存
+  - prometheus: 指标收集
+- **Rust服务**:
+  - actix-web: Web框架
+  - diesel: ORM框架
+  - rust-decimal: 精确计算
 
-#### 3.2.6 AI服务
+##### 交易执行服务 (Rust/Go)
+- **Rust服务**:
+  - actix-web: Web框架
+  - rdkafka: Kafka客户端
+  - rust-decimal: 精确计算
+  - tokio: 异步运行时
+- **Go服务**:
+  - gin: Web框架
+  - sarama: Kafka客户端
+  - zap: 日志框架
+  - redis: 缓存
+
+##### 监控分析服务 (Go/Python)
+- **Go服务**:
+  - gin: Web框架
+  - prometheus: 指标收集
+  - grafana-api: Grafana集成
+  - elasticsearch: 日志存储
+- **Python服务**:
+  - FastAPI: Web框架
+  - pandas: 数据分析
+  - matplotlib: 数据可视化
+  - scikit-learn: 机器学习
+
+##### AI服务
 - 模型训练服务 (Python + CUDA)
   - 深度学习框架：PyTorch, TensorFlow
   - 分布式训练：Horovod, Ray
@@ -227,558 +260,156 @@ HermesFlow 是一个高性能的量化交易系统，支持多交易所、多策
   - 实验跟踪：Weights & Biases
   - A/B测试：自研框架
 
-## 4. 代码结构与规范
-
-### 4.1 目录结构与技术栈说明
+### 3.3 目录结构
 
 ```
 hermesflow/
 ├── docs/                           # 文档目录
-│   ├── architecture.md            # 架构文档
-│   ├── api/                      # API文档
-│   │   ├── rest/                # REST API文档
-│   │   └── websocket/          # WebSocket API文档
-│   └── guides/                   # 使用指南
-│       ├── development/        # 开发指南
-│       ├── deployment/        # 部署指南
-│       └── operations/       # 运维指南
-├── src/                           # 源代码目录
-│   ├── data_service/             # 数据服务
-│   │   ├── collectors/          # 数据采集器 (Rust)
-│   │   │   ├── market/         # 市场数据
-│   │   │   │   ├── crypto/    # 加密货币
-│   │   │   │   ├── stocks/    # 股票
-│   │   │   │   └── forex/     # 外汇
-│   │   │   ├── blockchain/    # 区块链数据
-│   │   │   │   ├── ethereum/  # 以太坊
-│   │   │   │   ├── solana/    # 索拉纳
-│   │   │   │   └── bitcoin/   # 比特币
-│   │   │   └── sentiment/     # 情绪数据 (Python)
-│   │   │       ├── social/    # 社交媒体
-│   │   │       ├── news/      # 新闻数据
-│   │   │       └── market/    # 市场情绪
-│   │   ├── processors/         # 数据处理器 (Go)
-│   │   │   ├── normalizers/   # 数据标准化
-│   │   │   ├── validators/    # 数据验证
-│   │   │   └── enrichers/     # 数据增强
-│   │   ├── storage/           # 数据存储 (Go)
-│   │   └── distributors/      # 数据分发 (Rust)
-│   ├── strategy_engine/         # 策略引擎
-│   │   ├── framework/         # 策略框架 (Python)
-│   │   └── executor/          # 执行引擎 (Rust)
-│   ├── risk_management/        # 风控系统
-│   │   ├── realtime/         # 实时风控 (Go)
-│   │   └── analysis/         # 风险分析 (Rust)
+│   ├── architecture.md            # 系统架构设计文档
+│   ├── development_process.md    # 开发流程规范文档
+│   ├── progress.md              # 项目进度跟踪文档
+│   ├── api/                     # API文档
+│   │   ├── backend/            # 后端API文档
+│   │   └── frontend/           # 前端API文档
+├── frontend/                      # 前端项目
+│   ├── src/
+│   │   ├── api/                 # API接口
+│   │   ├── components/         # 通用组件
+│   │   ├── hooks/             # 自定义Hooks
+│   │   ├── layouts/           # 布局组件
+│   │   ├── pages/            # 页面组件
+│   │   ├── store/            # Redux状态
+│   │   ├── styles/           # 样式文件
+│   │   ├── types/            # 类型定义
+│   │   └── utils/            # 工具函数
+│   └── tests/                   # 测试文件
+├── src/                          # 后端服务
+│   ├── data_service/            # 数据服务
+│   │   ├── collectors/         # 数据采集
+│   │   ├── processors/        # 数据处理
+│   │   ├── storage/          # 数据存储
+│   │   └── distributors/     # 数据分发
+│   ├── strategy_engine/        # 策略引擎
+│   ├── risk_management/       # 风控系统
 │   ├── execution/             # 交易执行
-│   │   ├── router/           # 订单路由 (Rust)
-│   │   └── gateway/          # 交易网关 (Go)
 │   └── monitoring/            # 监控分析
-│       ├── collectors/       # 指标收集 (Go)
-│       └── analytics/        # 分析报表 (Python)
-├── tests/                      # 测试目录
-│   ├── data_service/          # 数据服务测试
-│   │   ├── unit/             # 单元测试
-│   │   │   ├── collectors/   # 按交易所分类
-│   │   │   │   ├── crypto/  # 加密货币
-│   │   │   │   ├── stocks/  # 股票
-│   │   │   │   └── dex/     # DEX
-│   │   │   ├── processors/  
-│   │   │   ├── storage/    
-│   │   │   └── distributors/
-│   │   ├── integration/     # 集成测试
-│   │   │   ├── crypto/     # 加密货币集成
-│   │   │   ├── stocks/     # 股票集成
-│   │   │   └── dex/        # DEX集成
-│   │   └── performance/    # 性能测试
-│   ├── strategy_engine/     # 策略引擎测试
-│   │   ├── unit/
-│   │   ├── integration/
-│   │   └── performance/
-│   ├── risk_management/    # 风控系统测试
-│   │   ├── unit/
-│   │   ├── integration/
-│   │   └── performance/
-│   ├── execution/         # 交易执行测试
-│   │   ├── unit/
-│   │   │   ├── crypto/   # 加密货币
-│   │   │   ├── stocks/   # 股票
-│   │   │   └── dex/      # DEX
-│   │   ├── integration/
-│   │   └── performance/
-│   └── monitoring/       # 监控分析测试
-│       ├── unit/
-│       ├── integration/
-│       └── performance/
-├── scripts/                    # 脚本目录
-│   ├── deploy/              # 部署脚本
-│   │   ├── k8s/           # K8s部署
-│   │   └── docker/        # Docker部署
-│   └── tools/               # 工具脚本
-│       ├── data/          # 数据工具
-│       └── debug/         # 调试工具
-├── infrastructure/            # 基础设施配置
+├── tests/                       # 测试目录
+│   ├── common/                 # 通用测试组件
+│   │   ├── fixtures/          # 测试固件
+│   │   ├── mocks/            # Mock数据和服务
+│   │   └── utils/            # 测试工具函数
+│   ├── integration/          # 集成测试
+│   │   ├── data_service/     # 数据服务测试
+│   │   │   ├── binance/     # Binance相关测试
+│   │   │   ├── okx/         # OKX相关测试
+│   │   │   └── bitget/      # Bitget相关测试
+│   │   ├── strategy_engine/ # 策略引擎测试
+│   │   ├── risk_management/ # 风控系统测试
+│   │   └── execution/       # 交易执行测试
+│   ├── unit/                # 单元测试
+│   │   ├── data_service/    # 数据服务单元测试
+│   │   ├── strategy_engine/ # 策略引擎单元测试
+│   │   ├── risk_management/ # 风控系统单元测试
+│   │   └── execution/       # 交易执行单元测试
+│   ├── performance/         # 性能测试
+│   │   ├── data_service/    # 数据服务性能测试
+│   │   ├── strategy_engine/ # 策略引擎性能测试
+│   │   └── execution/       # 交易执行性能测试
+│   └── test_plan.md         # 测试计划文档
+├── infrastructure/            # 基础设施
 │   ├── docker/              # Docker配置
-│   │   ├── Dockerfile     # 主程序镜像
-│   │   └── compose/       # 组合配置
-│   ├── kubernetes/         # Kubernetes配置
-│   │   ├── base/         # 基础配置
-│   │   └── overlays/     # 环境配置
+│   ├── kubernetes/         # K8s配置
 │   └── terraform/          # Terraform配置
-│       ├── modules/       # 基础模块
-│       └── environments/  # 环境配置
-├── config/                    # 配置文件目录
-│   ├── development/        # 开发环境配置
-│   ├── production/         # 生产环境配置
-│   └── testing/            # 测试环境配置
-├── .github/                   # GitHub配置
-│   └── workflows/          # GitHub Actions
-├── pyproject.toml            # 项目依赖配置
-├── poetry.lock               # 依赖版本锁定
-└── README.md                 # 项目说明
+└── scripts/                  # 脚本工具
 ```
 
-### 4.2 命名规范
+### 3.4 开发规范
 
-#### 4.2.1 Python代码规范
-- 类名：使用大驼峰命名法（PascalCase）
-  ```python
-  class OrderManager:
-      pass
-  ```
-- 函数名：使用小写字母和下划线（snake_case）
-  ```python
-  def process_market_data():
-      pass
-  ```
-- 变量名：使用小写字母和下划线（snake_case）
-  ```python
-  market_price = 100.0
-  ```
-- 常量名：使用大写字母和下划线
-  ```python
-  MAX_RETRY_COUNT = 3
-  ```
-- 私有属性/方法：使用单下划线前缀
-  ```python
-  def _internal_process():
-      pass
-  ```
+#### 3.4.1 前端开发规范
+- 组件开发
+  - 使用函数式组件和Hooks
+  - 遵循React最佳实践
+  - 组件粒度适中，避免过度拆分
+- 状态管理
+  - 使用Redux Toolkit管理全局状态
+  - 使用Redux Saga处理异步逻辑
+  - 本地状态优先使用useState/useReducer
+- 样式开发
+  - 使用CSS Modules避免样式冲突
+  - 遵循BEM命名规范
+  - 支持暗色主题
+- 测试规范
+  - 使用Jest + React Testing Library
+  - 单元测试覆盖率>80%
+  - 编写集成测试和E2E测试
 
-#### 4.2.2 文件命名规范
-- Python模块：小写字母和下划线
-  ```
-  market_data.py
-  order_manager.py
-  ```
-- 测试文件：以test_开头
-  ```
-  test_market_data.py
-  test_order_manager.py
-  ```
-- 配置文件：使用小写字母和横线
-  ```
-  docker-compose.yml
-  prometheus-config.yml
-  ```
+#### 3.4.2 后端开发规范
+- Rust开发规范
+  - 遵循Rust 2021 Edition规范
+  - 使用async/await处理异步
+  - 错误处理使用thiserror
+  - 日志使用tracing
+- Go开发规范
+  - 遵循Effective Go指南
+  - 使用Go Modules管理依赖
+  - 错误处理遵循pkg/errors
+  - 配置使用viper
+- Python开发规范
+  - 遵循PEP 8规范
+  - 类型注解全覆盖
+  - 使用poetry管理依赖
+  - 使用pytest进行测试
 
-### 4.3 代码风格规范
+### 3.5 部署架构
 
-#### 4.3.1 Python代码风格
-- 使用Black进行代码格式化
-- 行长度限制：100字符
-- 使用类型注解
-  ```python
-  def calculate_position_value(
-      quantity: float,
-      price: float
-  ) -> float:
-      return quantity * price
-  ```
-- 使用文档字符串
-  ```python
-  def process_order(order: Order) -> bool:
-      """
-      处理订单请求。
+#### 3.5.1 环境配置
+- 开发环境
+  - Docker Desktop
+  - Minikube/Kind
+  - 本地数据库
+- 测试环境
+  - AWS EKS (2个节点)
+  - RDS + ElastiCache
+  - 完整监控系统
+- 生产环境
+  - AWS EKS (4-6个节点)
+  - 多可用区部署
+  - 自动扩缩容
 
-      Args:
-          order: 订单对象
-
-      Returns:
-          bool: 处理是否成功
-      """
-      pass
-  ```
-
-#### 4.3.2 注释规范
-- 类注释：说明类的功能、属性和方法
-- 方法注释：说明参数、返回值和异常
-- 代码注释：解释复杂的业务逻辑
-
-### 4.4 技术栈详细说明
-
-#### 4.4.1 后端服务
-- Python 3.11
-  - aiohttp: WebSocket和REST API客户端
-  - pydantic: 数据验证和序列化
-  - asyncio: 异步IO处理
-  - pytest: 测试框架
-
-#### 4.4.2 数据存储
-- PostgreSQL 13
-  - 用途：存储关系型数据
-  - 主要表：订单、账户、配置等
-- ClickHouse
-  - 用途：存储时序数据
-  - 主要表：行情数据、交易记录等
-- Redis
-  - 用途：缓存和消息订阅
-  - 主要数据：实时行情、临时状态等
-
-#### 4.4.3 消息队列
-- Kafka
-  - 用途：事件流处理
-  - 主题设计：
-    - market-data: 市场数据流
-    - order-events: 订单事件流
-    - system-events: 系统事件流
-
-#### 4.4.4 监控系统
-- Prometheus
-  - 用途：指标收集
-  - 主要指标：
-    - 系统性能
-    - 业务指标
-    - 告警规则
-- Grafana
-  - 用途：可视化展示
-  - 主要面板：
-    - 系统监控
-    - 交易分析
-    - 性能分析
-- ELK Stack
-  - 用途：日志管理
-  - 组件：
-    - Elasticsearch: 日志存储
-    - Logstash: 日志处理
-    - Kibana: 日志查询
-
-### 4.5 服务交互
-
-#### 4.5.1 内部服务通信
-- REST API：服务间同步请求
-- WebSocket：实时数据推送
-- Kafka：事件驱动通信
-- Redis Pub/Sub：实时消息订阅
-
-#### 4.5.2 外部接口集成
-- 交易所API
-  - REST API：下单、查询等
-  - WebSocket：行情订阅
-- 监控系统
-  - Prometheus：指标推送
-  - ELK：日志收集
-
-### 4.6 开发流程
-
-#### 4.6.1 版本控制
-- 使用Git Flow工作流
-- 分支命名：
-  - feature/*: 新功能开发
-  - bugfix/*: 问题修复
-  - release/*: 版本发布
-  - hotfix/*: 紧急修复
-
-#### 4.6.2 测试规范
-- 单元测试：测试独立组件
-- 集成测试：测试组件交互
-- 性能测试：测试系统性能
-- 测试覆盖率要求：>80%
-
-#### 4.6.3 CI/CD
-- GitHub Actions
-  - 代码检查
-  - 自动测试
-  - 构建部署
-
-## 5. 部署架构
-
-### 5.1 本地开发环境
-- Docker Compose部署
-  - 基础设施服务
-    ```yaml
-    # infrastructure/docker/docker-compose.dev.yml
-    services:
-      postgres:
-        image: postgres:13
-      redis:
-        image: redis:7
-      clickhouse:
-        image: clickhouse/clickhouse-server:23.8
-      kafka:
-        image: confluentinc/cp-kafka:7.3.0
-      prometheus:
-        image: prom/prometheus:v2.45.0
-      grafana:
-        image: grafana/grafana:10.0.3
-    ```
-  - 应用服务
-    ```yaml
-    # infrastructure/docker/docker-compose.app.yml
-    services:
-      data-collector:
-        build: 
-          context: .
-          dockerfile: Dockerfile.collector
-      strategy-engine:
-        build:
-          context: .
-          dockerfile: Dockerfile.strategy
-    ```
-
-### 5.2 AWS生产环境
-
-#### 5.2.1 EKS集群架构
-- 区域：ap-northeast-1 (东京)
-- 节点组配置
-  - 系统节点组：t3.medium (系统组件)
-  - 应用节点组：c6i.xlarge (应用服务)
-  - 数据节点组：r6i.2xlarge (数据库服务)
-- GPU节点组：g5.xlarge (AI训练和推理)
-  - NVIDIA T4 GPU
-  - 用于模型训练和在线推理
-  - 支持TensorRT加速
-
-#### 5.2.2 网络架构
+#### 3.5.2 网络架构
 - VPC配置
-  ```hcl
-  # infrastructure/terraform/modules/vpc/main.tf
-  module "vpc" {
-    source = "terraform-aws-modules/vpc/aws"
-    
-    name = "hermesflow-vpc"
-    cidr = "10.0.0.0/16"
-    
-    azs             = ["ap-northeast-1a", "ap-northeast-1c", "ap-northeast-1d"]
-    private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
-    public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
-    
-    enable_nat_gateway = true
-    single_nat_gateway = false
-    
-    tags = {
-      Environment = var.environment
-      Project     = "hermesflow"
-    }
-  }
-  ```
+  - 公有子网: 负载均衡器
+  - 私有子网: 应用服务
+  - 数据库子网: 存储服务
+- 安全组
+  - 外部访问控制
+  - 服务间通信规则
+  - 数据库访问限制
 
-#### 5.2.3 服务部署
-- Kubernetes命名空间
-  ```yaml
-  # infrastructure/kubernetes/base/namespaces.yaml
-  apiVersion: v1
-  kind: Namespace
-  metadata:
-    name: hermesflow
-  ---
-  apiVersion: v1
-  kind: Namespace
-  metadata:
-    name: monitoring
-  ```
+#### 3.5.3 监控配置
+- 系统监控
+  - 节点资源使用率
+  - 容器性能指标
+  - 网络流量统计
+- 应用监控
+  - 服务健康状态
+  - 业务指标统计
+  - 错误率监控
+- 日志管理
+  - 集中式日志收集
+  - 日志分析和检索
+  - 告警规则配置
 
-- 数据服务部署
-  ```yaml
-  # infrastructure/kubernetes/base/data-service.yaml
-  apiVersion: apps/v1
-  kind: Deployment
-  metadata:
-    name: data-collector
-    namespace: hermesflow
-  spec:
-    replicas: 3
-    selector:
-      matchLabels:
-        app: data-collector
-    template:
-      metadata:
-        labels:
-          app: data-collector
-      spec:
-        containers:
-        - name: collector
-          image: ${ECR_REGISTRY}/hermesflow-collector:${TAG}
-          resources:
-            requests:
-              cpu: "1"
-              memory: "2Gi"
-            limits:
-              cpu: "2"
-              memory: "4Gi"
-  ```
-
-#### 5.2.4 监控配置
-- Prometheus部署
-  ```yaml
-  # infrastructure/kubernetes/base/monitoring.yaml
-  apiVersion: monitoring.coreos.com/v1
-  kind: Prometheus
-  metadata:
-    name: prometheus
-    namespace: monitoring
-  spec:
-    replicas: 2
-    retention: 15d
-    storage:
-      volumeClaimTemplate:
-        spec:
-          storageClassName: gp3
-          resources:
-            requests:
-              storage: 100Gi
-  ```
-
-#### 5.2.5 安全配置
-- 网络策略
-  ```yaml
-  # infrastructure/kubernetes/base/network-policies.yaml
-  apiVersion: networking.k8s.io/v1
-  kind: NetworkPolicy
-  metadata:
-    name: default-deny
-    namespace: hermesflow
-  spec:
-    podSelector: {}
-    policyTypes:
-    - Ingress
-    - Egress
-  ```
-
-- 密钥管理
-  ```yaml
-  # infrastructure/kubernetes/base/secrets.yaml
-  apiVersion: external-secrets.io/v1beta1
-  kind: ExternalSecret
-  metadata:
-    name: exchange-api-keys
-    namespace: hermesflow
-  spec:
-    refreshInterval: "1h"
-    secretStoreRef:
-      name: aws-secretsmanager
-      kind: ClusterSecretStore
-    target:
-      name: exchange-api-keys
-    data:
-    - secretKey: binance-api-key
-      remoteRef:
-        key: hermesflow/binance
-        property: api-key
-  ```
-
-### 5.3 部署流程
-
-#### 5.3.1 基础设施部署
-1. 创建EKS集群
-```bash
-cd infrastructure/terraform/environments/production
-terraform init
-terraform apply
-```
-
-2. 配置kubectl
-```bash
-aws eks update-kubeconfig --name hermesflow-prod --region ap-northeast-1
-```
-
-3. 部署基础组件
-```bash
-kubectl apply -k infrastructure/kubernetes/overlays/production
-```
-
-#### 5.3.2 应用部署
-1. 构建镜像
-```bash
-docker build -t hermesflow-collector -f Dockerfile.collector .
-```
-
-2. 推送到ECR
-```bash
-aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin $ECR_REGISTRY
-docker tag hermesflow-collector:latest $ECR_REGISTRY/hermesflow-collector:$TAG
-docker push $ECR_REGISTRY/hermesflow-collector:$TAG
-```
-
-3. 部署应用
-```bash
-kubectl apply -f infrastructure/kubernetes/base/data-service.yaml
-```
-
-#### 5.3.3 监控部署
-1. 部署Prometheus Operator
-```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm install prometheus prometheus-community/kube-prometheus-stack -n monitoring
-```
-
-2. 配置Grafana
-```bash
-kubectl apply -f infrastructure/kubernetes/base/grafana-dashboards.yaml
-```
-
-## 6. 安全架构
-
-### 6.1 应用安全
-- API 认证授权
-- 数据加密
+#### 3.5.4 安全配置
 - 访问控制
-
-### 6.2 基础设施安全
-- 网络安全
-- 容器安全
-- 密钥管理
-
-### 6.3 运维安全
+  - IAM角色管理
+  - RBAC权限控制
+  - API认证授权
+- 数据安全
+  - 传输加密(TLS)
+  - 存储加密(KMS)
+  - 密钥轮换
 - 审计日志
-- 变更管理
-- 应急响应
-
-## 7. 扩展性设计
-
-### 7.1 水平扩展
-- 服务实例扩展
-- 数据分片
-- 负载均衡
-
-### 7.2 垂直扩展
-- 新交易所接入
-- 新策略接入
-- 新功能模块
-
-## 8. 后续规划
-
-### 8.1 近期计划
-- 完善数据采集系统
-- 实现基础策略框架
-- 建立监控体系
-- 构建AI基础设施
-  - GPU集群部署
-  - 特征工程pipeline
-  - 基础模型训练
-
-### 8.2 中期计划
-- 优化策略引擎
-- 完善风控系统
-- 提升系统性能
-- 增强AI能力
-  - 深度学习模型优化
-  - 实时特征计算
-  - 模型在线更新
-
-### 8.3 远期计划
-- 高级AI策略
-  - 多模态数据融合
-  - 跨市场策略学习
-  - 自适应策略优化
-- 多资产支持
-- 全球市场支持
+  - API调用记录
+  - 资源变更追踪
+  - 安全事件记录
