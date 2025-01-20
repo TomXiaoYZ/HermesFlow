@@ -1,113 +1,96 @@
 # HermesFlow
 
-HermesFlow 是一个高性能的量化交易平台，支持多交易所、多链的数据接入和交易执行，具备完整的策略开发、回测、风控和执行功能。
+HermesFlow 是一个高性能的量化交易系统，支持多交易所、多策略的实时交易。系统采用微服务架构，各个组件之间通过消息队列和缓存进行解耦，保证系统的可扩展性和可维护性。
 
-## 主要特性
+## 功能特点
 
-- 多交易所支持（CEX & DEX）
-- 实时数据处理
-- 策略开发与回测
-- 风险控制
-- 自动化交易执行
-- 多账户管理
-- 实时监控与报警
-
-## 技术栈
-
-### 后端
-- Rust（高性能交易引擎）
-- Golang（API服务）
-- Python（数据分析和策略回测）
-
-### 前端
-- React + TypeScript
-- Redux Toolkit
-- Ant Design Pro
-- TradingView + ECharts
-
-### 基础设施
-- Kubernetes (EKS)
-- Redis
-- ClickHouse
-- PostgreSQL
-- Kafka
-- ELK Stack
+- 多交易所支持
+  - Binance
+  - OKX
+  - Bitget（开发中）
+- 实时行情数据
+  - WebSocket实时数据流
+  - REST API数据补充
+  - 数据质量监控
+- 策略引擎
+  - 策略框架
+  - 回测系统
+  - 实时交易
+- 风控系统
+  - 账户风控
+  - 策略风控
+  - 系统风控
+- 监控分析
+  - 性能监控
+  - 交易分析
+  - 报表系统
 
 ## 快速开始
 
 ### 环境要求
 
-- Docker Desktop
-- Kubernetes
-- AWS CLI
-- Node.js >= 18
-- Rust >= 1.75
-- Go >= 1.21
-- Python >= 3.11
+- Python 3.11+
+- Docker
+- Redis
+- PostgreSQL
+- Kafka
+- ClickHouse
 
-### 开发环境设置
+### 安装
 
 1. 克隆仓库
 ```bash
-git clone https://github.com/yourusername/HermesFlow.git
-cd HermesFlow
+git clone https://github.com/yourusername/hermesflow.git
+cd hermesflow
 ```
 
-2. 安装依赖
+2. 安装Poetry
 ```bash
-# 前端依赖
-cd src/frontend
-npm install
-
-# 后端依赖
-cd ../backend
-cargo build
-go mod download
-pip install -r requirements.txt
+curl -sSL https://install.python-poetry.org | python3 -
 ```
 
-3. 配置环境变量
+3. 安装依赖
 ```bash
-cp .env.example .env.dev
-# 编辑 .env.dev 文件，填入必要的配置信息
+poetry install
 ```
 
 4. 启动开发环境
 ```bash
-# 启动本地开发环境
-make dev
+docker-compose -f docker/docker-compose.dev.yml up -d
 ```
 
-## 项目结构
+### 配置
 
+1. 复制环境变量模板
+```bash
+cp config/development/.env.example config/development/.env
 ```
-HermesFlow/
-├── src/
-│   ├── frontend/          # 前端代码
-│   ├── backend/           # 后端服务
-│   ├── infrastructure/    # 基础设施配置
-│   └── tests/             # 测试代码
-├── docs/                  # 文档
-├── architecture.md        # 架构文档
-├── progress.md           # 进度追踪
-└── README.md
+
+2. 编辑环境变量
+```bash
+vim config/development/.env
+```
+
+### 运行测试
+
+```bash
+poetry run pytest
 ```
 
 ## 文档
 
-- [架构文档](architecture.md)
-- [进度追踪](progress.md)
+- [架构设计](docs/architecture.md)
 - [API文档](docs/api/README.md)
-- [部署指南](docs/deployment/README.md)
+- [使用指南](docs/guides/README.md)
 
-## 贡献指南
+## 贡献
 
 1. Fork 项目
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'feat: add some amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 创建Pull Request
 
 ## 许可证
 
-[MIT](LICENSE) 
+本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情 

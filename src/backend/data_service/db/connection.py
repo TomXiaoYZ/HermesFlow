@@ -4,7 +4,7 @@
 import asyncio
 from typing import Optional
 from contextlib import asynccontextmanager
-import aioredis
+import redis.asyncio as redis
 import asyncpg
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -69,11 +69,13 @@ class DatabaseManager:
     async def init_redis(self):
         """初始化Redis连接"""
         if self.redis_pool is None:
-            self.redis_pool = await aioredis.create_redis_pool(
-                f"redis://{REDIS_CONFIG['host']}:{REDIS_CONFIG['port']}",
+            self.redis_pool = redis.Redis(
+                host=REDIS_CONFIG['host'],
+                port=REDIS_CONFIG['port'],
                 db=REDIS_CONFIG['db'],
                 password=REDIS_CONFIG['password'],
-                maxsize=REDIS_CONFIG['max_connections']
+                max_connections=REDIS_CONFIG['max_connections'],
+                decode_responses=True
             )
 
     async def init_kafka(self):
@@ -104,7 +106,7 @@ class DatabaseManager:
                 pass
 
     def get_redis(self):
-        """获取Redis连接池"""
+        """获取Redis连接"""
         return self.redis_pool
 
     def get_kafka_producer(self):
@@ -130,8 +132,7 @@ class DatabaseManager:
         if self.pg_pool:
             await self.pg_pool.close()
         if self.redis_pool:
-            self.redis_pool.close()
-            await self.redis_pool.wait_closed()
+            await self.redis_pool.aclose()
         if self.kafka_producer:
             await self.kafka_producer.stop()
 

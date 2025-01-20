@@ -1,672 +1,785 @@
 """
-Binance API客户端实现
+Binance API客户端
 """
-import hmac
-import hashlib
+import json
+import logging
 import time
-from typing import Dict, List, Optional, Any
-from datetime import datetime
-from decimal import Decimal
-import aiohttp
-import ujson
-from urllib.parse import urlencode
-import asyncio
-
-from ...common.models import (
-    Exchange, Market, Symbol, Ticker, OrderBook, Trade,
-    Kline, Balance, Order, OrderType, OrderSide, OrderStatus
+from typing import Optional, List, Dict, Any
+import requests
+from ...common.exceptions import (
+    APIError,
+    NetworkError,
+    ValidationError,
+    AuthenticationError,
+    PermissionError,
+    RateLimitError,
+    OrderError,
+    PositionError
 )
-from ...common.exchange import ExchangeAPI
-from ...common.decorators import retry
-from .websocket import BinanceWebsocketClient
-from .handlers import OrderUpdateHandler
-from .config import BINANCE_API_URL, BINANCE_WS_URL
+from ...common.models import (
+    ContractInfo,
+    FundingRate,
+    Ticker,
+    Kline,
+    OrderBook,
+    Trade,
+    ContractOrder,
+    PositionInfo,
+    OrderSide,
+    OrderType,
+    PositionSide,
+    TimeInForce,
+    MarginType
+)
 
-class BinanceAPIError(Exception):
-    """Binance API错误"""
-    pass
+logger = logging.getLogger(__name__)
 
-def should_retry_error(e: Exception) -> bool:
-    """判断是否需要重试
+class BinanceAPI:
+    """Binance API客户端"""
     
-    Args:
-        e: 异常
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        testnet: bool = False
+    ):
+        """初始化Binance API客户端
         
-    Returns:
-        bool: 是否需要重试
-    """
-    if isinstance(e, BinanceAPIError):
-        # 需要重试的错误码
-        retry_codes = [
-            -1000,  # 未知错误
-            -1001,  # 断开连接
-            -1002,  # 未授权
-            -1003,  # 请求过多
-            -1006,  # 非常规响应
-            -1007,  # 超时
-            -1015,  # 请求权重过大
-            -1016,  # 服务器维护
-            -1020,  # 不支持的操作
-            -1021,  # 时间同步问题
-            -1022,  # 签名无效
-        ]
-        
-        # 从错误消息中提取错误码
-        msg = str(e)
-        try:
-            code = int(msg.split(":")[0])
-            return code in retry_codes
-        except:
-            return False
-    
-    # 网络相关错误需要重试
-    if isinstance(e, aiohttp.ClientError):
-        return True
-    
-    return False
-
-class BinanceAPI(ExchangeAPI):
-    """Binance API实现"""
-
-    def __init__(self, api_key: str = "", api_secret: str = "", testnet: bool = False):
-        """初始化Binance API
-
         Args:
             api_key: API Key
             api_secret: API Secret
-            testnet: 是否使用测试网络
+            testnet: 是否使用测试网
         """
-        super().__init__(api_key, api_secret, testnet)
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.testnet = testnet
         
-        # API接口地址
-        self.base_url = BINANCE_API_URL["testnet"] if testnet else BINANCE_API_URL["mainnet"]
-        self.ws_url = BINANCE_WS_URL["testnet"] if testnet else BINANCE_WS_URL["mainnet"]
+        # API基础URL
+        self.base_url = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
         
-        # 请求头
-        self.headers = {
-            "Content-Type": "application/json",
-            "X-MBX-APIKEY": api_key
-        }
-
-        # 创建WebSocket客户端
-        self.ws_client = BinanceWebsocketClient(api_key, api_secret, testnet)
-        
-        # 创建订单更新处理器
-        self.order_handler = OrderUpdateHandler(Market.SPOT)
-        
-        # 注册订单更新处理器
-        self.ws_client.add_handler("executionReport", self.order_handler)
-
-    def _get_timestamp(self) -> int:
-        """获取当前时间戳"""
-        return int(time.time() * 1000)
-
-    def _generate_signature(self, params: Dict[str, Any]) -> str:
-        """生成签名
-
-        Args:
-            params: 请求参数
-
-        Returns:
-            str: 签名
-        """
-        # 将所有参数转换为字符串
-        str_params = {k: str(v) for k, v in params.items()}
-        # 使用urlencode对参数进行编码并按字母顺序排序
-        query_string = urlencode(sorted(str_params.items()))
-        
-        # 使用HMAC SHA256生成签名
-        return hmac.new(
-            self.api_secret.encode("utf-8"),
-            query_string.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-
-    @retry(
-        max_retries=3,
-        retry_delay=1.0,
-        max_delay=10.0,
-        exponential_base=2.0,
-        exceptions=(BinanceAPIError, aiohttp.ClientError),
-        should_retry=should_retry_error
-    )
-    async def _request(
+    def _request(
         self,
         method: str,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
-        signed: bool = False
-    ) -> Any:
+        data: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        auth_required: bool = False,
+        timeout: int = 10
+    ) -> Dict[str, Any]:
         """发送HTTP请求
-
+        
         Args:
             method: 请求方法
-            endpoint: 接口地址
-            params: 请求参数
-            signed: 是否需要签名
-
+            endpoint: API端点
+            params: URL参数
+            data: 请求数据
+            headers: 请求头
+            auth_required: 是否需要认证
+            timeout: 超时时间(秒)
+            
         Returns:
-            Any: 响应数据
-
+            响应数据
+            
         Raises:
-            BinanceAPIError: API调用错误
+            NetworkError: 网络错误
+            APIError: API错误
+            AuthenticationError: 认证错误
+            PermissionError: 权限错误
+            RateLimitError: 频率限制错误
         """
         url = f"{self.base_url}{endpoint}"
-        params = params or {}
-
-        # 如果需要签名，添加时间戳并生成签名
-        if signed:
-            # 添加时间戳
-            params["timestamp"] = str(self._get_timestamp())
-            # 将所有参数转换为字符串
-            str_params = {k: str(v) for k, v in params.items()}
-            # 使用urlencode对参数进行编码并按字母顺序排序
-            query_string = urlencode(sorted(str_params.items()))
-            # 生成签名
-            signature = hmac.new(
-                self.api_secret.encode("utf-8"),
-                query_string.encode("utf-8"),
-                hashlib.sha256
-            ).hexdigest()
-            # 将签名添加到查询字符串
-            query_string = f"{query_string}&signature={signature}"
-
+        
+        # 添加认证头
+        if auth_required:
+            if not self.api_key or not self.api_secret:
+                raise AuthenticationError("API Key和Secret未配置")
+            headers = headers or {}
+            headers["X-MBX-APIKEY"] = self.api_key
+            
         try:
-            async with aiohttp.ClientSession() as session:
-                if method == "GET":
-                    if signed:
-                        url = f"{url}?{query_string}"
-                        async with session.get(url, headers=self.headers) as response:
-                            data = await response.json(loads=ujson.loads)
-                    else:
-                        async with session.get(url, params=params, headers=self.headers) as response:
-                            data = await response.json(loads=ujson.loads)
-                elif method == "POST":
-                    if signed:
-                        url = f"{url}?{query_string}"
-                        async with session.post(url, headers=self.headers) as response:
-                            data = await response.json(loads=ujson.loads)
-                    else:
-                        async with session.post(url, params=params, headers=self.headers) as response:
-                            data = await response.json(loads=ujson.loads)
-                elif method == "DELETE":
-                    if signed:
-                        url = f"{url}?{query_string}"
-                        async with session.delete(url, headers=self.headers) as response:
-                            data = await response.json(loads=ujson.loads)
-                    else:
-                        async with session.delete(url, params=params, headers=self.headers) as response:
-                            data = await response.json(loads=ujson.loads)
-
-                if response.status >= 400:
-                    raise BinanceAPIError(f"API错误: {data.get('msg', str(data))}")
-
-                return data
-        except aiohttp.ClientError as e:
-            raise BinanceAPIError(f"网络错误: {str(e)}")
+            logger.debug(f"发送请求: {method} {url}")
+            logger.debug(f"参数: {params}")
+            logger.debug(f"数据: {data}")
+            
+            response = requests.request(
+                method=method,
+                url=url,
+                params=params,
+                json=data,
+                headers=headers,
+                timeout=timeout
+            )
+            
+            logger.debug(f"响应状态码: {response.status_code}")
+            logger.debug(f"响应内容: {response.text}")
+            
+            if response.status_code == 200:
+                return response.json()
+                
+            error_data = response.json()
+            error_code = error_data.get("code", 0)
+            error_msg = error_data.get("msg", "Unknown error")
+            
+            if response.status_code == 401:
+                raise AuthenticationError(f"认证失败: {error_msg}")
+            elif response.status_code == 403:
+                raise PermissionError(f"权限不足: {error_msg}")
+            elif response.status_code == 429:
+                raise RateLimitError(f"请求频率超限: {error_msg}")
+            else:
+                raise APIError(
+                    message=f"API错误: {error_msg}",
+                    exchange="binance",
+                    code=str(error_code),
+                    http_status=response.status_code,
+                    details=error_data
+                )
+                
+        except requests.exceptions.Timeout:
+            raise NetworkError("请求超时")
+        except requests.exceptions.ConnectionError:
+            raise NetworkError("网络连接错误")
+        except json.JSONDecodeError:
+            raise APIError(
+                message="响应解析失败",
+                exchange="binance",
+                code="INVALID_RESPONSE"
+            )
         except Exception as e:
-            raise BinanceAPIError(f"未知错误: {str(e)}")
-
-    async def get_symbols(self, market: Market) -> List[Symbol]:
-        """获取所有交易对信息
-
+            raise APIError(
+                message=f"未知错误: {str(e)}",
+                exchange="binance",
+                code="UNKNOWN_ERROR"
+            )
+            
+    def get_contract_info(self, symbol: Optional[str] = None) -> List[ContractInfo]:
+        """获取合约信息
+        
         Args:
-            market: 市场类型
-
+            symbol: 交易对,如果不指定则返回所有交易对
+            
         Returns:
-            List[Symbol]: 交易对列表
+            合约信息列表
         """
-        endpoint = "/v3/exchangeInfo"
-        response = await self._request("GET", endpoint)
-
-        symbols = []
-        for item in response["symbols"]:
-            if item["status"] != "TRADING":
-                continue
-
-            # 获取价格过滤器
-            price_filter = next(f for f in item["filters"] if f["filterType"] == "PRICE_FILTER")
-            lot_size = next(f for f in item["filters"] if f["filterType"] == "LOT_SIZE")
-            min_notional = next(f for f in item["filters"] if f["filterType"] == "MIN_NOTIONAL")
-
-            symbols.append(Symbol(
-                exchange=Exchange.BINANCE,
-                market=market,
-                base_asset=item["baseAsset"],
-                quote_asset=item["quoteAsset"],
-                min_price=Decimal(price_filter["minPrice"]),
-                max_price=Decimal(price_filter["maxPrice"]),
-                tick_size=Decimal(price_filter["tickSize"]),
-                min_qty=Decimal(lot_size["minQty"]),
-                max_qty=Decimal(lot_size["maxQty"]),
-                step_size=Decimal(lot_size["stepSize"]),
-                min_notional=Decimal(min_notional["minNotional"]),
-                status=item["status"].lower(),
-                created_at=datetime.now()
-            ))
-
-        return symbols
-
-    async def get_ticker(self, market: Market, symbol: str) -> Ticker:
-        """获取行情数据
-
+        try:
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v1/exchangeInfo",
+                params={"symbol": symbol} if symbol else None
+            )
+            
+            symbols = response["symbols"]
+            return [
+                ContractInfo(
+                    exchange="binance",
+                    symbol=s["symbol"],
+                    base_asset=s["baseAsset"],
+                    quote_asset=s["quoteAsset"],
+                    price_precision=s["pricePrecision"],
+                    quantity_precision=s["quantityPrecision"],
+                    min_price=float(s["filters"][0]["minPrice"]),
+                    max_price=float(s["filters"][0]["maxPrice"]),
+                    tick_size=float(s["filters"][0]["tickSize"]),
+                    min_qty=float(s["filters"][1]["minQty"]),
+                    max_qty=float(s["filters"][1]["maxQty"]),
+                    step_size=float(s["filters"][1]["stepSize"]),
+                    min_notional=float(s["filters"][5]["notional"]),
+                    status=s["status"],
+                    created_time=None,
+                    updated_time=None
+                )
+                for s in symbols
+                if symbol is None or s["symbol"] == symbol
+            ]
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析合约信息失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def get_funding_rate(self, symbol: str) -> FundingRate:
+        """获取资金费率
+        
         Args:
-            market: 市场类型
             symbol: 交易对
-
+            
         Returns:
-            Ticker: 行情数据
+            资金费率信息
         """
-        endpoint = "/v3/ticker/24hr"
-        params = {"symbol": symbol}
-        response = await self._request("GET", endpoint, params)
-
-        return Ticker(
-            exchange=Exchange.BINANCE,
-            market=market,
-            symbol=symbol,
-            price=Decimal(response["lastPrice"]),
-            volume=Decimal(response["volume"]),
-            amount=Decimal(response["quoteVolume"]),
-            timestamp=datetime.fromtimestamp(response["closeTime"] / 1000),
-            bid_price=Decimal(response["bidPrice"]),
-            bid_qty=Decimal(response["bidQty"]),
-            ask_price=Decimal(response["askPrice"]),
-            ask_qty=Decimal(response["askQty"]),
-            open_price=Decimal(response["openPrice"]),
-            high_price=Decimal(response["highPrice"]),
-            low_price=Decimal(response["lowPrice"]),
-            close_price=Decimal(response["lastPrice"])
-        )
-
-    async def get_order_book(self, market: Market, symbol: str, limit: int = 100) -> OrderBook:
-        """获取订单簿数据
-
+        try:
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v1/premiumIndex",
+                params={"symbol": symbol}
+            )
+            
+            return FundingRate(
+                exchange="binance",
+                symbol=response["symbol"],
+                funding_rate=float(response["lastFundingRate"]),
+                estimated_rate=float(response["lastFundingRate"]),
+                next_timestamp=response["nextFundingTime"],
+                timestamp=response["time"]
+            )
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析资金费率失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def get_contract_ticker(self, symbol: str) -> Ticker:
+        """获取24小时价格变动
+        
         Args:
-            market: 市场类型
             symbol: 交易对
-            limit: 深度
-
+            
         Returns:
-            OrderBook: 订单簿数据
+            24小时价格变动信息
         """
-        endpoint = "/v3/depth"
-        params = {
-            "symbol": symbol,
-            "limit": limit
-        }
-        response = await self._request("GET", endpoint, params)
-
-        return OrderBook(
-            exchange=Exchange.BINANCE,
-            market=market,
-            symbol=symbol,
-            timestamp=datetime.fromtimestamp(response["lastUpdateId"] / 1000),
-            bids=[{"price": Decimal(p), "quantity": Decimal(q)} for p, q in response["bids"]],
-            asks=[{"price": Decimal(p), "quantity": Decimal(q)} for p, q in response["asks"]],
-            update_id=response["lastUpdateId"]
-        )
-
-    async def get_recent_trades(self, market: Market, symbol: str, limit: int = 100) -> List[Trade]:
-        """获取最近成交
-
-        Args:
-            market: 市场类型
-            symbol: 交易对
-            limit: 数量
-
-        Returns:
-            List[Trade]: 成交列表
-        """
-        endpoint = "/v3/trades"
-        params = {
-            "symbol": symbol,
-            "limit": limit
-        }
-        response = await self._request("GET", endpoint, params)
-
-        trades = []
-        for item in response:
-            trades.append(Trade(
-                exchange=Exchange.BINANCE,
-                market=market,
-                symbol=symbol,
-                id=str(item["id"]),
-                price=Decimal(item["price"]),
-                quantity=Decimal(item["qty"]),
-                amount=Decimal(item["price"]) * Decimal(item["qty"]),
-                timestamp=datetime.fromtimestamp(item["time"] / 1000),
-                is_buyer_maker=item["isBuyerMaker"],
-                side=OrderSide.SELL if item["isBuyerMaker"] else OrderSide.BUY
-            ))
-
-        return trades
-
-    async def get_klines(
+        try:
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v1/ticker/24hr",
+                params={"symbol": symbol}
+            )
+            
+            print("响应数据:", json.dumps(response, indent=2))
+            
+            return Ticker(
+                exchange="binance",
+                symbol=response["symbol"],
+                last_price=float(response["lastPrice"]),
+                last_qty=float(response["lastQty"]),
+                open_price=float(response["openPrice"]),
+                high_price=float(response["highPrice"]),
+                low_price=float(response["lowPrice"]),
+                volume=float(response["volume"]),
+                quote_volume=float(response["quoteVolume"]),
+                open_time=response["openTime"],
+                close_time=response["closeTime"],
+                first_trade_id=response["firstId"],
+                last_trade_id=response["lastId"],
+                trade_count=response["count"]
+            )
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析行情数据失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def get_contract_klines(
         self,
-        market: Market,
         symbol: str,
         interval: str,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
         limit: int = 500
     ) -> List[Kline]:
         """获取K线数据
-
+        
         Args:
-            market: 市场类型
             symbol: 交易对
-            interval: 时间间隔
-            start_time: 开始时间
-            end_time: 结束时间
-            limit: 数量
-
+            interval: K线间隔
+            start_time: 开始时间(毫秒时间戳)
+            end_time: 结束时间(毫秒时间戳)
+            limit: 返回记录数量
+            
         Returns:
-            List[Kline]: K线数据列表
+            K线数据列表
         """
-        endpoint = "/v3/klines"
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
-        }
-
-        if start_time:
-            params["startTime"] = int(start_time.timestamp() * 1000)
-        if end_time:
-            params["endTime"] = int(end_time.timestamp() * 1000)
-
-        response = await self._request("GET", endpoint, params)
-
-        klines = []
-        for item in response:
-            klines.append(Kline(
-                exchange=Exchange.BINANCE,
-                market=market,
-                symbol=symbol,
-                interval=interval,
-                open_time=datetime.fromtimestamp(item[0] / 1000),
-                close_time=datetime.fromtimestamp(item[6] / 1000),
-                open_price=Decimal(item[1]),
-                high_price=Decimal(item[2]),
-                low_price=Decimal(item[3]),
-                close_price=Decimal(item[4]),
-                volume=Decimal(item[5]),
-                amount=Decimal(item[7]),
-                trades_count=item[8]
-            ))
-
-        return klines
-
-    async def get_balances(self) -> List[Balance]:
-        """获取账户余额
-
-        Returns:
-            List[Balance]: 余额列表
-        """
-        endpoint = "/v3/account"
-        response = await self._request("GET", endpoint, signed=True)
-
-        balances = []
-        for item in response["balances"]:
-            free = Decimal(item["free"])
-            locked = Decimal(item["locked"])
-            total = free + locked
-
-            if total == 0:
-                continue
-
-            balances.append(Balance(
-                exchange=Exchange.BINANCE,
-                asset=item["asset"],
-                free=free,
-                locked=locked,
-                total=total,
-                timestamp=datetime.fromtimestamp(response["updateTime"] / 1000)
-            ))
-
-        return balances
-
-    async def create_order(
+        try:
+            params = {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": limit
+            }
+            if start_time:
+                params["startTime"] = start_time
+            if end_time:
+                params["endTime"] = end_time
+                
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v1/klines",
+                params=params
+            )
+            
+            return [
+                Kline(
+                    exchange="binance",
+                    symbol=symbol,
+                    interval=interval,
+                    open_time=k[0],
+                    open_price=float(k[1]),
+                    high_price=float(k[2]),
+                    low_price=float(k[3]),
+                    close_price=float(k[4]),
+                    volume=float(k[5]),
+                    close_time=k[6],
+                    quote_volume=float(k[7]),
+                    trade_count=k[8],
+                    taker_buy_volume=float(k[9]),
+                    taker_buy_quote_volume=float(k[10]),
+                    ignore=k[11]
+                )
+                for k in response
+            ]
+        except (KeyError, ValueError, IndexError) as e:
+            raise APIError(
+                message=f"解析K线数据失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def get_contract_depth(
         self,
-        market: Market,
         symbol: str,
-        order_type: OrderType,
+        limit: int = 100
+    ) -> OrderBook:
+        """获取深度数据
+        
+        Args:
+            symbol: 交易对
+            limit: 返回记录数量
+            
+        Returns:
+            深度数据
+        """
+        try:
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v1/depth",
+                params={
+                    "symbol": symbol,
+                    "limit": limit
+                }
+            )
+            
+            return OrderBook(
+                exchange="binance",
+                symbol=symbol,
+                bids=[
+                    [float(price), float(qty)]
+                    for price, qty in response["bids"]
+                ],
+                asks=[
+                    [float(price), float(qty)]
+                    for price, qty in response["asks"]
+                ],
+                timestamp=response["T"] if "T" in response else int(time.time() * 1000)
+            )
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析深度数据失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def get_recent_trades(
+        self,
+        symbol: str,
+        limit: int = 500
+    ) -> List[Trade]:
+        """获取最近成交
+        
+        Args:
+            symbol: 交易对
+            limit: 返回记录数量
+            
+        Returns:
+            成交记录列表
+        """
+        try:
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v1/trades",
+                params={
+                    "symbol": symbol,
+                    "limit": limit
+                }
+            )
+            
+            return [
+                Trade(
+                    exchange="binance",
+                    symbol=symbol,
+                    id=t["id"],
+                    price=float(t["price"]),
+                    qty=float(t["qty"]),
+                    quote_qty=float(t["price"]) * float(t["qty"]),
+                    time=t["time"],
+                    is_buyer_maker=t["isBuyerMaker"]
+                )
+                for t in response
+            ]
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析成交数据失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def change_leverage(
+        self,
+        symbol: str,
+        leverage: int
+    ) -> Dict[str, Any]:
+        """调整杠杆倍数
+        
+        Args:
+            symbol: 交易对
+            leverage: 杠杆倍数
+            
+        Returns:
+            响应数据
+        """
+        if not isinstance(leverage, int) or leverage < 1 or leverage > 125:
+            raise ValidationError("杠杆倍数必须是1-125之间的整数")
+            
+        return self._request(
+            method="POST",
+            endpoint="/fapi/v1/leverage",
+            data={
+                "symbol": symbol,
+                "leverage": leverage
+            },
+            auth_required=True
+        )
+        
+    def change_margin_type(
+        self,
+        symbol: str,
+        margin_type: MarginType
+    ) -> Dict[str, Any]:
+        """调整保证金类型
+        
+        Args:
+            symbol: 交易对
+            margin_type: 保证金类型
+            
+        Returns:
+            响应数据
+        """
+        return self._request(
+            method="POST",
+            endpoint="/fapi/v1/marginType",
+            data={
+                "symbol": symbol,
+                "marginType": margin_type.value
+            },
+            auth_required=True
+        )
+        
+    def get_position_info(
+        self,
+        symbol: Optional[str] = None
+    ) -> List[PositionInfo]:
+        """获取持仓信息
+        
+        Args:
+            symbol: 交易对,如果不指定则返回所有持仓
+            
+        Returns:
+            持仓信息列表
+        """
+        try:
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v2/positionRisk",
+                params={"symbol": symbol} if symbol else None,
+                auth_required=True
+            )
+            
+            return [
+                PositionInfo(
+                    exchange="binance",
+                    symbol=p["symbol"],
+                    position_side=PositionSide(p["positionSide"]),
+                    margin_type=MarginType(p["marginType"]),
+                    isolated_margin=float(p["isolatedMargin"]),
+                    leverage=int(p["leverage"]),
+                    position_amt=float(p["positionAmt"]),
+                    entry_price=float(p["entryPrice"]),
+                    mark_price=float(p["markPrice"]),
+                    unreal_profit=float(p["unRealizedProfit"]),
+                    liquidation_price=float(p["liquidationPrice"]),
+                    created_time=None,
+                    updated_time=p["updateTime"]
+                )
+                for p in response
+                if float(p["positionAmt"]) != 0
+            ]
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析持仓信息失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def create_contract_order(
+        self,
+        symbol: str,
         side: OrderSide,
+        position_side: PositionSide,
+        order_type: OrderType,
+        quantity: float,
         price: Optional[float] = None,
-        quantity: Optional[float] = None,
-        client_order_id: Optional[str] = None,
-    ) -> Order:
-        """创建订单
-
+        stop_price: Optional[float] = None,
+        time_in_force: TimeInForce = TimeInForce.GTC,
+        reduce_only: bool = False,
+        working_type: str = "CONTRACT_PRICE",
+        client_order_id: Optional[str] = None
+    ) -> ContractOrder:
+        """创建合约订单
+        
         Args:
-            market: 市场类型
             symbol: 交易对
-            order_type: 订单类型
             side: 订单方向
-            price: 价格
+            position_side: 持仓方向
+            order_type: 订单类型
             quantity: 数量
+            price: 价格(限价单必填)
+            stop_price: 触发价格(止损/止盈单必填)
+            time_in_force: 有效方式
+            reduce_only: 是否只减仓
+            working_type: 触发价格类型
             client_order_id: 客户端订单ID
-
+            
         Returns:
-            Order: 订单信息
+            订单信息
         """
-        params = {
-            "symbol": symbol,
-            "side": side.value.upper(),
-            "type": order_type.value.upper(),
-            "quantity": quantity
-        }
-
-        if order_type == OrderType.LIMIT:
-            params["timeInForce"] = "GTC"  # Good Till Cancel
-            params["price"] = price
-        elif order_type == OrderType.MARKET:
-            if price:
-                del params["price"]
-
-        if client_order_id:
-            params["newClientOrderId"] = client_order_id
-
-        response = await self._request("POST", "/v3/order", params, signed=True)
-
-        return Order(
-            exchange=Exchange.BINANCE,
-            market=market,
-            symbol=symbol,
-            id=str(response["orderId"]),
-            client_order_id=response["clientOrderId"],
-            price=Decimal(response["price"]),
-            original_quantity=Decimal(response["origQty"]),
-            executed_quantity=Decimal(response["executedQty"]),
-            remaining_quantity=Decimal(response["origQty"]) - Decimal(response["executedQty"]),
-            status=OrderStatus(response["status"].lower()),
-            type=order_type,
-            side=side,
-            created_at=datetime.fromtimestamp(response["transactTime"] / 1000),
-            updated_at=datetime.fromtimestamp(response["transactTime"] / 1000),
-            is_working=response["status"] not in ["FILLED", "CANCELED", "REJECTED", "EXPIRED"]
-        )
-
-    async def cancel_order(
+        try:
+            # 验证参数
+            if order_type in [OrderType.LIMIT, OrderType.STOP, OrderType.TAKE_PROFIT] and price is None:
+                raise ValidationError("限价单必须指定价格")
+                
+            if order_type in [OrderType.STOP, OrderType.TAKE_PROFIT] and stop_price is None:
+                raise ValidationError("止损/止盈单必须指定触发价格")
+                
+            data = {
+                "symbol": symbol,
+                "side": side.value,
+                "positionSide": position_side.value,
+                "type": order_type.value,
+                "quantity": quantity,
+                "timeInForce": time_in_force.value,
+                "reduceOnly": reduce_only,
+                "workingType": working_type
+            }
+            
+            if price is not None:
+                data["price"] = price
+                
+            if stop_price is not None:
+                data["stopPrice"] = stop_price
+                
+            if client_order_id is not None:
+                data["newClientOrderId"] = client_order_id
+                
+            response = self._request(
+                method="POST",
+                endpoint="/fapi/v1/order",
+                data=data,
+                auth_required=True
+            )
+            
+            return ContractOrder(
+                exchange="binance",
+                symbol=response["symbol"],
+                order_id=str(response["orderId"]),
+                client_order_id=response.get("clientOrderId"),
+                price=float(response["price"]),
+                avg_price=0.0,
+                stop_price=float(response.get("stopPrice", 0)),
+                quantity=float(response["origQty"]),
+                executed_qty=float(response["executedQty"]),
+                status=response["status"],
+                time_in_force=TimeInForce(response["timeInForce"]),
+                type=OrderType(response["type"]),
+                side=OrderSide(response["side"]),
+                position_side=PositionSide(response["positionSide"]),
+                reduce_only=response["reduceOnly"],
+                working_type=response["workingType"],
+                created_time=response["time"],
+                updated_time=response["updateTime"]
+            )
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析订单数据失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def cancel_contract_order(
         self,
-        market: Market,
         symbol: str,
         order_id: Optional[str] = None,
         client_order_id: Optional[str] = None
-    ) -> Order:
-        """取消订单
-
+    ) -> ContractOrder:
+        """撤销合约订单
+        
         Args:
-            market: 市场类型
             symbol: 交易对
             order_id: 订单ID
             client_order_id: 客户端订单ID
-
+            
         Returns:
-            Order: 订单信息
+            订单信息
         """
-        params = {
-            "symbol": symbol
-        }
-
-        if order_id:
-            params["orderId"] = order_id
-        elif client_order_id:
-            params["origClientOrderId"] = client_order_id
-        else:
-            raise ValueError("order_id和client_order_id必须指定一个")
-
-        response = await self._request("DELETE", "/v3/order", params, signed=True)
-
-        return Order(
-            exchange=Exchange.BINANCE,
-            market=market,
-            symbol=symbol,
-            id=str(response["orderId"]),
-            client_order_id=response["clientOrderId"],
-            price=Decimal(response["price"]),
-            original_quantity=Decimal(response["origQty"]),
-            executed_quantity=Decimal(response["executedQty"]),
-            remaining_quantity=Decimal(response["origQty"]) - Decimal(response["executedQty"]),
-            status=OrderStatus(response["status"].lower()),
-            type=OrderType(response["type"].lower()),
-            side=OrderSide(response["side"].lower()),
-            created_at=datetime.fromtimestamp(response["time"] / 1000),
-            updated_at=datetime.fromtimestamp(response["updateTime"] / 1000),
-            is_working=response["status"] not in ["FILLED", "CANCELED", "REJECTED", "EXPIRED"]
-        )
-
-    async def get_order(
+        try:
+            if order_id is None and client_order_id is None:
+                raise ValidationError("订单ID和客户端订单ID不能同时为空")
+                
+            data = {"symbol": symbol}
+            if order_id is not None:
+                data["orderId"] = order_id
+            if client_order_id is not None:
+                data["origClientOrderId"] = client_order_id
+                
+            response = self._request(
+                method="DELETE",
+                endpoint="/fapi/v1/order",
+                data=data,
+                auth_required=True
+            )
+            
+            return ContractOrder(
+                exchange="binance",
+                symbol=response["symbol"],
+                order_id=str(response["orderId"]),
+                client_order_id=response.get("clientOrderId"),
+                price=float(response["price"]),
+                avg_price=0.0,
+                stop_price=float(response.get("stopPrice", 0)),
+                quantity=float(response["origQty"]),
+                executed_qty=float(response["executedQty"]),
+                status=response["status"],
+                time_in_force=TimeInForce(response["timeInForce"]),
+                type=OrderType(response["type"]),
+                side=OrderSide(response["side"]),
+                position_side=PositionSide(response["positionSide"]),
+                reduce_only=response["reduceOnly"],
+                working_type=response["workingType"],
+                created_time=response["time"],
+                updated_time=response["updateTime"]
+            )
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析订单数据失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def get_contract_order(
         self,
-        market: Market,
         symbol: str,
         order_id: Optional[str] = None,
         client_order_id: Optional[str] = None
-    ) -> Order:
-        """获取订单信息
-
+    ) -> ContractOrder:
+        """查询合约订单
+        
         Args:
-            market: 市场类型
             symbol: 交易对
             order_id: 订单ID
             client_order_id: 客户端订单ID
-
+            
         Returns:
-            Order: 订单信息
+            订单信息
         """
-        params = {
-            "symbol": symbol
-        }
-
-        if order_id:
-            params["orderId"] = order_id
-        elif client_order_id:
-            params["origClientOrderId"] = client_order_id
-        else:
-            raise ValueError("order_id和client_order_id必须指定一个")
-
-        response = await self._request("GET", "/v3/order", params, signed=True)
-
-        return Order(
-            exchange=Exchange.BINANCE,
-            market=market,
-            symbol=symbol,
-            id=str(response["orderId"]),
-            client_order_id=response["clientOrderId"],
-            price=Decimal(response["price"]),
-            original_quantity=Decimal(response["origQty"]),
-            executed_quantity=Decimal(response["executedQty"]),
-            remaining_quantity=Decimal(response["origQty"]) - Decimal(response["executedQty"]),
-            status=OrderStatus(response["status"].lower()),
-            type=OrderType(response["type"].lower()),
-            side=OrderSide(response["side"].lower()),
-            created_at=datetime.fromtimestamp(response["time"] / 1000),
-            updated_at=datetime.fromtimestamp(response["updateTime"] / 1000),
-            is_working=response["status"] not in ["FILLED", "CANCELED", "REJECTED", "EXPIRED"]
-        )
-
-    async def get_open_orders(self, market: Market, symbol: Optional[str] = None) -> List[Order]:
-        """获取未完成订单
-
+        try:
+            if order_id is None and client_order_id is None:
+                raise ValidationError("订单ID和客户端订单ID不能同时为空")
+                
+            params = {"symbol": symbol}
+            if order_id is not None:
+                params["orderId"] = order_id
+            if client_order_id is not None:
+                params["origClientOrderId"] = client_order_id
+                
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v1/order",
+                params=params,
+                auth_required=True
+            )
+            
+            return ContractOrder(
+                exchange="binance",
+                symbol=response["symbol"],
+                order_id=str(response["orderId"]),
+                client_order_id=response.get("clientOrderId"),
+                price=float(response["price"]),
+                avg_price=float(response["avgPrice"]),
+                stop_price=float(response.get("stopPrice", 0)),
+                quantity=float(response["origQty"]),
+                executed_qty=float(response["executedQty"]),
+                status=response["status"],
+                time_in_force=TimeInForce(response["timeInForce"]),
+                type=OrderType(response["type"]),
+                side=OrderSide(response["side"]),
+                position_side=PositionSide(response["positionSide"]),
+                reduce_only=response["reduceOnly"],
+                working_type=response["workingType"],
+                created_time=response["time"],
+                updated_time=response["updateTime"]
+            )
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析订单数据失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            )
+            
+    def get_open_contract_orders(
+        self,
+        symbol: Optional[str] = None
+    ) -> List[ContractOrder]:
+        """查询当前挂单
+        
         Args:
-            market: 市场类型
-            symbol: 交易对
-
+            symbol: 交易对,如果不指定则返回所有挂单
+            
         Returns:
-            List[Order]: 订单列表
+            订单列表
         """
-        endpoint = "/v3/openOrders"
-        params = {}
-        if symbol:
-            params["symbol"] = symbol
-
-        response = await self._request("GET", endpoint, params, signed=True)
-
-        orders = []
-        for item in response:
-            orders.append(Order(
-                exchange=Exchange.BINANCE,
-                market=market,
-                symbol=item["symbol"],
-                id=str(item["orderId"]),
-                client_order_id=item["clientOrderId"],
-                price=Decimal(item["price"]),
-                original_quantity=Decimal(item["origQty"]),
-                executed_quantity=Decimal(item["executedQty"]),
-                remaining_quantity=Decimal(item["origQty"]) - Decimal(item["executedQty"]),
-                status=OrderStatus(item["status"].lower()),
-                type=OrderType(item["type"].lower()),
-                side=OrderSide(item["side"].lower()),
-                created_at=datetime.fromtimestamp(item["time"] / 1000),
-                updated_at=datetime.fromtimestamp(item["updateTime"] / 1000),
-                is_working=True
-            ))
-
-        return orders
-
-    async def get_order_trades(self, market: Market, symbol: str, order_id: str) -> List[Trade]:
-        """获取订单成交记录
-
-        Args:
-            market: 市场类型
-            symbol: 交易对
-            order_id: 订单ID
-
-        Returns:
-            List[Trade]: 成交记录列表
-        """
-        endpoint = "/v3/myTrades"
-        params = {
-            "symbol": symbol,
-            "orderId": order_id
-        }
-
-        response = await self._request("GET", endpoint, params, signed=True)
-
-        trades = []
-        for item in response:
-            trades.append(Trade(
-                exchange=Exchange.BINANCE,
-                market=market,
-                symbol=symbol,
-                id=str(item["id"]),
-                price=Decimal(item["price"]),
-                quantity=Decimal(item["qty"]),
-                amount=Decimal(item["quoteQty"]),
-                timestamp=datetime.fromtimestamp(item["time"] / 1000),
-                is_buyer_maker=item["isBuyer"],
-                side=OrderSide.BUY if item["isBuyer"] else OrderSide.SELL
-            ))
-
-        return trades
-
-    async def start(self):
-        """启动API客户端"""
-        # 启动WebSocket客户端
-        await self.ws_client.start()
-
-    async def stop(self):
-        """停止API客户端"""
-        # 停止WebSocket客户端
-        await self.ws_client.stop() 
+        try:
+            response = self._request(
+                method="GET",
+                endpoint="/fapi/v1/openOrders",
+                params={"symbol": symbol} if symbol else None,
+                auth_required=True
+            )
+            
+            return [
+                ContractOrder(
+                    exchange="binance",
+                    symbol=o["symbol"],
+                    order_id=str(o["orderId"]),
+                    client_order_id=o.get("clientOrderId"),
+                    price=float(o["price"]),
+                    avg_price=float(o["avgPrice"]),
+                    stop_price=float(o.get("stopPrice", 0)),
+                    quantity=float(o["origQty"]),
+                    executed_qty=float(o["executedQty"]),
+                    status=o["status"],
+                    time_in_force=TimeInForce(o["timeInForce"]),
+                    type=OrderType(o["type"]),
+                    side=OrderSide(o["side"]),
+                    position_side=PositionSide(o["positionSide"]),
+                    reduce_only=o["reduceOnly"],
+                    working_type=o["workingType"],
+                    created_time=o["time"],
+                    updated_time=o["updateTime"]
+                )
+                for o in response
+            ]
+        except (KeyError, ValueError) as e:
+            raise APIError(
+                message=f"解析订单数据失败: {str(e)}",
+                exchange="binance",
+                code="PARSE_ERROR"
+            ) 

@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from ...common.models import (
     Market, Exchange, Trade, OrderBook, Kline, Ticker,
-    OrderType, OrderSide, OrderStatus
+    OrderType, OrderSide, OrderStatus, FundingRate
 )
 from ...common.decorators import publish_event
 
@@ -94,117 +94,122 @@ class MarketDataHandler:
         self.market = market
     
     @publish_event("trade")
-    def handle_trade(self, msg: Dict[str, Any]) -> Optional[Trade]:
-        """处理交易消息
+    def handle_trade(self, data: Dict[str, Any]):
+        """处理成交数据
         
         Args:
-            msg: 消息数据
-            
-        Returns:
-            Optional[Trade]: 交易信息
+            data: 成交数据
         """
-        try:
-            return Trade(
-                exchange=Exchange.BINANCE,
-                market=self.market,
-                symbol=msg["s"],
-                id=str(msg["t"]),
-                price=Decimal(msg["p"]),
-                quantity=Decimal(msg["q"]),
-                amount=Decimal(msg["p"]) * Decimal(msg["q"]),
-                timestamp=datetime.fromtimestamp(msg["T"] / 1000),
-                is_buyer_maker=msg["m"],
-                side=OrderSide.SELL if msg["m"] else OrderSide.BUY
-            )
-        except Exception as e:
-            print(f"处理trade消息出错: {str(e)}")
-            return None
-    
-    @publish_event("orderbook")
-    def handle_depth(self, msg: Dict[str, Any]) -> Optional[OrderBook]:
-        """处理深度消息
-        
-        Args:
-            msg: 消息数据
-            
-        Returns:
-            Optional[OrderBook]: 深度信息
-        """
-        try:
-            return OrderBook(
-                exchange=Exchange.BINANCE,
-                market=self.market,
-                symbol=msg["s"],
-                timestamp=datetime.fromtimestamp(msg["T"] / 1000),
-                bids=[(Decimal(p), Decimal(q)) for p, q in msg["b"]],
-                asks=[(Decimal(p), Decimal(q)) for p, q in msg["a"]]
-            )
-        except Exception as e:
-            print(f"处理depth消息出错: {str(e)}")
-            return None
-    
-    @publish_event("kline")
-    def handle_kline(self, msg: Dict[str, Any]) -> Optional[Kline]:
-        """处理K线消息
-        
-        Args:
-            msg: 消息数据
-            
-        Returns:
-            Optional[Kline]: K线信息
-        """
-        try:
-            k = msg["k"]
-            return Kline(
-                exchange=Exchange.BINANCE,
-                market=self.market,
-                symbol=k["s"],
-                interval=k["i"],
-                open_time=datetime.fromtimestamp(k["t"] / 1000),
-                close_time=datetime.fromtimestamp(k["T"] / 1000),
-                open_price=Decimal(k["o"]),
-                high_price=Decimal(k["h"]),
-                low_price=Decimal(k["l"]),
-                close_price=Decimal(k["c"]),
-                volume=Decimal(k["v"]),
-                quote_volume=Decimal(k["q"]),
-                trades_count=k["n"],
-                is_closed=k["x"]
-            )
-        except Exception as e:
-            print(f"处理kline消息出错: {str(e)}")
-            return None
+        trade = Trade(
+            id=str(data["t"]),
+            exchange=Exchange.BINANCE,
+            market=Market.FUTURES if "X-" in data["s"] else Market.SPOT,
+            side=OrderSide.BUY if data["m"] else OrderSide.SELL,
+            symbol=data["s"],
+            price=Decimal(str(data["p"])),
+            quantity=Decimal(str(data["q"])),
+            timestamp=datetime.fromtimestamp(data["T"] / 1000)
+        )
+        return trade
     
     @publish_event("ticker")
-    def handle_ticker(self, msg: Dict[str, Any]) -> Optional[Ticker]:
-        """处理Ticker消息
+    def handle_ticker(self, data: Dict[str, Any]):
+        """处理24小时价格变动
         
         Args:
-            msg: 消息数据
-            
-        Returns:
-            Optional[Ticker]: Ticker信息
+            data: 价格数据
         """
-        try:
-            return Ticker(
-                exchange=Exchange.BINANCE,
-                market=self.market,
-                symbol=msg["s"],
-                price=Decimal(msg["c"]),
-                price_change=Decimal(msg["p"]),
-                price_change_percent=Decimal(msg["P"]),
-                weighted_avg_price=Decimal(msg["w"]),
-                open_price=Decimal(msg["o"]),
-                high_price=Decimal(msg["h"]),
-                low_price=Decimal(msg["l"]),
-                volume=Decimal(msg["v"]),
-                quote_volume=Decimal(msg["q"]),
-                open_time=datetime.fromtimestamp(msg["O"] / 1000),
-                close_time=datetime.fromtimestamp(msg["C"] / 1000),
-                first_trade_id=str(msg["F"]),
-                last_trade_id=str(msg["L"]),
-                trades_count=msg["n"]
-            )
-        except Exception as e:
-            print(f"处理ticker消息出错: {str(e)}")
-            return None 
+        ticker = Ticker(
+            exchange=Exchange.BINANCE,
+            market=Market.FUTURES if "X-" in data["s"] else Market.SPOT,
+            symbol=data["s"],
+            price=Decimal(str(data["c"])),
+            price_change=Decimal(str(data["p"])),
+            price_change_percent=Decimal(str(data["P"])),
+            weighted_avg_price=Decimal(str(data["w"])),
+            open_price=Decimal(str(data["o"])),
+            high_price=Decimal(str(data["h"])),
+            low_price=Decimal(str(data["l"])),
+            volume=Decimal(str(data["v"])),
+            quote_volume=Decimal(str(data["q"])),
+            open_time=datetime.fromtimestamp(data["O"] / 1000),
+            close_time=datetime.fromtimestamp(data["C"] / 1000),
+            first_trade_id=str(data["F"]),
+            last_trade_id=str(data["L"]),
+            trades_count=data["n"]
+        )
+        return ticker
+    
+    @publish_event("depth")
+    def handle_depth(self, data: Dict[str, Any]):
+        """处理深度数据
+        
+        Args:
+            data: 深度数据
+        """
+        order_book = OrderBook(
+            exchange=Exchange.BINANCE,
+            market=Market.FUTURES if "X-" in data["s"] else Market.SPOT,
+            symbol=data["s"],
+            bids=[(Decimal(str(p)), Decimal(str(q))) for p, q in data["b"]],
+            asks=[(Decimal(str(p)), Decimal(str(q))) for p, q in data["a"]],
+            timestamp=datetime.fromtimestamp(data["T"] / 1000) if "T" in data else datetime.now()
+        )
+        return order_book
+    
+    @publish_event("kline")
+    def handle_kline(self, data: Dict[str, Any]):
+        """处理K线数据
+        
+        Args:
+            data: K线数据
+        """
+        k = data["k"]
+        kline = Kline(
+            exchange=Exchange.BINANCE,
+            market=Market.FUTURES if "X-" in data["s"] else Market.SPOT,
+            symbol=k["s"],
+            interval=k["i"],
+            open_time=datetime.fromtimestamp(k["t"] / 1000),
+            close_time=datetime.fromtimestamp(k["T"] / 1000),
+            open_price=Decimal(str(k["o"])),
+            high_price=Decimal(str(k["h"])),
+            low_price=Decimal(str(k["l"])),
+            close_price=Decimal(str(k["c"])),
+            volume=Decimal(str(k["v"])),
+            quote_volume=Decimal(str(k["q"])),
+            trades_count=k["n"],
+            is_closed=k["x"]
+        )
+        return kline
+    
+    @publish_event("mark_price")
+    def handle_mark_price(self, data: Dict[str, Any]):
+        """处理标记价格数据
+        
+        Args:
+            data: 标记价格数据
+        """
+        return {
+            "symbol": data["s"],
+            "mark_price": Decimal(str(data["p"])),
+            "index_price": Decimal(str(data["i"])),
+            "estimated_settle_price": Decimal(str(data["P"])),
+            "timestamp": datetime.fromtimestamp(data["T"] / 1000)
+        }
+    
+    @publish_event("funding_rate")
+    def handle_funding_rate(self, data: Dict[str, Any]):
+        """处理资金费率数据
+        
+        Args:
+            data: 资金费率数据
+        """
+        funding = FundingRate(
+            symbol=data["s"],
+            funding_rate=Decimal(str(data["r"])),
+            estimated_rate=Decimal(str(data["p"])),
+            next_funding_time=datetime.fromtimestamp(data["T"] / 1000),
+            timestamp=datetime.fromtimestamp(data["E"] / 1000)
+        )
+        return funding 

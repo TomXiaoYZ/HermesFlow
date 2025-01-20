@@ -19,44 +19,97 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Virtual Environment
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv
 venv/
-env/
 ENV/
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.env
+.env.*
+!.env.example
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+
+# OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
 # Project specific
-.env
-*.log
 logs/
-data/
-*.db
-*.sqlite3
+*.log
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.python-version
 
-# Test
+# Docker
+.docker/
+*.env
+!example.env
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+.terraformrc
+terraform.rc
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Environment
+.env
+.env.*
+!.env.example
+venv/
+.python-version
+
+# Testing
 .coverage
 htmlcov/
 .pytest_cache/
 .mypy_cache/
 
-# Dependencies
-node_modules/
-package-lock.json
+# package-lock.json
 yarn.lock
-
-# Build
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
 
 # Documentation
 docs/_build/
@@ -69,10 +122,6 @@ site/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
-
-# Docker
-.docker/
-docker-compose.override.yml
 
 # Secrets
 *.pem

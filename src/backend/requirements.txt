@@ -15,4 +15,5 @@ redis==5.0.1
 clickhouse-driver==0.2.6
 kafka-python==2.0.2
 prometheus-client==0.20.0
-structlog==24.1.0 
+structlog==24.1.0
+requests==2.31.0 
