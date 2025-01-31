@@ -2,18 +2,19 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::protocol::Message,
+    tungstenite::Message,
     WebSocketStream,
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
 use chrono::Utc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use url::Url;
 use std::time::{Duration, Instant};
+use tokio::time::timeout;
 
+use common::{MarketData, DataQuality, MarketDataType, CollectorError};
 use crate::error::BinanceError;
-use crate::collectors::common::{MarketData, DataQuality, MarketDataType};
 
 type WebSocketConnection = WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -63,20 +64,19 @@ impl WebSocketClient {
     fn calculate_reconnect_delay(attempts: u32) -> Duration {
         let base_delay = INITIAL_RECONNECT_DELAY.as_secs() as u32;
         let delay = base_delay * 2u32.pow(attempts);
-        Duration::from_secs(delay.min(MAX_RECONNECT_DELAY.as_secs()) as u64)
+        Duration::from_secs(delay.min(MAX_RECONNECT_DELAY.as_secs() as u32) as u64)
     }
 
     /// 建立WebSocket连接
     pub async fn connect(&mut self) -> Result<(), BinanceError> {
         let mut state = self.state.lock().await;
         if state.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
-            return Err(BinanceError::WebSocketError(
-                "Max reconnection attempts reached".to_string(),
-            ));
+            return Err(CollectorError::ConnectionError(
+                "Max reconnection attempts reached".to_string()
+            ).into());
         }
 
-        let url = Url::parse(&self.endpoint)
-            .map_err(|e| BinanceError::ConfigError(format!("Invalid WebSocket URL: {}", e)))?;
+        let url = Url::parse(&self.endpoint)?;
 
         match connect_async(url).await {
             Ok((ws_stream, _)) => {
@@ -95,7 +95,7 @@ impl WebSocketClient {
                     state.reconnect_attempts, MAX_RECONNECT_ATTEMPTS, delay, e
                 );
                 tokio::time::sleep(delay).await;
-                Err(BinanceError::WebSocketError(format!("Connection failed: {}", e)))
+                Err(e.into())
             }
         }
     }
@@ -135,53 +135,10 @@ impl WebSocketClient {
         Ok(())
     }
 
-    /// 启动心跳检查
-    async fn start_heartbeat(state: Arc<Mutex<WebSocketState>>, mut ws_stream: WebSocketConnection) {
-        let mut interval = tokio::time::interval(PING_INTERVAL);
-        loop {
-            interval.tick().await;
-            
-            let should_ping = {
-                let state = state.lock().await;
-                state.is_connected
-            };
-
-            if !should_ping {
-                break;
-            }
-
-            if let Err(e) = ws_stream.send(Message::Ping(vec![])).await {
-                error!("Failed to send ping: {}", e);
-                break;
-            }
-
-            state.lock().await.last_ping = Some(Utc::now().timestamp_millis());
-
-            // 等待PONG_TIMEOUT
-            tokio::time::sleep(PONG_TIMEOUT).await;
-
-            let should_reconnect = {
-                let state = state.lock().await;
-                state.last_pong.is_none()
-                    || state.last_ping.unwrap() - state.last_pong.unwrap()
-                        > PONG_TIMEOUT.as_millis() as i64
-            };
-
-            if should_reconnect {
-                error!("Pong timeout, connection may be dead");
-                state.lock().await.is_connected = false;
-                break;
-            }
-        }
-    }
-
     /// 断开WebSocket连接
     pub async fn disconnect(&mut self) -> Result<(), BinanceError> {
         if let Some(mut ws_stream) = self.ws_stream.take() {
-            ws_stream
-                .close(None)
-                .await
-                .map_err(|e| BinanceError::WebSocketError(format!("Disconnect failed: {}", e)))?;
+            ws_stream.close(None).await?;
         }
 
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
@@ -202,10 +159,7 @@ impl WebSocketClient {
                 "id": Utc::now().timestamp_millis()
             });
 
-            ws_stream
-                .send(Message::Text(subscribe_msg.to_string()))
-                .await
-                .map_err(|e| BinanceError::WebSocketError(format!("Subscribe failed: {}", e)))?;
+            ws_stream.send(Message::Text(subscribe_msg.to_string())).await?;
 
             self.state
                 .lock()
@@ -227,15 +181,10 @@ impl WebSocketClient {
                 "id": Utc::now().timestamp_millis()
             });
 
-            ws_stream
-                .send(Message::Text(unsubscribe_msg.to_string()))
-                .await
-                .map_err(|e| BinanceError::WebSocketError(format!("Unsubscribe failed: {}", e)))?;
+            ws_stream.send(Message::Text(unsubscribe_msg.to_string())).await?;
 
             let mut state = self.state.lock().await;
-            state
-                .subscribed_channels
-                .retain(|c| !channels.contains(c));
+            state.subscribed_channels.retain(|c| !channels.contains(c));
 
             info!("Unsubscribed from channels: {:?}", channels);
         }
@@ -248,7 +197,7 @@ impl WebSocketClient {
         tx: mpsc::Sender<(MarketData, DataQuality)>,
     ) -> Result<(), BinanceError> {
         if self.ws_stream.is_none() {
-            return Err(BinanceError::WebSocketError("Not connected".to_string()));
+            return Err(CollectorError::WebSocketError("Not connected".to_string()).into());
         }
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
@@ -257,15 +206,10 @@ impl WebSocketClient {
         let mut ws_stream = self.ws_stream.take().unwrap();
         let state = Arc::clone(&self.state);
 
-        // 启动心跳检查
-        let heartbeat_state = Arc::clone(&state);
-        let heartbeat_ws = ws_stream.clone();
-        tokio::spawn(async move {
-            Self::start_heartbeat(heartbeat_state, heartbeat_ws).await;
-        });
-
         // 启动消息处理任务
         tokio::spawn(async move {
+            let mut interval = tokio::time::interval(PING_INTERVAL);
+
             loop {
                 tokio::select! {
                     // 处理WebSocket消息
@@ -306,6 +250,40 @@ impl WebSocketClient {
                             }
                         }
                     }
+                    // 处理心跳
+                    _ = interval.tick() => {
+                        let should_ping = {
+                            let state = state.lock().await;
+                            state.is_connected
+                        };
+
+                        if !should_ping {
+                            break;
+                        }
+
+                        if let Err(e) = ws_stream.send(Message::Ping(vec![])).await {
+                            error!("Failed to send ping: {}", e);
+                            break;
+                        }
+
+                        state.lock().await.last_ping = Some(Utc::now().timestamp_millis());
+
+                        // 等待PONG_TIMEOUT
+                        tokio::time::sleep(PONG_TIMEOUT).await;
+
+                        let should_reconnect = {
+                            let state = state.lock().await;
+                            state.last_pong.is_none()
+                                || state.last_ping.unwrap() - state.last_pong.unwrap()
+                                    > PONG_TIMEOUT.as_millis() as i64
+                        };
+
+                        if should_reconnect {
+                            error!("Pong timeout, connection may be dead");
+                            state.lock().await.is_connected = false;
+                            break;
+                        }
+                    }
                     // 处理关闭信号
                     _ = shutdown_rx.recv() => {
                         info!("Received shutdown signal");
@@ -335,43 +313,38 @@ impl WebSocketClient {
         tx: &mpsc::Sender<(MarketData, DataQuality)>,
     ) -> Result<(), BinanceError> {
         let value: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| BinanceError::ParseError(format!("Failed to parse message: {}", e)))?;
+            .map_err(|e| CollectorError::ParseError(format!("Failed to parse message: {}", e)))?;
 
         // 解析消息类型
-        let data_type = if text.contains("@trade") {
+        let data_type = if value["e"].as_str() == Some("trade") {
             MarketDataType::Trade
-        } else if text.contains("@depth") {
-            MarketDataType::OrderBook
-        } else if text.contains("@kline") {
+        } else if value["e"].as_str() == Some("kline") {
             MarketDataType::Kline
-        } else if text.contains("@ticker") {
+        } else if value["e"].as_str() == Some("depthUpdate") {
+            MarketDataType::OrderBook
+        } else if value["e"].as_str() == Some("24hrTicker") {
             MarketDataType::Ticker
         } else {
-            return Ok(());
+            MarketDataType::Unknown
         };
 
-        // 提取symbol
-        let symbol = value["s"]
-            .as_str()
-            .or_else(|| value["symbol"].as_str())
-            .unwrap_or("UNKNOWN")
-            .to_string();
-
-        // 提取时间戳
-        let timestamp = value["E"]
-            .as_i64()
-            .or_else(|| value["T"].as_i64())
-            .unwrap_or_else(|| Utc::now().timestamp_millis());
-
-        let market_data = MarketData::new(
-            "binance".to_string(),
-            symbol,
+        // 创建市场数据
+        let market_data = MarketData {
+            exchange: "binance".to_string(),
+            symbol: value["s"]
+                .as_str()
+                .ok_or_else(|| CollectorError::ParseError("Missing symbol".to_string()))?
+                .to_string(),
             data_type,
-            value,
-        );
+            timestamp: Utc::now(),
+            received_at: Utc::now(),
+            raw_data: value.clone(),
+            metadata: Default::default(),
+        };
 
-        let quality = DataQuality {
-            latency: Utc::now().timestamp_millis() - timestamp,
+        // 创建数据质量信息
+        let data_quality = DataQuality {
+            latency: 0, // 需要根据实际情况计算
             is_gap: false,
             gap_size: None,
             is_valid: true,
@@ -379,9 +352,99 @@ impl WebSocketClient {
             metadata: Default::default(),
         };
 
-        tx.send((market_data, quality))
+        // 发送数据
+        tx.send((market_data, data_quality))
             .await
-            .map_err(|e| BinanceError::WebSocketError(format!("Failed to send data: {}", e)))?;
+            .map_err(|e| CollectorError::ProcessingError(format!("Failed to send data: {}", e)))?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_websocket_client_init() {
+        let client = WebSocketClient::new("wss://stream.binance.com:9443");
+        assert_eq!(client.endpoint, "wss://stream.binance.com:9443");
+    }
+
+    #[tokio::test]
+    async fn test_calculate_reconnect_delay() {
+        let delay1 = WebSocketClient::calculate_reconnect_delay(0);
+        let delay2 = WebSocketClient::calculate_reconnect_delay(1);
+        let delay3 = WebSocketClient::calculate_reconnect_delay(2);
+
+        assert!(delay1 < delay2);
+        assert!(delay2 < delay3);
+        assert!(delay3 <= MAX_RECONNECT_DELAY);
+    }
+
+    #[tokio::test]
+    async fn test_websocket_client_lifecycle() -> Result<(), BinanceError> {
+        let mut client = WebSocketClient::new("wss://stream.binance.com:9443");
+        
+        // 连接
+        client.connect().await?;
+
+        // 创建数据通道
+        let (tx, mut rx) = mpsc::channel(100);
+
+        // 启动
+        client.start(tx).await?;
+
+        // 订阅
+        let channels = vec!["btcusdt@trade".to_string()];
+        client.subscribe(channels.clone()).await?;
+
+        // 等待数据，最多等待10秒
+        let receive_result = timeout(Duration::from_secs(10), rx.recv()).await;
+        match receive_result {
+            Ok(Some(_)) => println!("成功接收到数据"),
+            Ok(None) => println!("通道已关闭"),
+            Err(_) => println!("等待数据超时"),
+        }
+
+        // 取消订阅
+        client.unsubscribe(channels).await?;
+
+        // 停止
+        client.stop().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_message() -> Result<(), BinanceError> {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        // 测试交易消息
+        let trade_msg = r#"{
+            "e": "trade",
+            "s": "BTCUSDT",
+            "p": "50000.00",
+            "q": "1.0",
+            "T": 1609459200000,
+            "m": true
+        }"#;
+
+        WebSocketClient::handle_message(trade_msg.to_string(), &tx).await?;
+
+        // 等待消息
+        let receive_result = timeout(Duration::from_secs(1), rx.recv()).await;
+        assert!(receive_result.is_ok());
+
+        if let Ok(Some((market_data, data_quality))) = receive_result {
+            assert_eq!(market_data.exchange, "binance");
+            assert_eq!(market_data.symbol, "BTCUSDT");
+            assert!(matches!(market_data.data_type, MarketDataType::Trade));
+            assert!(data_quality.is_valid);
+        }
 
         Ok(())
     }

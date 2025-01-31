@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "src/data_service/collectors/crypto/binance"
+]
+
+resolver = "2" 

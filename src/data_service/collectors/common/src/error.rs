@@ -2,8 +2,11 @@ use thiserror::Error;
 use std::io;
 
 /// 数据采集错误类型
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum CollectorError {
+    #[error("初始化错误: {0}")]
+    InitError(String),
+
     #[error("连接错误: {0}")]
     ConnectionError(String),
 
@@ -13,8 +16,8 @@ pub enum CollectorError {
     #[error("订阅错误: {0}")]
     SubscriptionError(String),
 
-    #[error("数据解析错误: {0}")]
-    ParseError(String),
+    #[error("数据处理错误: {0}")]
+    ProcessingError(String),
 
     #[error("配置错误: {0}")]
     ConfigError(String),
@@ -25,13 +28,22 @@ pub enum CollectorError {
         message: String,
     },
 
+    #[error("WebSocket错误: {0}")]
+    WebSocketError(String),
+
+    #[error("REST API错误: {code} - {msg}")]
+    RestApiError { code: i32, msg: String },
+
+    #[error("解析错误: {0}")]
+    ParseError(String),
+
     #[error("速率限制错误")]
     RateLimitError,
 
     #[error("网络错误: {0}")]
     NetworkError(#[from] io::Error),
 
-    #[error("JSON序列化错误: {0}")]
+    #[error("序列化错误: {0}")]
     SerializationError(#[from] serde_json::Error),
 
     #[error("未知错误: {0}")]

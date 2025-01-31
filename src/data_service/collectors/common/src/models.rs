@@ -2,9 +2,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use serde_json::Value;
 
 /// 市场数据类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MarketDataType {
     Trade,           // 交易数据
     OrderBook,       // 订单簿数据
@@ -14,6 +15,7 @@ pub enum MarketDataType {
     IndexPrice,     // 指数价格
     MarkPrice,      // 标记价格
     FundingRate,    // 资金费率
+    Unknown,
 }
 
 /// 统一市场数据模型
@@ -24,7 +26,7 @@ pub struct MarketData {
     pub data_type: MarketDataType,          // 数据类型
     pub timestamp: DateTime<Utc>,           // 数据时间戳
     pub received_at: DateTime<Utc>,         // 数据接收时间
-    pub raw_data: serde_json::Value,        // 原始数据
+    pub raw_data: Value,        // 原始数据
     pub metadata: HashMap<String, String>,   // 元数据
 }
 
@@ -120,7 +122,7 @@ impl MarketData {
         exchange: String,
         symbol: String,
         data_type: MarketDataType,
-        raw_data: serde_json::Value,
+        raw_data: Value,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -139,7 +141,7 @@ impl MarketData {
         symbol: String,
         data_type: MarketDataType,
         timestamp: DateTime<Utc>,
-        raw_data: serde_json::Value,
+        raw_data: Value,
     ) -> Self {
         Self {
             exchange,
@@ -155,4 +157,14 @@ impl MarketData {
     pub fn add_metadata(&mut self, key: &str, value: &str) {
         self.metadata.insert(key.to_string(), value.to_string());
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectorConfig {
+    pub endpoint: String,
+    pub api_key: Option<String>,
+    pub api_secret: Option<String>,
+    pub symbols: Vec<String>,
+    pub channels: Vec<String>,
+    pub options: HashMap<String, Value>,
 } 

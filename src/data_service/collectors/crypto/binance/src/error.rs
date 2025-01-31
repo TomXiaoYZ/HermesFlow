@@ -1,50 +1,38 @@
 use thiserror::Error;
-use crate::common::error::CollectorError;
+use common::CollectorError;
+use tokio_tungstenite::tungstenite;
+use url::ParseError;
+use reqwest;
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum BinanceError {
-    #[error("WebSocket错误: {0}")]
-    WebSocketError(String),
-
-    #[error("REST API错误: {code} - {msg}")]
-    ApiError { code: i32, msg: String },
-
-    #[error("数据解析错误: {0}")]
-    ParseError(String),
-
-    #[error("配置错误: {0}")]
-    ConfigError(String),
+    #[error(transparent)]
+    Collector(#[from] CollectorError),
 
     #[error(transparent)]
-    CollectorError(#[from] CollectorError),
+    WebSocket(#[from] tungstenite::Error),
 
     #[error(transparent)]
-    WebSocketProtocolError(#[from] tokio_tungstenite::tungstenite::Error),
+    Url(#[from] ParseError),
 
     #[error(transparent)]
-    ReqwestError(#[from] reqwest::Error),
-
-    #[error(transparent)]
-    SerdeError(#[from] serde_json::Error),
+    Request(#[from] reqwest::Error),
 }
 
+// 为了方便使用，添加类型别名
+pub type Result<T> = std::result::Result<T, BinanceError>;
+
+// 实现从各种错误类型到 CollectorError 的转换
 impl From<BinanceError> for CollectorError {
     fn from(err: BinanceError) -> Self {
         match err {
-            BinanceError::WebSocketError(msg) => CollectorError::ConnectionError(msg),
-            BinanceError::ApiError { code, msg } => CollectorError::ApiError {
-                status_code: code as u16,
-                message: msg,
-            },
-            BinanceError::ParseError(msg) => CollectorError::ParseError(msg),
-            BinanceError::ConfigError(msg) => CollectorError::ConfigError(msg),
-            BinanceError::CollectorError(e) => e,
-            BinanceError::WebSocketProtocolError(e) => CollectorError::ConnectionError(e.to_string()),
-            BinanceError::ReqwestError(e) => CollectorError::NetworkError(std::io::Error::new(
+            BinanceError::Collector(e) => e,
+            BinanceError::WebSocket(e) => CollectorError::WebSocketError(e.to_string()),
+            BinanceError::Url(e) => CollectorError::ConfigError(e.to_string()),
+            BinanceError::Request(e) => CollectorError::NetworkError(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 e.to_string(),
             )),
-            BinanceError::SerdeError(e) => CollectorError::SerializationError(e),
         }
     }
 } 

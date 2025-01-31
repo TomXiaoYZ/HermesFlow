@@ -1,17 +1,21 @@
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 use reqwest::{Client, RequestBuilder, Response};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
+use std::time::{Duration, Instant};
+use tracing::error;
+use chrono::Utc;
+use serde_json::Value;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use std::collections::HashMap;
-use url::Url;
-use tracing::{debug, error, info, warn};
 
+use common::{MarketData, DataQuality, MarketDataType, CollectorError};
 use crate::error::BinanceError;
-use crate::collectors::common::{MarketData, DataQuality, MarketDataType};
 
 type HmacSha256 = Hmac<Sha256>;
+
+const DEFAULT_RECV_WINDOW: u64 = 5000;
+const DEFAULT_WEIGHT_PER_MINUTE: u32 = 1200;
 
 /// REST客户端配置
 #[derive(Debug, Clone)]
@@ -19,252 +23,277 @@ pub struct RestClientConfig {
     pub endpoint: String,
     pub api_key: Option<String>,
     pub api_secret: Option<String>,
-    pub recv_window: Option<u64>,
+    pub recv_window: u64,
 }
 
-/// 请求权重跟踪器
+impl Default for RestClientConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: "https://api.binance.com".to_string(),
+            api_key: None,
+            api_secret: None,
+            recv_window: DEFAULT_RECV_WINDOW,
+        }
+    }
+}
+
+/// 速率限制器
 #[derive(Debug)]
 struct RateLimiter {
-    last_request: Instant,
-    weight_count: u32,
-    reset_time: Instant,
+    weight_per_minute: u32,
+    weights: Vec<Instant>,
 }
 
 impl RateLimiter {
-    fn new() -> Self {
+    fn new(weight_per_minute: u32) -> Self {
         Self {
-            last_request: Instant::now(),
-            weight_count: 0,
-            reset_time: Instant::now(),
+            weight_per_minute,
+            weights: Vec::new(),
         }
     }
 
-    async fn check_rate_limit(&mut self) -> Result<(), BinanceError> {
+    fn check_rate_limit(&mut self) -> bool {
         let now = Instant::now();
-        if now >= self.reset_time {
-            self.weight_count = 0;
-            self.reset_time = now + Duration::from_secs(60);
-        }
+        self.weights.retain(|&t| now.duration_since(t) < Duration::from_secs(60));
+        self.weights.len() as u32 <= self.weight_per_minute
+    }
 
-        if self.weight_count >= 1200 {
-            return Err(BinanceError::RateLimitError);
+    fn add_weight(&mut self, weight: u32) {
+        let now = Instant::now();
+        for _ in 0..weight {
+            self.weights.push(now);
         }
-
-        // 确保请求间隔至少20ms
-        if now - self.last_request < Duration::from_millis(20) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-
-        self.weight_count += 1;
-        self.last_request = Instant::now();
-        Ok(())
     }
 }
 
-/// REST API客户端
+/// REST客户端
 pub struct RestClient {
     config: RestClientConfig,
     client: Client,
-    rate_limiter: Mutex<RateLimiter>,
+    rate_limiter: Arc<Mutex<RateLimiter>>,
 }
 
 impl RestClient {
     pub fn new(
         endpoint: &str,
-        api_key: Option<&str>,
-        api_secret: Option<&str>,
+        api_key: Option<String>,
+        api_secret: Option<String>,
     ) -> Self {
-        let config = RestClientConfig {
-            endpoint: endpoint.to_string(),
-            api_key: api_key.map(String::from),
-            api_secret: api_secret.map(String::from),
-            recv_window: Some(5000),
-        };
-
         Self {
-            config,
+            config: RestClientConfig {
+                endpoint: endpoint.to_string(),
+                api_key,
+                api_secret,
+                recv_window: DEFAULT_RECV_WINDOW,
+            },
             client: Client::new(),
-            rate_limiter: Mutex::new(RateLimiter::new()),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(DEFAULT_WEIGHT_PER_MINUTE))),
         }
     }
 
-    /// 生成签名
+    async fn check_rate_limit(&self) -> Result<(), BinanceError> {
+        let mut rate_limiter = self.rate_limiter.lock().await;
+        if !rate_limiter.check_rate_limit() {
+            return Err(CollectorError::RateLimitError.into());
+        }
+        rate_limiter.add_weight(1);
+        Ok(())
+    }
+
     fn sign_request(&self, params: &str) -> Result<String, BinanceError> {
         if let Some(secret) = &self.config.api_secret {
             let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-                .map_err(|e| BinanceError::ConfigError(format!("Invalid API secret: {}", e)))?;
+                .map_err(|e| CollectorError::ConfigError(format!("Invalid API secret: {}", e)))?;
             mac.update(params.as_bytes());
             let signature = hex::encode(mac.finalize().into_bytes());
             Ok(signature)
         } else {
-            Err(BinanceError::AuthError("API secret not configured".to_string()))
+            Err(CollectorError::ConfigError("Missing API secret".to_string()).into())
         }
     }
 
-    /// 添加通用请求头
-    fn add_headers(&self, builder: RequestBuilder) -> RequestBuilder {
-        let mut builder = builder.header("User-Agent", "HermesFlow/1.0");
-        
+    fn add_api_key_header(&self, builder: RequestBuilder) -> RequestBuilder {
         if let Some(api_key) = &self.config.api_key {
-            builder = builder.header("X-MBX-APIKEY", api_key);
+            builder.header("X-MBX-APIKEY", api_key)
+        } else {
+            builder
         }
-        
-        builder
     }
 
-    /// 发送公共GET请求
-    pub async fn public_get<T: DeserializeOwned>(
+    async fn handle_response<T: DeserializeOwned>(
         &self,
-        path: &str,
-        params: Option<&HashMap<String, String>>,
+        response: Response,
     ) -> Result<T, BinanceError> {
-        self.rate_limiter.lock().await.check_rate_limit().await?;
-
-        let url = format!("{}{}", self.config.endpoint, path);
-        let mut url = Url::parse(&url)
-            .map_err(|e| BinanceError::ConfigError(format!("Invalid URL: {}", e)))?;
-
-        if let Some(params) = params {
-            let mut query_pairs = url.query_pairs_mut();
-            for (key, value) in params {
-                query_pairs.append_pair(key, value);
-            }
-        }
-
-        let response = self
-            .add_headers(self.client.get(url.as_str()))
-            .send()
-            .await
-            .map_err(|e| BinanceError::ReqwestError(e))?;
-
-        self.handle_response(response).await
-    }
-
-    /// 发送签名GET请求
-    pub async fn signed_get<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        mut params: HashMap<String, String>,
-    ) -> Result<T, BinanceError> {
-        self.rate_limiter.lock().await.check_rate_limit().await?;
-
-        // 添加时间戳和接收窗口
-        params.insert("timestamp".to_string(), chrono::Utc::now().timestamp_millis().to_string());
-        if let Some(recv_window) = self.config.recv_window {
-            params.insert("recvWindow".to_string(), recv_window.to_string());
-        }
-
-        // 生成签名
-        let mut param_str = String::new();
-        for (key, value) in &params {
-            if !param_str.is_empty() {
-                param_str.push('&');
-            }
-            param_str.push_str(&format!("{}={}", key, value));
-        }
-        let signature = self.sign_request(&param_str)?;
-        params.insert("signature".to_string(), signature);
-
-        let url = format!("{}{}", self.config.endpoint, path);
-        let mut url = Url::parse(&url)
-            .map_err(|e| BinanceError::ConfigError(format!("Invalid URL: {}", e)))?;
-
-        {
-            let mut query_pairs = url.query_pairs_mut();
-            for (key, value) in params {
-                query_pairs.append_pair(&key, &value);
-            }
-        }
-
-        let response = self
-            .add_headers(self.client.get(url.as_str()))
-            .send()
-            .await
-            .map_err(|e| BinanceError::ReqwestError(e))?;
-
-        self.handle_response(response).await
-    }
-
-    /// 处理API响应
-    async fn handle_response<T: DeserializeOwned>(&self, response: Response) -> Result<T, BinanceError> {
         let status = response.status();
-        let text = response.text().await
-            .map_err(|e| BinanceError::ReqwestError(e))?;
+        let text = response.text().await.map_err(|e| {
+            CollectorError::ApiError {
+                status_code: status.as_u16(),
+                message: e.to_string(),
+            }
+        })?;
 
         if !status.is_success() {
-            let error: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|e| BinanceError::ParseError(format!("Failed to parse error response: {}", e)))?;
-            
-            return Err(BinanceError::ApiError {
-                code: error["code"].as_i64().unwrap_or(-1) as i32,
-                msg: error["msg"].as_str().unwrap_or("Unknown error").to_string(),
-            });
+            return Err(CollectorError::ApiError {
+                status_code: status.as_u16(),
+                message: text,
+            }.into());
         }
 
-        serde_json::from_str(&text)
-            .map_err(|e| BinanceError::ParseError(format!("Failed to parse response: {}", e)))
+        serde_json::from_str(&text).map_err(|e| {
+            CollectorError::ParseError(format!("Failed to parse response: {}", e))
+        })?;
+
+        Ok(serde_json::from_str(&text)?)
     }
 
-    /// 获取交易对信息
-    pub async fn get_exchange_info(&self) -> Result<serde_json::Value, BinanceError> {
-        self.public_get("/api/v3/exchangeInfo", None).await
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, BinanceError> {
+        self.check_rate_limit().await?;
+
+        let url = format!("{}{}", self.config.endpoint, path);
+        let response = self.client.get(&url).send().await?;
+
+        self.handle_response(response).await
     }
 
-    /// 获取最新价格
-    pub async fn get_ticker_price(&self, symbol: &str) -> Result<serde_json::Value, BinanceError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        self.public_get("/api/v3/ticker/price", Some(&params)).await
+    pub async fn get_signed<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        params: &str,
+    ) -> Result<T, BinanceError> {
+        self.check_rate_limit().await?;
+
+        let timestamp = Utc::now().timestamp_millis();
+        let mut signed_params = format!(
+            "{}{}timestamp={}&recvWindow={}",
+            params,
+            if params.is_empty() { "" } else { "&" },
+            timestamp,
+            self.config.recv_window
+        );
+
+        let signature = self.sign_request(&signed_params)?;
+        signed_params.push_str(&format!("&signature={}", signature));
+
+        let url = format!("{}{}?{}", self.config.endpoint, path, signed_params);
+        let response = self.add_api_key_header(self.client.get(&url)).send().await?;
+
+        self.handle_response(response).await
     }
 
-    /// 获取24小时价格统计
-    pub async fn get_ticker_24h(&self, symbol: &str) -> Result<serde_json::Value, BinanceError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        self.public_get("/api/v3/ticker/24hr", Some(&params)).await
+    pub async fn get_exchange_info(&self) -> Result<Value, BinanceError> {
+        self.get("/api/v3/exchangeInfo").await
     }
 
-    /// 获取K线数据
+    pub async fn get_ticker_price(&self, symbol: &str) -> Result<Value, BinanceError> {
+        self.get(&format!("/api/v3/ticker/price?symbol={}", symbol))
+            .await
+    }
+
+    pub async fn get_ticker_24h(&self, symbol: &str) -> Result<Value, BinanceError> {
+        self.get(&format!("/api/v3/ticker/24hr?symbol={}", symbol))
+            .await
+    }
+
     pub async fn get_klines(
         &self,
         symbol: &str,
         interval: &str,
         limit: Option<u32>,
-    ) -> Result<serde_json::Value, BinanceError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
-        params.insert("interval".to_string(), interval.to_string());
+    ) -> Result<Value, BinanceError> {
+        let mut url = format!(
+            "/api/v3/klines?symbol={}&interval={}",
+            symbol, interval
+        );
         if let Some(limit) = limit {
-            params.insert("limit".to_string(), limit.to_string());
+            url.push_str(&format!("&limit={}", limit));
         }
-        self.public_get("/api/v3/klines", Some(&params)).await
+        self.get(&url).await
     }
 
-    /// 获取深度信息
     pub async fn get_depth(
         &self,
         symbol: &str,
         limit: Option<u32>,
-    ) -> Result<serde_json::Value, BinanceError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+    ) -> Result<Value, BinanceError> {
+        let mut url = format!("/api/v3/depth?symbol={}", symbol);
         if let Some(limit) = limit {
-            params.insert("limit".to_string(), limit.to_string());
+            url.push_str(&format!("&limit={}", limit));
         }
-        self.public_get("/api/v3/depth", Some(&params)).await
+        self.get(&url).await
     }
 
-    /// 获取最近成交
-    pub async fn get_trades(
+    pub async fn get_recent_trades(
         &self,
         symbol: &str,
         limit: Option<u32>,
-    ) -> Result<serde_json::Value, BinanceError> {
-        let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol.to_string());
+    ) -> Result<Value, BinanceError> {
+        let mut url = format!("/api/v3/trades?symbol={}", symbol);
         if let Some(limit) = limit {
-            params.insert("limit".to_string(), limit.to_string());
+            url.push_str(&format!("&limit={}", limit));
         }
-        self.public_get("/api/v3/trades", Some(&params)).await
+        self.get(&url).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_rest_client_init() {
+        let client = RestClient::new(
+            "https://api.binance.com",
+            Some("test_key".to_string()),
+            Some("test_secret".to_string()),
+        );
+        assert_eq!(client.config.endpoint, "https://api.binance.com");
+        assert_eq!(client.config.api_key, Some("test_key".to_string()));
+        assert_eq!(client.config.api_secret, Some("test_secret".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_rest_client_rate_limit() {
+        let client = RestClient::new("https://api.binance.com", None, None);
+        
+        // 测试速率限制检查
+        for _ in 0..5 {
+            let result = client.check_rate_limit().await;
+            assert!(result.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rest_client_get_ticker() {
+        let client = RestClient::new("https://api.binance.com", None, None);
+        let result = client.get_ticker_price("BTCUSDT").await;
+        assert!(result.is_ok());
+
+        if let Ok(data) = result {
+            assert!(data["symbol"].as_str().unwrap() == "BTCUSDT");
+            assert!(data["price"].as_str().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rest_client_get_klines() {
+        let client = RestClient::new("https://api.binance.com", None, None);
+        let result = client.get_klines("BTCUSDT", "1m", Some(10)).await;
+        assert!(result.is_ok());
+
+        if let Ok(data) = result {
+            assert!(data.as_array().unwrap().len() <= 10);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rest_client_get_depth() {
+        let client = RestClient::new("https://api.binance.com", None, None);
+        let result = client.get_depth("BTCUSDT", Some(5)).await;
+        assert!(result.is_ok());
+
+        if let Ok(data) = result {
+            assert!(data["bids"].as_array().is_some());
+            assert!(data["asks"].as_array().is_some());
+        }
     }
 } 
