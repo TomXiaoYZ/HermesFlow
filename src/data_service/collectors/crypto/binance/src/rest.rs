@@ -8,14 +8,22 @@ use chrono::Utc;
 use serde_json::Value;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::collections::HashMap;
+use reqwest::{Client, RequestBuilder};
+use serde::{Deserialize, Serialize};
+use rust_decimal::Decimal;
+use url::Url;
 
 use common::{MarketData, DataQuality, MarketDataType, CollectorError};
-use crate::error::BinanceError;
+use crate::error::{BinanceError, RestErrorKind};
+use crate::types::{ApiResponse, Kline};
 
 type HmacSha256 = Hmac<Sha256>;
 
 const DEFAULT_RECV_WINDOW: u64 = 5000;
 const DEFAULT_WEIGHT_PER_MINUTE: u32 = 1200;
+const API_BASE_URL: &str = "https://api.binance.com";
+const API_VERSION: &str = "v3";
 
 /// REST客户端配置
 #[derive(Debug, Clone)]
@@ -71,6 +79,40 @@ pub struct RestClient {
     config: RestClientConfig,
     client: Client,
     rate_limiter: Arc<Mutex<RateLimiter>>,
+    base_url: String,
+}
+
+/// 交易对信息
+#[derive(Debug, Deserialize)]
+pub struct Symbol {
+    /// 交易对
+    pub symbol: String,
+    /// 状态
+    pub status: String,
+    /// 基础资产
+    #[serde(rename = "baseAsset")]
+    pub base_asset: String,
+    /// 计价资产
+    #[serde(rename = "quoteAsset")]
+    pub quote_asset: String,
+    /// 价格精度
+    #[serde(rename = "pricePrecision")]
+    pub price_precision: i32,
+    /// 数量精度
+    #[serde(rename = "quantityPrecision")]
+    pub quantity_precision: i32,
+}
+
+/// 深度数据
+#[derive(Debug, Deserialize)]
+pub struct OrderBook {
+    /// 最后更新ID
+    #[serde(rename = "lastUpdateId")]
+    pub last_update_id: i64,
+    /// 买单
+    pub bids: Vec<(String, String)>,
+    /// 卖单
+    pub asks: Vec<(String, String)>,
 }
 
 impl RestClient {
@@ -88,6 +130,7 @@ impl RestClient {
             },
             client: Client::new(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(DEFAULT_WEIGHT_PER_MINUTE))),
+            base_url: endpoint.to_string(),
         }
     }
 
@@ -232,6 +275,72 @@ impl RestClient {
             url.push_str(&format!("&limit={}", limit));
         }
         self.get(&url).await
+    }
+
+    /// 获取深度数据
+    pub async fn get_order_book(
+        &self,
+        symbol: &str,
+        limit: Option<u32>,
+    ) -> Result<OrderBook, BinanceError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+        if let Some(limit) = limit {
+            params.insert("limit".to_string(), limit.to_string());
+        }
+
+        self.get("depth", Some(params)).await
+    }
+
+    /// 获取K线数据
+    pub async fn get_klines(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<Kline>, BinanceError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+        params.insert("interval".to_string(), interval.to_string());
+
+        if let Some(start_time) = start_time {
+            params.insert("startTime".to_string(), start_time.to_string());
+        }
+        if let Some(end_time) = end_time {
+            params.insert("endTime".to_string(), end_time.to_string());
+        }
+        if let Some(limit) = limit {
+            params.insert("limit".to_string(), limit.to_string());
+        }
+
+        self.get("klines", Some(params)).await
+    }
+
+    /// 获取24小时价格统计
+    pub async fn get_24h_ticker(&self, symbol: &str) -> Result<ApiResponse<TickerEvent>, BinanceError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+
+        self.get("ticker/24hr", Some(params)).await
+    }
+
+    /// 获取最新价格
+    pub async fn get_price(&self, symbol: &str) -> Result<Decimal, BinanceError> {
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol.to_uppercase());
+
+        #[derive(Deserialize)]
+        struct PriceResponse {
+            price: String,
+        }
+
+        let response: PriceResponse = self.get("ticker/price", Some(params)).await?;
+        response.price.parse().map_err(|e| BinanceError::ParseError {
+            kind: crate::error::ParseErrorKind::NumberParseError,
+            source: Some(Box::new(e)),
+        })
     }
 }
 

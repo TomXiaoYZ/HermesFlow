@@ -5,9 +5,9 @@ use reqwest;
 use serde_json;
 use common::CollectorError;
 
-/// Binance 错误类型
+/// OKX 错误类型
 #[derive(Error, Debug)]
-pub enum BinanceError {
+pub enum OkxError {
     /// WebSocket 相关错误
     #[error("WebSocket error: {kind}")]
     WebSocketError {
@@ -67,7 +67,7 @@ pub enum BinanceError {
     /// 业务逻辑错误
     #[error("Business error: {code} - {msg}")]
     BusinessError {
-        code: i32,
+        code: String,
         msg: String,
     },
 
@@ -176,29 +176,29 @@ impl fmt::Display for ParseErrorKind {
     }
 }
 
-impl From<tungstenite::Error> for BinanceError {
+impl From<tungstenite::Error> for OkxError {
     fn from(err: tungstenite::Error) -> Self {
-        BinanceError::WebSocketError {
+        OkxError::WebSocketError {
             kind: WebSocketErrorKind::Other(err.to_string()),
             source: Some(Box::new(err)),
         }
     }
 }
 
-impl From<reqwest::Error> for BinanceError {
+impl From<reqwest::Error> for OkxError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
-            BinanceError::NetworkError {
+            OkxError::NetworkError {
                 msg: "Request timeout".to_string(),
                 source: Some(Box::new(err)),
             }
         } else if err.is_connect() {
-            BinanceError::NetworkError {
+            OkxError::NetworkError {
                 msg: "Connection failed".to_string(),
                 source: Some(Box::new(err)),
             }
         } else {
-            BinanceError::RestError {
+            OkxError::RestError {
                 kind: RestErrorKind::Other(err.to_string()),
                 source: Some(Box::new(err)),
             }
@@ -206,43 +206,43 @@ impl From<reqwest::Error> for BinanceError {
     }
 }
 
-impl From<serde_json::Error> for BinanceError {
+impl From<serde_json::Error> for OkxError {
     fn from(err: serde_json::Error) -> Self {
-        BinanceError::ParseError {
+        OkxError::ParseError {
             kind: ParseErrorKind::JsonError,
             source: Some(Box::new(err)),
         }
     }
 }
 
-impl From<BinanceError> for CollectorError {
-    fn from(error: BinanceError) -> Self {
+impl From<OkxError> for CollectorError {
+    fn from(error: OkxError) -> Self {
         match error {
-            BinanceError::WebSocketError { kind, .. } => {
+            OkxError::WebSocketError { kind, .. } => {
                 CollectorError::WebSocketError(kind.to_string())
             }
-            BinanceError::RestError { kind, .. } => {
+            OkxError::RestError { kind, .. } => {
                 CollectorError::RestError(kind.to_string())
             }
-            BinanceError::ParseError { kind, .. } => {
+            OkxError::ParseError { kind, .. } => {
                 CollectorError::ParseError(kind.to_string())
             }
-            BinanceError::ConfigError { msg, .. } => {
+            OkxError::ConfigError { msg, .. } => {
                 CollectorError::ConfigError(msg)
             }
-            BinanceError::NetworkError { msg, .. } => {
+            OkxError::NetworkError { msg, .. } => {
                 CollectorError::NetworkError(msg)
             }
-            BinanceError::AuthError { msg, .. } => {
+            OkxError::AuthError { msg, .. } => {
                 CollectorError::AuthError(msg)
             }
-            BinanceError::RateLimitError { msg, .. } => {
+            OkxError::RateLimitError { msg, .. } => {
                 CollectorError::RestError(format!("Rate limit exceeded: {}", msg))
             }
-            BinanceError::BusinessError { code, msg } => {
+            OkxError::BusinessError { code, msg } => {
                 CollectorError::RestError(format!("Business error {}: {}", code, msg))
             }
-            BinanceError::SystemError { msg, .. } => {
+            OkxError::SystemError { msg, .. } => {
                 CollectorError::SystemError(msg)
             }
         }
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_websocket_error() {
-        let err = BinanceError::WebSocketError {
+        let err = OkxError::WebSocketError {
             kind: WebSocketErrorKind::ConnectionFailed,
             source: None,
         };
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_rest_error() {
-        let err = BinanceError::RestError {
+        let err = OkxError::RestError {
             kind: RestErrorKind::RateLimit,
             source: None,
         };
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_parse_error() {
-        let err = BinanceError::ParseError {
+        let err = OkxError::ParseError {
             kind: ParseErrorKind::MissingField("price".to_string()),
             source: None,
         };
@@ -287,15 +287,15 @@ mod tests {
     #[test]
     fn test_error_conversion() {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
-        let binance_err: BinanceError = json_err.into();
-        let collector_err: CollectorError = binance_err.into();
+        let okx_err: OkxError = json_err.into();
+        let collector_err: CollectorError = okx_err.into();
         
         assert!(matches!(collector_err, CollectorError::ParseError(_)));
     }
 
     #[test]
     fn test_error_source() {
-        let err = BinanceError::NetworkError {
+        let err = OkxError::NetworkError {
             msg: "Connection timeout".to_string(),
             source: Some(Box::new(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,

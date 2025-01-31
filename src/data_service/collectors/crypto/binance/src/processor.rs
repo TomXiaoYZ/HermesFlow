@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -10,22 +12,106 @@ use crate::collectors::common::{
     DataProcessor, MarketData, DataQuality,
     MarketDataType, Trade, Kline, OrderBook, PriceLevel, Ticker,
 };
+use crate::types::{Symbol, OrderBook as BinanceOrderBook, Kline as BinanceKline, TradeEvent, TickerEvent, DepthEvent};
+use crate::rest::RestClient;
+use crate::websocket::WebSocketClient;
+
+/// 市场数据缓存
+#[derive(Debug, Default)]
+struct MarketDataCache {
+    /// 交易对信息缓存
+    symbols: HashMap<String, Symbol>,
+    /// 最新价格缓存
+    latest_prices: HashMap<String, Decimal>,
+    /// 订单簿缓存
+    order_books: HashMap<String, BinanceOrderBook>,
+    /// K线缓存
+    klines: HashMap<String, Vec<BinanceKline>>,
+}
 
 /// Binance数据处理器
 pub struct BinanceProcessor {
-    symbol_info: HashMap<String, Value>,
+    /// REST API 客户端
+    rest_client: RestClient,
+    /// WebSocket 客户端
+    ws_client: Option<WebSocketClient>,
+    /// 数据缓存
+    cache: Arc<RwLock<MarketDataCache>>,
+    /// 配置的交易对
+    symbols: Vec<String>,
 }
 
 impl BinanceProcessor {
-    pub fn new() -> Self {
+    pub fn new(rest_client: RestClient, symbols: Vec<String>) -> Self {
         Self {
-            symbol_info: HashMap::new(),
+            rest_client,
+            ws_client: None,
+            cache: Arc::new(RwLock::new(MarketDataCache::default())),
+            symbols,
         }
     }
 
+    /// 初始化处理器
+    pub async fn init(&mut self) -> Result<(), BinanceError> {
+        // 获取并缓存交易对信息
+        self.update_symbols().await?;
+        
+        // 获取并缓存初始市场数据
+        for symbol in &self.symbols {
+            self.update_order_book(symbol).await?;
+            self.update_price(symbol).await?;
+            self.update_klines(symbol, "1m", None, None, Some(100)).await?;
+        }
+
+        Ok(())
+    }
+
     /// 更新交易对信息
-    pub fn update_symbol_info(&mut self, symbol: String, info: Value) {
-        self.symbol_info.insert(symbol, info);
+    async fn update_symbols(&mut self) -> Result<(), BinanceError> {
+        let symbols = self.rest_client.get_exchange_info().await?;
+        let mut cache = self.cache.write().await;
+        
+        for symbol in symbols {
+            if self.symbols.contains(&symbol.symbol) {
+                cache.symbols.insert(symbol.symbol.clone(), symbol);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 更新订单簿
+    async fn update_order_book(&self, symbol: &str) -> Result<(), BinanceError> {
+        let order_book = self.rest_client.get_order_book(symbol, Some(100)).await?;
+        let mut cache = self.cache.write().await;
+        cache.order_books.insert(symbol.to_string(), order_book);
+        Ok(())
+    }
+
+    /// 更新最新价格
+    async fn update_price(&self, symbol: &str) -> Result<(), BinanceError> {
+        let price = self.rest_client.get_price(symbol).await?;
+        let mut cache = self.cache.write().await;
+        cache.latest_prices.insert(symbol.to_string(), price);
+        Ok(())
+    }
+
+    /// 更新K线数据
+    async fn update_klines(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+        limit: Option<u32>,
+    ) -> Result<(), BinanceError> {
+        let klines = self.rest_client
+            .get_klines(symbol, interval, start_time, end_time, limit)
+            .await?;
+        
+        let mut cache = self.cache.write().await;
+        cache.klines.insert(symbol.to_string(), klines);
+        Ok(())
     }
 
     /// 解析交易数据
@@ -257,7 +343,7 @@ mod tests {
     use serde_json::json;
 
     fn create_processor() -> BinanceProcessor {
-        BinanceProcessor::new()
+        BinanceProcessor::new(RestClient::new("https://api.binance.com", None, None), vec!["BTCUSDT".to_string()])
     }
 
     #[tokio::test]
@@ -635,8 +721,8 @@ mod tests {
             ]
         });
 
-        processor.update_symbol_info("BTCUSDT".to_string(), info.clone());
-        assert_eq!(processor.symbol_info.len(), 1);
-        assert_eq!(processor.symbol_info["BTCUSDT"], info);
+        processor.update_symbols().await.unwrap();
+        assert_eq!(processor.cache.read().await.symbols.len(), 1);
+        assert_eq!(processor.cache.read().await.symbols["BTCUSDT"], info);
     }
 } 

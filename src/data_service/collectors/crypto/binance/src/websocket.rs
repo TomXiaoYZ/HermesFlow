@@ -4,19 +4,22 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::Message,
     WebSocketStream,
+    MaybeTlsStream,
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
 use chrono::Utc;
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, debug};
 use url::Url;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
+use tokio::net::TcpStream;
 
 use common::{MarketData, DataQuality, MarketDataType, CollectorError};
-use crate::error::BinanceError;
+use crate::error::{BinanceError, WebSocketErrorKind};
+use crate::types::{WebSocketResponse, WebSocketEvent};
 
-type WebSocketConnection = WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type WebSocketConnection = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
@@ -312,50 +315,127 @@ impl WebSocketClient {
         text: String,
         tx: &mpsc::Sender<(MarketData, DataQuality)>,
     ) -> Result<(), BinanceError> {
-        let value: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| CollectorError::ParseError(format!("Failed to parse message: {}", e)))?;
+        // 解析 WebSocket 响应
+        let response: WebSocketResponse = serde_json::from_str(&text)?;
 
-        // 解析消息类型
-        let data_type = if value["e"].as_str() == Some("trade") {
-            MarketDataType::Trade
-        } else if value["e"].as_str() == Some("kline") {
-            MarketDataType::Kline
-        } else if value["e"].as_str() == Some("depthUpdate") {
-            MarketDataType::OrderBook
-        } else if value["e"].as_str() == Some("24hrTicker") {
-            MarketDataType::Ticker
-        } else {
-            MarketDataType::Unknown
-        };
+        // 如果是订阅响应，直接返回
+        if response.id.is_some() {
+            debug!("Received subscription response: {:?}", response);
+            return Ok(());
+        }
 
-        // 创建市场数据
-        let market_data = MarketData {
-            exchange: "binance".to_string(),
-            symbol: value["s"]
-                .as_str()
-                .ok_or_else(|| CollectorError::ParseError("Missing symbol".to_string()))?
-                .to_string(),
-            data_type,
-            timestamp: Utc::now(),
-            received_at: Utc::now(),
-            raw_data: value.clone(),
-            metadata: Default::default(),
-        };
+        // 处理市场数据事件
+        if let Some(event) = response.event {
+            let (market_data, data_quality) = match event {
+                WebSocketEvent::Trade(trade) => {
+                    let market_data = MarketData {
+                        exchange: "binance".to_string(),
+                        symbol: trade.symbol,
+                        data_type: MarketDataType::Trade,
+                        timestamp: Utc::now(), // 使用 trade.time 创建 DateTime
+                        received_at: Utc::now(),
+                        raw_data: serde_json::to_value(&trade)?,
+                        metadata: Default::default(),
+                    };
 
-        // 创建数据质量信息
-        let data_quality = DataQuality {
-            latency: 0, // 需要根据实际情况计算
-            is_gap: false,
-            gap_size: None,
-            is_valid: true,
-            error_type: None,
-            metadata: Default::default(),
-        };
+                    let data_quality = DataQuality {
+                        latency: Utc::now().timestamp_millis() - trade.time,
+                        is_gap: false,
+                        gap_size: None,
+                        is_valid: true,
+                        error_type: None,
+                        metadata: Default::default(),
+                    };
 
-        // 发送数据
-        tx.send((market_data, data_quality))
-            .await
-            .map_err(|e| CollectorError::ProcessingError(format!("Failed to send data: {}", e)))?;
+                    (market_data, data_quality)
+                }
+
+                WebSocketEvent::Kline(kline_event) => {
+                    let market_data = MarketData {
+                        exchange: "binance".to_string(),
+                        symbol: kline_event.symbol,
+                        data_type: MarketDataType::Kline,
+                        timestamp: Utc::now(), // 使用 kline.close_time 创建 DateTime
+                        received_at: Utc::now(),
+                        raw_data: serde_json::to_value(&kline_event)?,
+                        metadata: {
+                            let mut map = std::collections::HashMap::new();
+                            map.insert("interval".to_string(), kline_event.kline.interval);
+                            map
+                        },
+                    };
+
+                    let data_quality = DataQuality {
+                        latency: Utc::now().timestamp_millis() - kline_event.kline.close_time,
+                        is_gap: false,
+                        gap_size: None,
+                        is_valid: true,
+                        error_type: None,
+                        metadata: Default::default(),
+                    };
+
+                    (market_data, data_quality)
+                }
+
+                WebSocketEvent::Depth(depth) => {
+                    let market_data = MarketData {
+                        exchange: "binance".to_string(),
+                        symbol: depth.symbol,
+                        data_type: MarketDataType::OrderBook,
+                        timestamp: Utc::now(), // 使用 depth.event_time 创建 DateTime
+                        received_at: Utc::now(),
+                        raw_data: serde_json::to_value(&depth)?,
+                        metadata: {
+                            let mut map = std::collections::HashMap::new();
+                            map.insert("update_id".to_string(), depth.update_id.to_string());
+                            map
+                        },
+                    };
+
+                    let data_quality = DataQuality {
+                        latency: Utc::now().timestamp_millis() - depth.event_time,
+                        is_gap: false,
+                        gap_size: None,
+                        is_valid: true,
+                        error_type: None,
+                        metadata: Default::default(),
+                    };
+
+                    (market_data, data_quality)
+                }
+
+                WebSocketEvent::Ticker(ticker) => {
+                    let market_data = MarketData {
+                        exchange: "binance".to_string(),
+                        symbol: ticker.symbol,
+                        data_type: MarketDataType::Ticker,
+                        timestamp: Utc::now(), // 使用 ticker.event_time 创建 DateTime
+                        received_at: Utc::now(),
+                        raw_data: serde_json::to_value(&ticker)?,
+                        metadata: Default::default(),
+                    };
+
+                    let data_quality = DataQuality {
+                        latency: Utc::now().timestamp_millis() - ticker.event_time,
+                        is_gap: false,
+                        gap_size: None,
+                        is_valid: true,
+                        error_type: None,
+                        metadata: Default::default(),
+                    };
+
+                    (market_data, data_quality)
+                }
+            };
+
+            // 发送数据
+            tx.send((market_data, data_quality))
+                .await
+                .map_err(|e| BinanceError::SystemError {
+                    msg: format!("Failed to send market data: {}", e),
+                    source: None,
+                })?;
+        }
 
         Ok(())
     }
@@ -420,22 +500,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_message() -> Result<(), BinanceError> {
+    async fn test_handle_trade_message() {
         let (tx, mut rx) = mpsc::channel(1);
 
-        // 测试交易消息
         let trade_msg = r#"{
             "e": "trade",
             "s": "BTCUSDT",
             "p": "50000.00",
             "q": "1.0",
             "T": 1609459200000,
-            "m": true
+            "m": true,
+            "t": 12345
         }"#;
 
-        WebSocketClient::handle_message(trade_msg.to_string(), &tx).await?;
+        WebSocketClient::handle_message(trade_msg.to_string(), &tx).await.unwrap();
 
-        // 等待消息
         let receive_result = timeout(Duration::from_secs(1), rx.recv()).await;
         assert!(receive_result.is_ok());
 
@@ -445,7 +524,40 @@ mod tests {
             assert!(matches!(market_data.data_type, MarketDataType::Trade));
             assert!(data_quality.is_valid);
         }
+    }
 
-        Ok(())
+    #[tokio::test]
+    async fn test_handle_kline_message() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        let kline_msg = r#"{
+            "e": "kline",
+            "s": "BTCUSDT",
+            "k": {
+                "t": 1609459200000,
+                "T": 1609459500000,
+                "s": "BTCUSDT",
+                "i": "5m",
+                "o": "50000.00",
+                "h": "51000.00",
+                "l": "49000.00",
+                "c": "50500.00",
+                "v": "100.0",
+                "q": "5050000.00"
+            }
+        }"#;
+
+        WebSocketClient::handle_message(kline_msg.to_string(), &tx).await.unwrap();
+
+        let receive_result = timeout(Duration::from_secs(1), rx.recv()).await;
+        assert!(receive_result.is_ok());
+
+        if let Ok(Some((market_data, data_quality))) = receive_result {
+            assert_eq!(market_data.exchange, "binance");
+            assert_eq!(market_data.symbol, "BTCUSDT");
+            assert!(matches!(market_data.data_type, MarketDataType::Kline));
+            assert!(data_quality.is_valid);
+            assert_eq!(market_data.metadata.get("interval").unwrap(), "5m");
+        }
     }
 } 

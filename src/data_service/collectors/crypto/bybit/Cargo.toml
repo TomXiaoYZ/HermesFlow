@@ -1,5 +1,5 @@
 [package]
-name = "binance"
+name = "bybit"
 version = "0.1.0"
 edition = "2021"
 
@@ -20,7 +20,4 @@ base64 = "0.21"
 thiserror = "1.0"
 
 [dependencies.common]
-path = "../../../common"
-
-[dev-dependencies]
-tokio-test = "0.4" 
+path = "../../../common" 

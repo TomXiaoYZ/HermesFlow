@@ -5,9 +5,9 @@ use reqwest;
 use serde_json;
 use common::CollectorError;
 
-/// Binance 错误类型
+/// ByBit 错误类型
 #[derive(Error, Debug)]
-pub enum BinanceError {
+pub enum BybitError {
     /// WebSocket 相关错误
     #[error("WebSocket error: {kind}")]
     WebSocketError {
@@ -61,7 +61,6 @@ pub enum BinanceError {
     RateLimitError {
         msg: String,
         retry_after: Option<std::time::Duration>,
-        weight: Option<u32>,
     },
 
     /// 业务逻辑错误
@@ -95,8 +94,8 @@ pub enum WebSocketErrorKind {
     AuthenticationFailed,
     /// 订阅失败
     SubscriptionFailed,
-    /// 心跳超时
-    HeartbeatTimeout,
+    /// Ping/Pong 超时
+    PingPongTimeout,
     /// 其他错误
     Other(String),
 }
@@ -110,7 +109,7 @@ impl fmt::Display for WebSocketErrorKind {
             Self::ReceiveFailed => write!(f, "Failed to receive WebSocket message"),
             Self::AuthenticationFailed => write!(f, "WebSocket authentication failed"),
             Self::SubscriptionFailed => write!(f, "Failed to subscribe to WebSocket channel"),
-            Self::HeartbeatTimeout => write!(f, "WebSocket heartbeat timeout"),
+            Self::PingPongTimeout => write!(f, "WebSocket ping/pong timeout"),
             Self::Other(msg) => write!(f, "{}", msg),
         }
     }
@@ -176,29 +175,29 @@ impl fmt::Display for ParseErrorKind {
     }
 }
 
-impl From<tungstenite::Error> for BinanceError {
+impl From<tungstenite::Error> for BybitError {
     fn from(err: tungstenite::Error) -> Self {
-        BinanceError::WebSocketError {
+        BybitError::WebSocketError {
             kind: WebSocketErrorKind::Other(err.to_string()),
             source: Some(Box::new(err)),
         }
     }
 }
 
-impl From<reqwest::Error> for BinanceError {
+impl From<reqwest::Error> for BybitError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
-            BinanceError::NetworkError {
+            BybitError::NetworkError {
                 msg: "Request timeout".to_string(),
                 source: Some(Box::new(err)),
             }
         } else if err.is_connect() {
-            BinanceError::NetworkError {
+            BybitError::NetworkError {
                 msg: "Connection failed".to_string(),
                 source: Some(Box::new(err)),
             }
         } else {
-            BinanceError::RestError {
+            BybitError::RestError {
                 kind: RestErrorKind::Other(err.to_string()),
                 source: Some(Box::new(err)),
             }
@@ -206,43 +205,43 @@ impl From<reqwest::Error> for BinanceError {
     }
 }
 
-impl From<serde_json::Error> for BinanceError {
+impl From<serde_json::Error> for BybitError {
     fn from(err: serde_json::Error) -> Self {
-        BinanceError::ParseError {
+        BybitError::ParseError {
             kind: ParseErrorKind::JsonError,
             source: Some(Box::new(err)),
         }
     }
 }
 
-impl From<BinanceError> for CollectorError {
-    fn from(error: BinanceError) -> Self {
+impl From<BybitError> for CollectorError {
+    fn from(error: BybitError) -> Self {
         match error {
-            BinanceError::WebSocketError { kind, .. } => {
+            BybitError::WebSocketError { kind, .. } => {
                 CollectorError::WebSocketError(kind.to_string())
             }
-            BinanceError::RestError { kind, .. } => {
+            BybitError::RestError { kind, .. } => {
                 CollectorError::RestError(kind.to_string())
             }
-            BinanceError::ParseError { kind, .. } => {
+            BybitError::ParseError { kind, .. } => {
                 CollectorError::ParseError(kind.to_string())
             }
-            BinanceError::ConfigError { msg, .. } => {
+            BybitError::ConfigError { msg, .. } => {
                 CollectorError::ConfigError(msg)
             }
-            BinanceError::NetworkError { msg, .. } => {
+            BybitError::NetworkError { msg, .. } => {
                 CollectorError::NetworkError(msg)
             }
-            BinanceError::AuthError { msg, .. } => {
+            BybitError::AuthError { msg, .. } => {
                 CollectorError::AuthError(msg)
             }
-            BinanceError::RateLimitError { msg, .. } => {
+            BybitError::RateLimitError { msg, .. } => {
                 CollectorError::RestError(format!("Rate limit exceeded: {}", msg))
             }
-            BinanceError::BusinessError { code, msg } => {
+            BybitError::BusinessError { code, msg } => {
                 CollectorError::RestError(format!("Business error {}: {}", code, msg))
             }
-            BinanceError::SystemError { msg, .. } => {
+            BybitError::SystemError { msg, .. } => {
                 CollectorError::SystemError(msg)
             }
         }
@@ -256,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_websocket_error() {
-        let err = BinanceError::WebSocketError {
+        let err = BybitError::WebSocketError {
             kind: WebSocketErrorKind::ConnectionFailed,
             source: None,
         };
@@ -266,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_rest_error() {
-        let err = BinanceError::RestError {
+        let err = BybitError::RestError {
             kind: RestErrorKind::RateLimit,
             source: None,
         };
@@ -276,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_parse_error() {
-        let err = BinanceError::ParseError {
+        let err = BybitError::ParseError {
             kind: ParseErrorKind::MissingField("price".to_string()),
             source: None,
         };
@@ -287,15 +286,15 @@ mod tests {
     #[test]
     fn test_error_conversion() {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
-        let binance_err: BinanceError = json_err.into();
-        let collector_err: CollectorError = binance_err.into();
+        let bybit_err: BybitError = json_err.into();
+        let collector_err: CollectorError = bybit_err.into();
         
         assert!(matches!(collector_err, CollectorError::ParseError(_)));
     }
 
     #[test]
     fn test_error_source() {
-        let err = BinanceError::NetworkError {
+        let err = BybitError::NetworkError {
             msg: "Connection timeout".to_string(),
             source: Some(Box::new(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
