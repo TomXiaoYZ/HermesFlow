@@ -6,10 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.0"
-    }
+    # kubernetes = {
+    #   source  = "hashicorp/kubernetes"
+    #   version = "~> 2.0"
+    # }
   }
 
   backend "local" {
@@ -28,6 +28,23 @@ provider "aws" {
     }
   }
 }
+
+# 配置kubernetes provider，使用EKS集群的配置
+# provider "kubernetes" {
+#   host                   = module.eks.cluster_endpoint
+#   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+#   
+#   exec {
+#     api_version = "client.authentication.k8s.io/v1beta1"
+#     command     = "aws"
+#     args = [
+#       "eks",
+#       "get-token",
+#       "--cluster-name",
+#       module.eks.cluster_id
+#     ]
+#   }
+# }
 
 module "vpc" {
   source = "../modules/vpc"
@@ -78,9 +95,10 @@ module "eks" {
   }
 }
 
-module "s3" {
-  source = "../modules/s3"
-
-  environment = "dev"
-  bucket_name = "hermesflow-dev"
-} 
+# 暂时保持S3模块注释
+# module "s3" {
+#   source = "../modules/s3"
+# 
+#   environment = "dev"
+#   bucket_name = "hermesflow-dev"
+# } 

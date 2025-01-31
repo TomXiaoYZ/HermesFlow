@@ -1,5 +1,20 @@
 locals {
   name = var.cluster_name
+  
+  aws_auth_configmap_yaml = <<YAML
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+    - rolearn: ${aws_iam_role.node_group.arn}
+      username: system:node:{{EC2PrivateDNSName}}
+      groups:
+        - system:bootstrappers
+        - system:nodes
+YAML
 }
 
 resource "aws_iam_role" "cluster" {
