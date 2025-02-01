@@ -37,7 +37,8 @@ src/data_service/
 │   │   ├── okx/        # OKX交易所
 │   │   └── bitget/     # Bitget交易所
 │   ├── chain/          # 链上数据
-│   └── traditional/    # 传统金融
+│   ├── traditional/    # 传统金融
+│   └── defi/           # DeFi数据
 ├── storage/            # 数据存储
 │   ├── clickhouse/     # 时序数据存储
 │   ├── redis/          # 缓存层

@@ -15,6 +15,10 @@ use crate::collectors::common::{
 use crate::types::{Symbol, OrderBook as BinanceOrderBook, Kline as BinanceKline, TradeEvent, TickerEvent, DepthEvent};
 use crate::rest::RestClient;
 use crate::websocket::WebSocketClient;
+use common::{
+    Exchange, MarketDataType, OrderBookLevel, Candlestick, Side,
+};
+use metrics;
 
 /// 市场数据缓存
 #[derive(Debug, Default)]
@@ -39,15 +43,17 @@ pub struct BinanceProcessor {
     cache: Arc<RwLock<MarketDataCache>>,
     /// 配置的交易对
     symbols: Vec<String>,
+    config: HashMap<String, String>,
 }
 
 impl BinanceProcessor {
-    pub fn new(rest_client: RestClient, symbols: Vec<String>) -> Self {
+    pub fn new(rest_client: RestClient, symbols: Vec<String>, config: HashMap<String, String>) -> Self {
         Self {
             rest_client,
             ws_client: None,
             cache: Arc::new(RwLock::new(MarketDataCache::default())),
             symbols,
+            config,
         }
     }
 
@@ -293,6 +299,75 @@ impl BinanceProcessor {
             metadata: HashMap::new(),
         }
     }
+
+    // 验证价格范围
+    fn validate_price(&self, price: Decimal) -> bool {
+        price > Decimal::ZERO
+    }
+
+    // 验证数量范围
+    fn validate_amount(&self, amount: Decimal) -> bool {
+        amount > Decimal::ZERO
+    }
+
+    // 验证时间戳
+    fn validate_timestamp(&self, timestamp: i64) -> bool {
+        let now = Utc::now().timestamp_millis();
+        let diff = (now - timestamp).abs();
+        // 允许5秒的时间差
+        diff <= 5000
+    }
+
+    // 计算数据质量分数
+    fn calculate_quality_score(&self, data: &MarketData) -> f64 {
+        let mut score = 100.0;
+        
+        match &data.data_type {
+            MarketDataType::Trade(trades) => {
+                for trade in trades {
+                    if !self.validate_price(trade.price) {
+                        score -= 20.0;
+                    }
+                    if !self.validate_amount(trade.amount) {
+                        score -= 20.0;
+                    }
+                    if !self.validate_timestamp(trade.timestamp.timestamp_millis()) {
+                        score -= 10.0;
+                    }
+                }
+            }
+            MarketDataType::OrderBook { bids, asks } => {
+                // 验证买卖盘价格顺序
+                if !bids.is_empty() && !asks.is_empty() {
+                    if bids[0].price >= asks[0].price {
+                        score -= 50.0;
+                    }
+                }
+                
+                // 验证价格和数量
+                for level in bids.iter().chain(asks.iter()) {
+                    if !self.validate_price(level.price) {
+                        score -= 10.0;
+                    }
+                    if !self.validate_amount(level.amount) {
+                        score -= 10.0;
+                    }
+                }
+            }
+            MarketDataType::Candlestick(k) => {
+                // 验证K线数据的合理性
+                if k.high < k.low || k.open < k.low || k.close < k.low || 
+                   k.high < k.open || k.high < k.close {
+                    score -= 50.0;
+                }
+                if !self.validate_timestamp(k.timestamp.timestamp_millis()) {
+                    score -= 10.0;
+                }
+            }
+        }
+
+        score.max(0.0)
+    }
 }
 
 #[async_trait]
@@ -300,40 +375,74 @@ impl DataProcessor for BinanceProcessor {
     type Error = BinanceError;
 
     async fn process(&self, mut data: MarketData) -> Result<MarketData, Self::Error> {
-        // 根据数据类型进行解析和转换
-        match data.data_type {
-            MarketDataType::Trade => {
-                let trade = Self::parse_trade(&data.raw_data)?;
-                data.metadata.insert("trade_id".to_string(), trade.trade_id.clone());
-                data.metadata.insert("is_maker".to_string(), trade.is_maker.to_string());
-            }
-            MarketDataType::Kline => {
-                let kline = Self::parse_kline(&data.raw_data)?;
-                data.metadata.insert("interval".to_string(), kline.interval.clone());
-                data.metadata.insert("is_closed".to_string(), kline.is_closed.to_string());
-            }
-            MarketDataType::OrderBook => {
-                let orderbook = Self::parse_orderbook(&data.raw_data)?;
-                data.metadata.insert("update_id".to_string(), orderbook.update_id.to_string());
-                data.metadata.insert("bids_count".to_string(), orderbook.bids.len().to_string());
-                data.metadata.insert("asks_count".to_string(), orderbook.asks.len().to_string());
-            }
-            MarketDataType::Ticker => {
-                let ticker = Self::parse_ticker(&data.raw_data)?;
-                if let Some(vol) = ticker.volume_24h.to_string().parse().ok() {
-                    data.metadata.insert("volume_24h".to_string(), vol);
+        let start_time = std::time::Instant::now();
+
+        // 标准化交易所名称
+        data.exchange = Exchange::Binance;
+
+        // 标准化交易对格式（统一大写）
+        data.symbol = data.symbol.to_uppercase();
+
+        // 根据数据类型进行处理
+        match &mut data.data_type {
+            MarketDataType::Trade(trades) => {
+                for trade in trades {
+                    // 标准化交易方向
+                    if trade.side == Side::Unknown {
+                        trade.side = Side::Buy; // 默认设置为买入
+                    }
                 }
             }
-            _ => {
-                warn!("Unsupported data type: {:?}", data.data_type);
+            MarketDataType::OrderBook { bids, asks } => {
+                // 排序买卖盘（买盘降序，卖盘升序）
+                bids.sort_by(|a, b| b.price.cmp(&a.price));
+                asks.sort_by(|a, b| a.price.cmp(&b.price));
+
+                // 移除价格为0的档位
+                bids.retain(|level| level.price > Decimal::ZERO);
+                asks.retain(|level| level.price > Decimal::ZERO);
+            }
+            MarketDataType::Candlestick(_) => {
+                // K线数据已经在之前的解析阶段标准化
             }
         }
+
+        // 记录处理延迟
+        metrics::record_rest_latency(
+            "binance",
+            "data_processing",
+            start_time,
+        );
 
         Ok(data)
     }
 
     async fn validate(&self, data: &MarketData) -> Result<DataQuality, Self::Error> {
-        Ok(self.validate_data(data))
+        let start_time = std::time::Instant::now();
+
+        // 计算数据质量分数
+        let quality_score = self.calculate_quality_score(data);
+        
+        // 更新监控指标
+        metrics::update_data_quality("binance", "market_data", quality_score);
+
+        // 记录验证延迟
+        metrics::record_rest_latency(
+            "binance",
+            "data_validation",
+            start_time,
+        );
+
+        // 根据质量分数确定数据质量级别
+        let quality = if quality_score >= 90.0 {
+            DataQuality::Real
+        } else if quality_score >= 60.0 {
+            DataQuality::Delay
+        } else {
+            DataQuality::History
+        };
+
+        Ok(quality)
     }
 }
 
@@ -343,7 +452,7 @@ mod tests {
     use serde_json::json;
 
     fn create_processor() -> BinanceProcessor {
-        BinanceProcessor::new(RestClient::new("https://api.binance.com", None, None), vec!["BTCUSDT".to_string()])
+        BinanceProcessor::new(RestClient::new("https://api.binance.com", None, None), vec!["BTCUSDT".to_string()], HashMap::new())
     }
 
     #[tokio::test]
@@ -581,12 +690,13 @@ mod tests {
         let valid_trade = MarketData {
             exchange: "binance".to_string(),
             symbol: "BTCUSDT".to_string(),
-            data_type: MarketDataType::Trade,
-            timestamp: Utc::now(),
-            raw_data: json!({
-                "p": "16500.50",
-                "q": "1.5"
-            }),
+            data_type: MarketDataType::Trade(vec![Trade {
+                id: "1".to_string(),
+                timestamp: Utc::now(),
+                price: Decimal::from_str_exact("16500.50").unwrap(),
+                amount: Decimal::from_str_exact("0.12345").unwrap(),
+                side: Side::Buy,
+            }]),
             metadata: HashMap::new(),
         };
         let quality = processor.validate_data(&valid_trade);
@@ -597,12 +707,13 @@ mod tests {
         let invalid_trade = MarketData {
             exchange: "binance".to_string(),
             symbol: "BTCUSDT".to_string(),
-            data_type: MarketDataType::Trade,
-            timestamp: Utc::now(),
-            raw_data: json!({
-                "p": 16500.50,  // 数字而不是字符串
-                "q": "1.5"
-            }),
+            data_type: MarketDataType::Trade(vec![Trade {
+                id: "1".to_string(),
+                timestamp: Utc::now(),
+                price: Decimal::from_str_exact("0").unwrap(),
+                amount: Decimal::from_str_exact("0.12345").unwrap(),
+                side: Side::Buy,
+            }]),
             metadata: HashMap::new(),
         };
         let quality = processor.validate_data(&invalid_trade);
@@ -613,12 +724,13 @@ mod tests {
         let old_data = MarketData {
             exchange: "binance".to_string(),
             symbol: "BTCUSDT".to_string(),
-            data_type: MarketDataType::Trade,
-            timestamp: Utc::now() - chrono::Duration::seconds(5),
-            raw_data: json!({
-                "p": "16500.50",
-                "q": "1.5"
-            }),
+            data_type: MarketDataType::Trade(vec![Trade {
+                id: "1".to_string(),
+                timestamp: Utc::now() - chrono::Duration::seconds(5),
+                price: Decimal::from_str_exact("16500.50").unwrap(),
+                amount: Decimal::from_str_exact("0.12345").unwrap(),
+                side: Side::Buy,
+            }]),
             metadata: HashMap::new(),
         };
         let quality = processor.validate_data(&old_data);
@@ -633,52 +745,40 @@ mod tests {
         let trade_data = MarketData {
             exchange: "binance".to_string(),
             symbol: "BTCUSDT".to_string(),
-            data_type: MarketDataType::Trade,
-            timestamp: Utc::now(),
-            raw_data: json!({
-                "e": "trade",
-                "E": 1672515782136,
-                "s": "BTCUSDT",
-                "t": 123456,
-                "p": "16500.50",
-                "q": "0.12345",
-                "T": 1672515782136,
-                "m": true,
-                "M": true
-            }),
+            data_type: MarketDataType::Trade(vec![Trade {
+                id: "1".to_string(),
+                timestamp: Utc::now(),
+                price: Decimal::from_str_exact("16500.50").unwrap(),
+                amount: Decimal::from_str_exact("0.12345").unwrap(),
+                side: Side::Buy,
+            }]),
             metadata: HashMap::new(),
         };
 
         let processed_data = processor.process(trade_data).await.unwrap();
         assert!(processed_data.metadata.contains_key("trade_id"));
         assert!(processed_data.metadata.contains_key("is_maker"));
-        assert_eq!(processed_data.metadata["trade_id"], "123456");
+        assert_eq!(processed_data.metadata["trade_id"], "1");
         assert_eq!(processed_data.metadata["is_maker"], "true");
 
         // 测试处理K线数据
         let kline_data = MarketData {
             exchange: "binance".to_string(),
             symbol: "BTCUSDT".to_string(),
-            data_type: MarketDataType::Kline,
-            timestamp: Utc::now(),
-            raw_data: json!({
-                "e": "kline",
-                "E": 1672515782136,
-                "s": "BTCUSDT",
-                "k": {
-                    "t": 1672515780000,
-                    "T": 1672515839999,
-                    "s": "BTCUSDT",
-                    "i": "1m",
-                    "o": "16500.00",
-                    "h": "16505.00",
-                    "l": "16499.00",
-                    "c": "16503.50",
-                    "v": "10.5",
-                    "n": 100,
-                    "x": true,
-                    "q": "173275.25"
-                }
+            data_type: MarketDataType::Kline(Kline {
+                exchange: "binance".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                interval: "1m".to_string(),
+                start_time: Utc::now(),
+                close_time: Utc::now(),
+                open: Decimal::from_str_exact("16500.00").unwrap(),
+                high: Decimal::from_str_exact("16505.00").unwrap(),
+                low: Decimal::from_str_exact("16499.00").unwrap(),
+                close: Decimal::from_str_exact("16503.50").unwrap(),
+                volume: Decimal::from_str_exact("10.5").unwrap(),
+                quote_volume: Decimal::from_str_exact("173275.25").unwrap(),
+                trades_count: 100,
+                is_closed: true,
             }),
             metadata: HashMap::new(),
         };

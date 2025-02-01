@@ -1,27 +1,29 @@
 use std::collections::HashMap;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 use common::{
-    MarketData, DataQuality, MarketDataType,
-    OrderBookLevel, Trade, Candlestick, Ticker,
+    MarketData, DataQuality, MarketDataType, Trade, Kline, OrderBook, PriceLevel, Ticker,
+    DataProcessor, Exchange, OrderBookLevel, Candlestick, Side,
 };
-use crate::error::{BybitError, ParseErrorKind};
-use crate::models::{WebSocketResponse, InstrumentInfo};
+use crate::error::BybitError;
+use crate::models;
+use crate::metrics;
 
-/// 数据处理器
+/// Bybit数据处理器
 pub struct BybitProcessor {
-    /// 交易对信息缓存
     symbol_info: HashMap<String, Value>,
+    config: HashMap<String, String>,
 }
 
 impl BybitProcessor {
-    /// 创建新的数据处理器实例
-    pub fn new() -> Self {
+    pub fn new(config: HashMap<String, String>) -> Self {
         Self {
             symbol_info: HashMap::new(),
+            config,
         }
     }
 
@@ -30,28 +32,17 @@ impl BybitProcessor {
         self.symbol_info.insert(symbol, info);
     }
 
-    /// 处理 WebSocket 消息
+    /// 处理WebSocket消息
     pub async fn process_ws_message(&self, message: &str) -> Result<Option<MarketData>, BybitError> {
-        let response: WebSocketResponse = serde_json::from_str(message)
-            .map_err(|e| BybitError::ParseError {
-                kind: ParseErrorKind::JsonError,
-                source: Some(Box::new(e)),
-            })?;
+        let value: Value = serde_json::from_str(message)
+            .map_err(|e| BybitError::ParseError(format!("Failed to parse WebSocket message: {}", e)))?;
 
-        if let Some(topic) = response.topic {
-            let parts: Vec<&str> = topic.split('.').collect();
-            if parts.len() < 2 {
-                return Ok(None);
-            }
-
-            let channel = parts[0];
-            let symbol = parts[1];
-
-            match channel {
-                "orderbook" => self.process_orderbook(symbol, response.data),
-                "trade" => self.process_trades(symbol, response.data),
-                "tickers" => self.process_ticker(symbol, response.data),
-                "kline" => self.process_kline(symbol, response.data),
+        if let Some(topic) = value.get("topic") {
+            match topic.as_str() {
+                Some("tickers") => self.process_ticker(&value),
+                Some("trades") => self.process_trade(&value),
+                Some("orderbook") => self.process_order_book(&value),
+                Some("kline") => self.process_kline(&value),
                 _ => Ok(None),
             }
         } else {
@@ -59,490 +50,455 @@ impl BybitProcessor {
         }
     }
 
-    /// 处理深度数据
-    fn process_orderbook(&self, symbol: &str, data: Option<Value>) -> Result<Option<MarketData>, BybitError> {
-        if let Some(Value::Object(obj)) = data {
-            let ts = obj.get("ts")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| BybitError::ParseError {
-                    kind: ParseErrorKind::MissingField("timestamp".to_string()),
-                    source: None,
-                })?;
-            let timestamp = ts.parse::<i64>()
-                .map_err(|e| BybitError::ParseError {
-                    kind: ParseErrorKind::TimeParseError,
-                    source: Some(Box::new(e)),
-                })?;
+    /// 处理Ticker数据
+    fn process_ticker(&self, data: &Value) -> Result<Option<MarketData>, BybitError> {
+        if let Some(ticker_data) = data["data"].as_object() {
+            let market_data = MarketData {
+                exchange: Exchange::Bybit,
+                symbol: ticker_data["symbol"].as_str()
+                    .ok_or_else(|| BybitError::ParseError("Missing symbol".to_string()))?
+                    .to_string(),
+                timestamp: DateTime::parse_from_rfc3339(ticker_data["timestamp"].as_str()
+                    .ok_or_else(|| BybitError::ParseError("Missing timestamp".to_string()))?)
+                    .map_err(|e| BybitError::ParseError(format!("Invalid timestamp: {}", e)))?
+                    .with_timezone(&Utc),
+                data_type: MarketDataType::Trade(vec![Trade {
+                    id: ticker_data["tradeId"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing trade ID".to_string()))?
+                        .to_string(),
+                    price: Decimal::from_str_exact(ticker_data["lastPrice"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing price".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid price: {}", e)))?,
+                    quantity: Decimal::from_str_exact(ticker_data["lastQty"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing quantity".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid quantity: {}", e)))?,
+                    timestamp: DateTime::parse_from_rfc3339(ticker_data["timestamp"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing timestamp".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid timestamp: {}", e)))?
+                        .with_timezone(&Utc),
+                    side: if ticker_data["side"].as_str() == Some("Buy") { Side::Buy } else { Side::Sell },
+                }]),
+                quality: DataQuality::Real,
+            };
 
-            let mut bids = Vec::new();
-            let mut asks = Vec::new();
+            Ok(Some(market_data))
+        } else {
+            Ok(None)
+        }
+    }
 
-            if let Some(Value::Array(bid_array)) = obj.get("bids") {
-                for bid in bid_array {
-                    if let Value::Array(level) = bid {
-                        if level.len() >= 2 {
-                            let price = level[0].as_str()
-                                .ok_or_else(|| BybitError::ParseError {
-                                    kind: ParseErrorKind::InvalidFieldType("bid price".to_string()),
-                                    source: None,
-                                })?
-                                .parse::<Decimal>()
-                                .map_err(|e| BybitError::ParseError {
-                                    kind: ParseErrorKind::NumberParseError,
-                                    source: Some(Box::new(e)),
-                                })?;
-                            let quantity = level[1].as_str()
-                                .ok_or_else(|| BybitError::ParseError {
-                                    kind: ParseErrorKind::InvalidFieldType("bid quantity".to_string()),
-                                    source: None,
-                                })?
-                                .parse::<Decimal>()
-                                .map_err(|e| BybitError::ParseError {
-                                    kind: ParseErrorKind::NumberParseError,
-                                    source: Some(Box::new(e)),
-                                })?;
-                            bids.push(OrderBookLevel { price, quantity });
-                        }
-                    }
-                }
-            }
+    /// 处理Trade数据
+    fn process_trade(&self, data: &Value) -> Result<Option<MarketData>, BybitError> {
+        if let Some(trades) = data["data"].as_array() {
+            let trades = trades.iter().map(|trade| {
+                Ok(Trade {
+                    id: trade["tradeId"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing trade ID".to_string()))?
+                        .to_string(),
+                    price: Decimal::from_str_exact(trade["price"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing price".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid price: {}", e)))?,
+                    quantity: Decimal::from_str_exact(trade["size"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing size".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid size: {}", e)))?,
+                    timestamp: DateTime::parse_from_rfc3339(trade["time"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing time".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid time: {}", e)))?
+                        .with_timezone(&Utc),
+                    side: if trade["side"].as_str() == Some("Buy") { Side::Buy } else { Side::Sell },
+                })
+            }).collect::<Result<Vec<_>, _>>()?;
 
-            if let Some(Value::Array(ask_array)) = obj.get("asks") {
-                for ask in ask_array {
-                    if let Value::Array(level) = ask {
-                        if level.len() >= 2 {
-                            let price = level[0].as_str()
-                                .ok_or_else(|| BybitError::ParseError {
-                                    kind: ParseErrorKind::InvalidFieldType("ask price".to_string()),
-                                    source: None,
-                                })?
-                                .parse::<Decimal>()
-                                .map_err(|e| BybitError::ParseError {
-                                    kind: ParseErrorKind::NumberParseError,
-                                    source: Some(Box::new(e)),
-                                })?;
-                            let quantity = level[1].as_str()
-                                .ok_or_else(|| BybitError::ParseError {
-                                    kind: ParseErrorKind::InvalidFieldType("ask quantity".to_string()),
-                                    source: None,
-                                })?
-                                .parse::<Decimal>()
-                                .map_err(|e| BybitError::ParseError {
-                                    kind: ParseErrorKind::NumberParseError,
-                                    source: Some(Box::new(e)),
-                                })?;
-                            asks.push(OrderBookLevel { price, quantity });
-                        }
-                    }
-                }
-            }
+            let market_data = MarketData {
+                exchange: Exchange::Bybit,
+                symbol: data["symbol"].as_str()
+                    .ok_or_else(|| BybitError::ParseError("Missing symbol".to_string()))?
+                    .to_string(),
+                timestamp: Utc::now(),
+                data_type: MarketDataType::Trade(trades),
+                quality: DataQuality::Real,
+            };
 
-            Ok(Some(MarketData {
-                exchange: "bybit".to_string(),
-                symbol: symbol.to_string(),
-                timestamp: DateTime::<Utc>::from_timestamp(timestamp / 1000, (timestamp % 1000) as u32 * 1_000_000)
-                    .ok_or_else(|| BybitError::ParseError {
-                        kind: ParseErrorKind::TimeParseError,
-                        source: None,
-                    })?,
+            Ok(Some(market_data))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// 处理OrderBook数据
+    fn process_order_book(&self, data: &Value) -> Result<Option<MarketData>, BybitError> {
+        if let Some(book_data) = data["data"].as_object() {
+            let parse_level = |price: &str, size: &str| -> Result<OrderBookLevel, BybitError> {
+                Ok(OrderBookLevel {
+                    price: Decimal::from_str_exact(price)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid price: {}", e)))?,
+                    quantity: Decimal::from_str_exact(size)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid size: {}", e)))?,
+                })
+            };
+
+            let bids = book_data["bids"].as_array()
+                .ok_or_else(|| BybitError::ParseError("Missing bids".to_string()))?
+                .iter()
+                .map(|level| {
+                    let level = level.as_array()
+                        .ok_or_else(|| BybitError::ParseError("Invalid bid level format".to_string()))?;
+                    parse_level(
+                        level[0].as_str().ok_or_else(|| BybitError::ParseError("Invalid bid price".to_string()))?,
+                        level[1].as_str().ok_or_else(|| BybitError::ParseError("Invalid bid size".to_string()))?,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let asks = book_data["asks"].as_array()
+                .ok_or_else(|| BybitError::ParseError("Missing asks".to_string()))?
+                .iter()
+                .map(|level| {
+                    let level = level.as_array()
+                        .ok_or_else(|| BybitError::ParseError("Invalid ask level format".to_string()))?;
+                    parse_level(
+                        level[0].as_str().ok_or_else(|| BybitError::ParseError("Invalid ask price".to_string()))?,
+                        level[1].as_str().ok_or_else(|| BybitError::ParseError("Invalid ask size".to_string()))?,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let market_data = MarketData {
+                exchange: Exchange::Bybit,
+                symbol: data["symbol"].as_str()
+                    .ok_or_else(|| BybitError::ParseError("Missing symbol".to_string()))?
+                    .to_string(),
+                timestamp: DateTime::parse_from_rfc3339(book_data["timestamp"].as_str()
+                    .ok_or_else(|| BybitError::ParseError("Missing timestamp".to_string()))?)
+                    .map_err(|e| BybitError::ParseError(format!("Invalid timestamp: {}", e)))?
+                    .with_timezone(&Utc),
                 data_type: MarketDataType::OrderBook { bids, asks },
                 quality: DataQuality::Real,
-            }))
-        } else {
-            Ok(None)
-        }
-    }
+            };
 
-    /// 处理成交数据
-    fn process_trades(&self, symbol: &str, data: Option<Value>) -> Result<Option<MarketData>, BybitError> {
-        if let Some(Value::Array(trades)) = data {
-            let mut processed_trades = Vec::new();
-
-            for trade in trades {
-                if let Value::Object(obj) = trade {
-                    let ts = obj.get("ts")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| BybitError::ParseError {
-                            kind: ParseErrorKind::MissingField("timestamp".to_string()),
-                            source: None,
-                        })?;
-                    let timestamp = ts.parse::<i64>()
-                        .map_err(|e| BybitError::ParseError {
-                            kind: ParseErrorKind::TimeParseError,
-                            source: Some(Box::new(e)),
-                        })?;
-
-                    let price = obj.get("price")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| BybitError::ParseError {
-                            kind: ParseErrorKind::MissingField("price".to_string()),
-                            source: None,
-                        })?
-                        .parse::<Decimal>()
-                        .map_err(|e| BybitError::ParseError {
-                            kind: ParseErrorKind::NumberParseError,
-                            source: Some(Box::new(e)),
-                        })?;
-
-                    let quantity = obj.get("size")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| BybitError::ParseError {
-                            kind: ParseErrorKind::MissingField("size".to_string()),
-                            source: None,
-                        })?
-                        .parse::<Decimal>()
-                        .map_err(|e| BybitError::ParseError {
-                            kind: ParseErrorKind::NumberParseError,
-                            source: Some(Box::new(e)),
-                        })?;
-
-                    let side = obj.get("side")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| BybitError::ParseError {
-                            kind: ParseErrorKind::MissingField("side".to_string()),
-                            source: None,
-                        })?;
-
-                    let trade_time = DateTime::<Utc>::from_timestamp(timestamp / 1000, (timestamp % 1000) as u32 * 1_000_000)
-                        .ok_or_else(|| BybitError::ParseError {
-                            kind: ParseErrorKind::TimeParseError,
-                            source: None,
-                        })?;
-
-                    processed_trades.push(Trade {
-                        price,
-                        quantity,
-                        side: side.to_string(),
-                        timestamp: trade_time,
-                    });
-                }
-            }
-
-            if !processed_trades.is_empty() {
-                Ok(Some(MarketData {
-                    exchange: "bybit".to_string(),
-                    symbol: symbol.to_string(),
-                    timestamp: processed_trades[0].timestamp,
-                    data_type: MarketDataType::Trade(processed_trades),
-                    quality: DataQuality::Real,
-                }))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// 处理行情数据
-    fn process_ticker(&self, symbol: &str, data: Option<Value>) -> Result<Option<MarketData>, BybitError> {
-        if let Some(Value::Object(obj)) = data {
-            let ts = obj.get("ts")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| BybitError::ParseError {
-                    kind: ParseErrorKind::MissingField("timestamp".to_string()),
-                    source: None,
-                })?;
-            let timestamp = ts.parse::<i64>()
-                .map_err(|e| BybitError::ParseError {
-                    kind: ParseErrorKind::TimeParseError,
-                    source: Some(Box::new(e)),
-                })?;
-
-            let last_price = obj.get("lastPrice")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| BybitError::ParseError {
-                    kind: ParseErrorKind::MissingField("last price".to_string()),
-                    source: None,
-                })?
-                .parse::<Decimal>()
-                .map_err(|e| BybitError::ParseError {
-                    kind: ParseErrorKind::NumberParseError,
-                    source: Some(Box::new(e)),
-                })?;
-
-            let volume = obj.get("volume24h")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| BybitError::ParseError {
-                    kind: ParseErrorKind::MissingField("volume".to_string()),
-                    source: None,
-                })?
-                .parse::<Decimal>()
-                .map_err(|e| BybitError::ParseError {
-                    kind: ParseErrorKind::NumberParseError,
-                    source: Some(Box::new(e)),
-                })?;
-
-            Ok(Some(MarketData {
-                exchange: "bybit".to_string(),
-                symbol: symbol.to_string(),
-                timestamp: DateTime::<Utc>::from_timestamp(timestamp / 1000, (timestamp % 1000) as u32 * 1_000_000)
-                    .ok_or_else(|| BybitError::ParseError {
-                        kind: ParseErrorKind::TimeParseError,
-                        source: None,
-                    })?,
-                data_type: MarketDataType::Ticker(Ticker {
-                    price: last_price,
-                    volume,
-                }),
-                quality: DataQuality::Real,
-            }))
+            Ok(Some(market_data))
         } else {
             Ok(None)
         }
     }
 
     /// 处理K线数据
-    fn process_kline(&self, symbol: &str, data: Option<Value>) -> Result<Option<MarketData>, BybitError> {
-        if let Some(Value::Array(klines)) = data {
-            if let Some(Value::Object(kline)) = klines.first() {
-                let start_time = kline.get("start")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| BybitError::ParseError {
-                        kind: ParseErrorKind::MissingField("start time".to_string()),
-                        source: None,
-                    })?;
+    fn process_kline(&self, data: &Value) -> Result<Option<MarketData>, BybitError> {
+        if let Some(kline_data) = data["data"].as_object() {
+            let market_data = MarketData {
+                exchange: Exchange::Bybit,
+                symbol: data["symbol"].as_str()
+                    .ok_or_else(|| BybitError::ParseError("Missing symbol".to_string()))?
+                    .to_string(),
+                timestamp: DateTime::parse_from_rfc3339(kline_data["timestamp"].as_str()
+                    .ok_or_else(|| BybitError::ParseError("Missing timestamp".to_string()))?)
+                    .map_err(|e| BybitError::ParseError(format!("Invalid timestamp: {}", e)))?
+                    .with_timezone(&Utc),
+                data_type: MarketDataType::Candlestick(Candlestick {
+                    timestamp: DateTime::parse_from_rfc3339(kline_data["timestamp"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing timestamp".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid timestamp: {}", e)))?
+                        .with_timezone(&Utc),
+                    open: Decimal::from_str_exact(kline_data["open"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing open price".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid open price: {}", e)))?,
+                    high: Decimal::from_str_exact(kline_data["high"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing high price".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid high price: {}", e)))?,
+                    low: Decimal::from_str_exact(kline_data["low"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing low price".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid low price: {}", e)))?,
+                    close: Decimal::from_str_exact(kline_data["close"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing close price".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid close price: {}", e)))?,
+                    volume: Decimal::from_str_exact(kline_data["volume"].as_str()
+                        .ok_or_else(|| BybitError::ParseError("Missing volume".to_string()))?)
+                        .map_err(|e| BybitError::ParseError(format!("Invalid volume: {}", e)))?,
+                }),
+                quality: DataQuality::Real,
+            };
 
-                let open = kline.get("open")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| BybitError::ParseError {
-                        kind: ParseErrorKind::MissingField("open price".to_string()),
-                        source: None,
-                    })?
-                    .parse::<Decimal>()
-                    .map_err(|e| BybitError::ParseError {
-                        kind: ParseErrorKind::NumberParseError,
-                        source: Some(Box::new(e)),
-                    })?;
-
-                let high = kline.get("high")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| BybitError::ParseError {
-                        kind: ParseErrorKind::MissingField("high price".to_string()),
-                        source: None,
-                    })?
-                    .parse::<Decimal>()
-                    .map_err(|e| BybitError::ParseError {
-                        kind: ParseErrorKind::NumberParseError,
-                        source: Some(Box::new(e)),
-                    })?;
-
-                let low = kline.get("low")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| BybitError::ParseError {
-                        kind: ParseErrorKind::MissingField("low price".to_string()),
-                        source: None,
-                    })?
-                    .parse::<Decimal>()
-                    .map_err(|e| BybitError::ParseError {
-                        kind: ParseErrorKind::NumberParseError,
-                        source: Some(Box::new(e)),
-                    })?;
-
-                let close = kline.get("close")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| BybitError::ParseError {
-                        kind: ParseErrorKind::MissingField("close price".to_string()),
-                        source: None,
-                    })?
-                    .parse::<Decimal>()
-                    .map_err(|e| BybitError::ParseError {
-                        kind: ParseErrorKind::NumberParseError,
-                        source: Some(Box::new(e)),
-                    })?;
-
-                let volume = kline.get("volume")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| BybitError::ParseError {
-                        kind: ParseErrorKind::MissingField("volume".to_string()),
-                        source: None,
-                    })?
-                    .parse::<Decimal>()
-                    .map_err(|e| BybitError::ParseError {
-                        kind: ParseErrorKind::NumberParseError,
-                        source: Some(Box::new(e)),
-                    })?;
-
-                Ok(Some(MarketData {
-                    exchange: "bybit".to_string(),
-                    symbol: symbol.to_string(),
-                    timestamp: DateTime::<Utc>::from_timestamp(start_time / 1000, (start_time % 1000) as u32 * 1_000_000)
-                        .ok_or_else(|| BybitError::ParseError {
-                            kind: ParseErrorKind::TimeParseError,
-                            source: None,
-                        })?,
-                    data_type: MarketDataType::Candlestick(Candlestick {
-                        open,
-                        high,
-                        low,
-                        close,
-                        volume,
-                    }),
-                    quality: DataQuality::Real,
-                }))
-            } else {
-                Ok(None)
-            }
+            Ok(Some(market_data))
         } else {
             Ok(None)
         }
+    }
+
+    // 验证价格范围
+    fn validate_price(&self, price: Decimal) -> bool {
+        price > Decimal::ZERO
+    }
+
+    // 验证数量范围
+    fn validate_amount(&self, amount: Decimal) -> bool {
+        amount > Decimal::ZERO
+    }
+
+    // 验证时间戳
+    fn validate_timestamp(&self, timestamp: i64) -> bool {
+        let now = Utc::now().timestamp_millis();
+        let diff = (now - timestamp).abs();
+        // 允许5秒的时间差
+        diff <= 5000
+    }
+
+    // 计算数据质量分数
+    fn calculate_quality_score(&self, data: &MarketData) -> f64 {
+        let mut score = 100.0;
+        
+        match &data.data_type {
+            MarketDataType::Trade(trades) => {
+                for trade in trades {
+                    if !self.validate_price(trade.price) {
+                        score -= 20.0;
+                    }
+                    if !self.validate_amount(trade.quantity) {
+                        score -= 20.0;
+                    }
+                    if !self.validate_timestamp(trade.timestamp.timestamp_millis()) {
+                        score -= 10.0;
+                    }
+                }
+            }
+            MarketDataType::OrderBook { bids, asks } => {
+                // 验证买卖盘价格顺序
+                if !bids.is_empty() && !asks.is_empty() {
+                    if bids[0].price >= asks[0].price {
+                        score -= 50.0;
+                    }
+                }
+                
+                // 验证价格和数量
+                for level in bids.iter().chain(asks.iter()) {
+                    if !self.validate_price(level.price) {
+                        score -= 10.0;
+                    }
+                    if !self.validate_amount(level.quantity) {
+                        score -= 10.0;
+                    }
+                }
+            }
+            MarketDataType::Candlestick(k) => {
+                // 验证K线数据的合理性
+                if k.high < k.low || k.open < k.low || k.close < k.low || 
+                   k.high < k.open || k.high < k.close {
+                    score -= 50.0;
+                }
+                if !self.validate_timestamp(k.timestamp.timestamp_millis()) {
+                    score -= 10.0;
+                }
+            }
+        }
+
+        score.max(0.0)
+    }
+
+    // 标准化交易对格式（Bybit特有的格式转换）
+    fn normalize_symbol(&self, symbol: &str) -> String {
+        symbol.to_uppercase()
+    }
+}
+
+#[async_trait]
+impl DataProcessor for BybitProcessor {
+    async fn process(&self, mut data: MarketData) -> Result<MarketData, Box<dyn std::error::Error>> {
+        let start_time = std::time::Instant::now();
+
+        // 标准化交易所名称
+        data.exchange = Exchange::Bybit;
+
+        // 标准化交易对格式
+        data.symbol = self.normalize_symbol(&data.symbol);
+
+        // 根据数据类型进行处理
+        match &mut data.data_type {
+            MarketDataType::Trade(trades) => {
+                for trade in trades {
+                    // 标准化交易方向
+                    if trade.side == Side::Unknown {
+                        trade.side = Side::Buy; // 默认设置为买入
+                    }
+                }
+            }
+            MarketDataType::OrderBook { bids, asks } => {
+                // 排序买卖盘（买盘降序，卖盘升序）
+                bids.sort_by(|a, b| b.price.cmp(&a.price));
+                asks.sort_by(|a, b| a.price.cmp(&b.price));
+
+                // 移除价格为0的档位
+                bids.retain(|level| level.price > Decimal::ZERO);
+                asks.retain(|level| level.price > Decimal::ZERO);
+            }
+            MarketDataType::Candlestick(_) => {
+                // K线数据已经在之前的解析阶段标准化
+            }
+        }
+
+        // 记录处理延迟
+        metrics::record_rest_latency(
+            "bybit",
+            "data_processing",
+            start_time,
+        );
+
+        Ok(data)
+    }
+
+    async fn validate(&self, data: &MarketData) -> Result<DataQuality, Box<dyn std::error::Error>> {
+        let start_time = std::time::Instant::now();
+
+        // 计算数据质量分数
+        let quality_score = self.calculate_quality_score(data);
+        
+        // 更新监控指标
+        metrics::update_data_quality("bybit", "market_data", quality_score);
+
+        // 记录验证延迟
+        metrics::record_rest_latency(
+            "bybit",
+            "data_validation",
+            start_time,
+        );
+
+        // 根据质量分数确定数据质量级别
+        let quality = if quality_score >= 90.0 {
+            DataQuality::Real
+        } else if quality_score >= 60.0 {
+            DataQuality::Delay
+        } else {
+            DataQuality::History
+        };
+
+        Ok(quality)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use rust_decimal_macros::dec;
 
-    #[test]
-    fn test_process_orderbook() {
-        let processor = BybitProcessor::new();
-        let data = json!({
-            "ts": "1684856606001",
-            "bids": [
-                ["27789.0", "0.407312"],
-                ["27788.9", "0.018674"]
-            ],
-            "asks": [
-                ["27789.1", "0.405632"],
-                ["27789.2", "0.021547"]
-            ]
-        });
-
-        let result = processor.process_orderbook("BTCUSDT", Some(data));
-        assert!(result.is_ok(), "Failed to process orderbook: {:?}", result);
+    #[tokio::test]
+    async fn test_process_trade() {
+        let processor = BybitProcessor::new(HashMap::new());
         
-        if let Ok(Some(market_data)) = result {
-            match market_data.data_type {
-                MarketDataType::OrderBook { bids, asks } => {
-                    assert_eq!(bids.len(), 2);
-                    assert_eq!(asks.len(), 2);
-                },
-                _ => panic!("Unexpected market data type"),
-            }
+        let trade = Trade {
+            id: "1".to_string(),
+            timestamp: Utc::now(),
+            price: dec!(50000),
+            quantity: dec!(1),
+            side: Side::Unknown,
+            quality: DataQuality::Real,
+        };
+
+        let input = MarketData {
+            exchange: Exchange::Bybit,
+            symbol: "BTCUSDT".to_string(),
+            timestamp: Utc::now(),
+            data_type: MarketDataType::Trade(vec![trade]),
+            quality: DataQuality::Real,
+        };
+
+        let processed = processor.process(input).await.unwrap();
+        
+        if let MarketDataType::Trade(trades) = processed.data_type {
+            assert_eq!(trades[0].side, Side::Buy);
+            assert_eq!(processed.symbol, "BTCUSDT");
+        } else {
+            panic!("Wrong market data type");
         }
     }
 
-    #[test]
-    fn test_process_trades() {
-        let processor = BybitProcessor::new();
-        let data = json!([{
-            "ts": "1684856606001",
-            "price": "27789.0",
-            "size": "0.407312",
-            "side": "Buy"
-        }]);
-
-        let result = processor.process_trades("BTCUSDT", Some(data));
-        assert!(result.is_ok(), "Failed to process trades: {:?}", result);
+    #[tokio::test]
+    async fn test_process_orderbook() {
+        let processor = BybitProcessor::new(HashMap::new());
         
-        if let Ok(Some(market_data)) = result {
-            match market_data.data_type {
-                MarketDataType::Trade(trades) => {
-                    assert_eq!(trades.len(), 1);
-                    assert_eq!(trades[0].side, "Buy");
-                },
-                _ => panic!("Unexpected market data type"),
-            }
+        let input = MarketData {
+            exchange: Exchange::Bybit,
+            symbol: "BTCUSDT".to_string(),
+            timestamp: Utc::now(),
+            data_type: MarketDataType::OrderBook {
+                bids: vec![
+                    OrderBookLevel {
+                        price: dec!(49000),
+                        quantity: dec!(1),
+                    },
+                    OrderBookLevel {
+                        price: dec!(50000),
+                        quantity: dec!(1),
+                    },
+                ],
+                asks: vec![
+                    OrderBookLevel {
+                        price: dec!(51000),
+                        quantity: dec!(1),
+                    },
+                    OrderBookLevel {
+                        price: dec!(50500),
+                        quantity: dec!(1),
+                    },
+                ],
+            },
+            quality: DataQuality::Real,
+        };
+
+        let processed = processor.process(input).await.unwrap();
+        
+        if let MarketDataType::OrderBook { bids, asks } = processed.data_type {
+            assert_eq!(bids[0].price, dec!(50000));
+            assert_eq!(asks[0].price, dec!(50500));
+            assert_eq!(processed.symbol, "BTCUSDT");
+        } else {
+            panic!("Wrong market data type");
         }
     }
 
-    #[test]
-    fn test_process_ticker() {
-        let processor = BybitProcessor::new();
-        let data = json!({
-            "ts": "1684856606001",
-            "lastPrice": "27789.0",
-            "volume24h": "1000.0"
-        });
-
-        let result = processor.process_ticker("BTCUSDT", Some(data));
-        assert!(result.is_ok(), "Failed to process ticker: {:?}", result);
+    #[tokio::test]
+    async fn test_validate_data() {
+        let processor = BybitProcessor::new(HashMap::new());
         
-        if let Ok(Some(market_data)) = result {
-            match market_data.data_type {
-                MarketDataType::Ticker(ticker) => {
-                    assert_eq!(ticker.price.to_string(), "27789.0");
-                    assert_eq!(ticker.volume.to_string(), "1000.0");
-                },
-                _ => panic!("Unexpected market data type"),
-            }
-        }
+        let good_data = MarketData {
+            exchange: Exchange::Bybit,
+            symbol: "BTCUSDT".to_string(),
+            timestamp: Utc::now(),
+            data_type: MarketDataType::Trade(vec![Trade {
+                id: "1".to_string(),
+                timestamp: Utc::now(),
+                price: dec!(50000),
+                quantity: dec!(1),
+                side: Side::Buy,
+                quality: DataQuality::Real,
+            }]),
+            quality: DataQuality::Real,
+        };
+
+        let quality = processor.validate(&good_data).await.unwrap();
+        assert_eq!(quality, DataQuality::Real);
+
+        let bad_data = MarketData {
+            exchange: Exchange::Bybit,
+            symbol: "BTCUSDT".to_string(),
+            timestamp: Utc::now(),
+            data_type: MarketDataType::Trade(vec![Trade {
+                id: "1".to_string(),
+                timestamp: Utc::now(),
+                price: dec!(0),
+                quantity: dec!(0),
+                side: Side::Buy,
+                quality: DataQuality::Real,
+            }]),
+            quality: DataQuality::Real,
+        };
+
+        let quality = processor.validate(&bad_data).await.unwrap();
+        assert_eq!(quality, DataQuality::History);
     }
 
-    #[test]
-    fn test_process_kline() {
-        let processor = BybitProcessor::new();
-        let data = json!([{
-            "start": 1684856606001,
-            "open": "27789.0",
-            "high": "27790.0",
-            "low": "27788.0",
-            "close": "27789.5",
-            "volume": "100.0"
-        }]);
-
-        let result = processor.process_kline("BTCUSDT", Some(data));
-        assert!(result.is_ok(), "Failed to process kline: {:?}", result);
+    #[tokio::test]
+    async fn test_symbol_normalization() {
+        let processor = BybitProcessor::new(HashMap::new());
         
-        if let Ok(Some(market_data)) = result {
-            match market_data.data_type {
-                MarketDataType::Candlestick(candle) => {
-                    assert_eq!(candle.open.to_string(), "27789.0");
-                    assert_eq!(candle.high.to_string(), "27790.0");
-                    assert_eq!(candle.low.to_string(), "27788.0");
-                    assert_eq!(candle.close.to_string(), "27789.5");
-                    assert_eq!(candle.volume.to_string(), "100.0");
-                },
-                _ => panic!("Unexpected market data type"),
-            }
-        }
-    }
-
-    #[test]
-    fn test_error_handling() {
-        let processor = BybitProcessor::new();
-        
-        // 测试缺失字段错误
-        let data = json!({
-            "ts": "1684856606001",
-            // 缺少 lastPrice 字段
-            "volume24h": "1000.0"
-        });
-        let result = processor.process_ticker("BTCUSDT", Some(data));
-        assert!(matches!(result,
-            Err(BybitError::ParseError {
-                kind: ParseErrorKind::MissingField(_),
-                ..
-            })
-        ));
-        
-        // 测试数值解析错误
-        let data = json!({
-            "ts": "1684856606001",
-            "lastPrice": "invalid",
-            "volume24h": "1000.0"
-        });
-        let result = processor.process_ticker("BTCUSDT", Some(data));
-        assert!(matches!(result,
-            Err(BybitError::ParseError {
-                kind: ParseErrorKind::NumberParseError,
-                ..
-            })
-        ));
-        
-        // 测试时间戳解析错误
-        let data = json!({
-            "ts": "invalid",
-            "lastPrice": "27789.0",
-            "volume24h": "1000.0"
-        });
-        let result = processor.process_ticker("BTCUSDT", Some(data));
-        assert!(matches!(result,
-            Err(BybitError::ParseError {
-                kind: ParseErrorKind::TimeParseError,
-                ..
-            })
-        ));
+        assert_eq!(processor.normalize_symbol("BTCUSDT"), "BTCUSDT");
+        assert_eq!(processor.normalize_symbol("ethusdt"), "ETHUSDT");
     }
 } 

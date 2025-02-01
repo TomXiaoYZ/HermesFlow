@@ -9,17 +9,17 @@ use common::{
     MarketData, DataQuality, MarketDataType, Trade, Kline, OrderBook, PriceLevel, Ticker,
     DataProcessor, Exchange, OrderBookLevel, Candlestick, Side,
 };
-use crate::error::HuobiError;
+use crate::error::GateioError;
 use crate::models;
 use crate::metrics;
 
-/// Huobi数据处理器
-pub struct HuobiProcessor {
+/// Gate.io数据处理器
+pub struct GateioProcessor {
     symbol_info: HashMap<String, Value>,
     config: HashMap<String, String>,
 }
 
-impl HuobiProcessor {
+impl GateioProcessor {
     pub fn new(config: HashMap<String, String>) -> Self {
         Self {
             symbol_info: HashMap::new(),
@@ -33,22 +33,17 @@ impl HuobiProcessor {
     }
 
     /// 处理WebSocket消息
-    pub async fn process_ws_message(&self, message: &str) -> Result<Option<MarketData>, HuobiError> {
+    pub async fn process_ws_message(&self, message: &str) -> Result<Option<MarketData>, GateioError> {
         let value: Value = serde_json::from_str(message)
-            .map_err(|e| HuobiError::ParseError(format!("Failed to parse WebSocket message: {}", e)))?;
+            .map_err(|e| GateioError::ParseError(format!("Failed to parse WebSocket message: {}", e)))?;
 
-        if let Some(ch) = value.get("ch") {
-            let channel = ch.as_str().unwrap_or("");
-            if channel.contains(".ticker") {
-                self.process_ticker(&value)
-            } else if channel.contains(".trade") {
-                self.process_trade(&value)
-            } else if channel.contains(".depth") {
-                self.process_order_book(&value)
-            } else if channel.contains(".kline") {
-                self.process_kline(&value)
-            } else {
-                Ok(None)
+        if let Some(channel) = value.get("channel") {
+            match channel.as_str() {
+                Some("spot.tickers") => self.process_ticker(&value),
+                Some("spot.trades") => self.process_trade(&value),
+                Some("spot.order_book") => self.process_order_book(&value),
+                Some("spot.candlesticks") => self.process_kline(&value),
+                _ => Ok(None),
             }
         } else {
             Ok(None)
@@ -56,36 +51,30 @@ impl HuobiProcessor {
     }
 
     /// 处理Ticker数据
-    fn process_ticker(&self, data: &Value) -> Result<Option<MarketData>, HuobiError> {
-        if let Some(ticker_data) = data["tick"].as_object() {
-            let symbol = data["ch"].as_str()
-                .ok_or_else(|| HuobiError::ParseError("Missing channel".to_string()))?
-                .split('.')
-                .nth(1)
-                .ok_or_else(|| HuobiError::ParseError("Invalid channel format".to_string()))?
+    fn process_ticker(&self, data: &Value) -> Result<Option<MarketData>, GateioError> {
+        if let Some(ticker) = data.get("result") {
+            let symbol = ticker["currency_pair"].as_str()
+                .ok_or_else(|| GateioError::ParseError("Missing symbol".to_string()))?
                 .to_string();
 
             let market_data = MarketData {
-                exchange: Exchange::Huobi,
+                exchange: Exchange::Gateio,
                 symbol,
                 timestamp: DateTime::from_timestamp_millis(
-                    data["ts"].as_i64().ok_or_else(|| HuobiError::ParseError("Missing timestamp".to_string()))?)
-                    .ok_or_else(|| HuobiError::ParseError("Invalid timestamp".to_string()))?
+                    data["time"].as_i64().ok_or_else(|| GateioError::ParseError("Missing timestamp".to_string()))?)
+                    .ok_or_else(|| GateioError::ParseError("Invalid timestamp".to_string()))?
                     .with_timezone(&Utc),
                 data_type: MarketDataType::Trade(vec![Trade {
-                    id: ticker_data["id"].as_i64()
-                        .ok_or_else(|| HuobiError::ParseError("Missing trade ID".to_string()))?
+                    id: ticker["last_id"].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing trade ID".to_string()))?
                         .to_string(),
-                    price: Decimal::from_str_exact(ticker_data["close"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing price".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid price: {}", e)))?,
-                    quantity: Decimal::from_str_exact(ticker_data["amount"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing amount".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid amount: {}", e)))?,
-                    timestamp: DateTime::from_timestamp_millis(
-                        ticker_data["ts"].as_i64().ok_or_else(|| HuobiError::ParseError("Missing timestamp".to_string()))?)
-                        .ok_or_else(|| HuobiError::ParseError("Invalid timestamp".to_string()))?
-                        .with_timezone(&Utc),
+                    price: Decimal::from_str_exact(ticker["last"].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing price".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid price: {}", e)))?,
+                    quantity: Decimal::from_str_exact(ticker["base_volume"].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing quantity".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid quantity: {}", e)))?,
+                    timestamp: Utc::now(),
                     side: Side::Unknown,
                 }]),
                 quality: DataQuality::Real,
@@ -98,41 +87,40 @@ impl HuobiProcessor {
     }
 
     /// 处理Trade数据
-    fn process_trade(&self, data: &Value) -> Result<Option<MarketData>, HuobiError> {
-        if let Some(trades) = data["tick"]["data"].as_array() {
-            let symbol = data["ch"].as_str()
-                .ok_or_else(|| HuobiError::ParseError("Missing channel".to_string()))?
-                .split('.')
-                .nth(1)
-                .ok_or_else(|| HuobiError::ParseError("Invalid channel format".to_string()))?
+    fn process_trade(&self, data: &Value) -> Result<Option<MarketData>, GateioError> {
+        if let Some(trades) = data["result"].as_array() {
+            let symbol = data["currency_pair"].as_str()
+                .ok_or_else(|| GateioError::ParseError("Missing symbol".to_string()))?
                 .to_string();
 
             let trades = trades.iter().map(|trade| {
                 Ok(Trade {
-                    id: trade["id"].as_i64()
-                        .ok_or_else(|| HuobiError::ParseError("Missing trade ID".to_string()))?
+                    id: trade["id"].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing trade ID".to_string()))?
                         .to_string(),
                     price: Decimal::from_str_exact(trade["price"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing price".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid price: {}", e)))?,
+                        .ok_or_else(|| GateioError::ParseError("Missing price".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid price: {}", e)))?,
                     quantity: Decimal::from_str_exact(trade["amount"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing amount".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid amount: {}", e)))?,
+                        .ok_or_else(|| GateioError::ParseError("Missing amount".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid amount: {}", e)))?,
                     timestamp: DateTime::from_timestamp_millis(
-                        trade["ts"].as_i64().ok_or_else(|| HuobiError::ParseError("Missing timestamp".to_string()))?)
-                        .ok_or_else(|| HuobiError::ParseError("Invalid timestamp".to_string()))?
+                        trade["create_time_ms"].as_i64()
+                            .ok_or_else(|| GateioError::ParseError("Missing timestamp".to_string()))?)
+                        .ok_or_else(|| GateioError::ParseError("Invalid timestamp".to_string()))?
                         .with_timezone(&Utc),
-                    side: if trade["direction"].as_str() == Some("buy") { Side::Buy } else { Side::Sell },
+                    side: match trade["side"].as_str() {
+                        Some("buy") => Side::Buy,
+                        Some("sell") => Side::Sell,
+                        _ => Side::Unknown,
+                    },
                 })
             }).collect::<Result<Vec<_>, _>>()?;
 
             let market_data = MarketData {
-                exchange: Exchange::Huobi,
+                exchange: Exchange::Gateio,
                 symbol,
-                timestamp: DateTime::from_timestamp_millis(
-                    data["ts"].as_i64().ok_or_else(|| HuobiError::ParseError("Missing timestamp".to_string()))?)
-                    .ok_or_else(|| HuobiError::ParseError("Invalid timestamp".to_string()))?
-                    .with_timezone(&Utc),
+                timestamp: Utc::now(),
                 data_type: MarketDataType::Trade(trades),
                 quality: DataQuality::Real,
             };
@@ -144,47 +132,47 @@ impl HuobiProcessor {
     }
 
     /// 处理OrderBook数据
-    fn process_order_book(&self, data: &Value) -> Result<Option<MarketData>, HuobiError> {
-        if let Some(book_data) = data["tick"].as_object() {
-            let symbol = data["ch"].as_str()
-                .ok_or_else(|| HuobiError::ParseError("Missing channel".to_string()))?
-                .split('.')
-                .nth(1)
-                .ok_or_else(|| HuobiError::ParseError("Invalid channel format".to_string()))?
+    fn process_order_book(&self, data: &Value) -> Result<Option<MarketData>, GateioError> {
+        if let Some(book) = data.get("result") {
+            let symbol = data["currency_pair"].as_str()
+                .ok_or_else(|| GateioError::ParseError("Missing symbol".to_string()))?
                 .to_string();
 
-            let parse_level = |level: &[Value]| -> Result<OrderBookLevel, HuobiError> {
-                if level.len() < 2 {
-                    return Err(HuobiError::ParseError("Invalid price level format".to_string()));
-                }
+            let parse_level = |price: &str, amount: &str| -> Result<OrderBookLevel, GateioError> {
                 Ok(OrderBookLevel {
-                    price: Decimal::from_str_exact(level[0].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Invalid price".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid price: {}", e)))?,
-                    quantity: Decimal::from_str_exact(level[1].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Invalid quantity".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid quantity: {}", e)))?,
+                    price: Decimal::from_str_exact(price)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid price: {}", e)))?,
+                    quantity: Decimal::from_str_exact(amount)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid quantity: {}", e)))?,
                 })
             };
 
-            let bids = book_data["bids"].as_array()
-                .ok_or_else(|| HuobiError::ParseError("Missing bids".to_string()))?
-                .chunks(2)
-                .map(parse_level)
+            let bids = book["bids"].as_array()
+                .ok_or_else(|| GateioError::ParseError("Missing bids".to_string()))?
+                .iter()
+                .map(|level| {
+                    let price = level[0].as_str().ok_or_else(|| GateioError::ParseError("Invalid bid price".to_string()))?;
+                    let amount = level[1].as_str().ok_or_else(|| GateioError::ParseError("Invalid bid amount".to_string()))?;
+                    parse_level(price, amount)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let asks = book_data["asks"].as_array()
-                .ok_or_else(|| HuobiError::ParseError("Missing asks".to_string()))?
-                .chunks(2)
-                .map(parse_level)
+            let asks = book["asks"].as_array()
+                .ok_or_else(|| GateioError::ParseError("Missing asks".to_string()))?
+                .iter()
+                .map(|level| {
+                    let price = level[0].as_str().ok_or_else(|| GateioError::ParseError("Invalid ask price".to_string()))?;
+                    let amount = level[1].as_str().ok_or_else(|| GateioError::ParseError("Invalid ask amount".to_string()))?;
+                    parse_level(price, amount)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
 
             let market_data = MarketData {
-                exchange: Exchange::Huobi,
+                exchange: Exchange::Gateio,
                 symbol,
                 timestamp: DateTime::from_timestamp_millis(
-                    data["ts"].as_i64().ok_or_else(|| HuobiError::ParseError("Missing timestamp".to_string()))?)
-                    .ok_or_else(|| HuobiError::ParseError("Invalid timestamp".to_string()))?
+                    data["time"].as_i64().ok_or_else(|| GateioError::ParseError("Missing timestamp".to_string()))?)
+                    .ok_or_else(|| GateioError::ParseError("Invalid timestamp".to_string()))?
                     .with_timezone(&Utc),
                 data_type: MarketDataType::OrderBook { bids, asks },
                 quality: DataQuality::Real,
@@ -197,42 +185,36 @@ impl HuobiProcessor {
     }
 
     /// 处理K线数据
-    fn process_kline(&self, data: &Value) -> Result<Option<MarketData>, HuobiError> {
-        if let Some(kline_data) = data["tick"].as_object() {
-            let symbol = data["ch"].as_str()
-                .ok_or_else(|| HuobiError::ParseError("Missing channel".to_string()))?
-                .split('.')
-                .nth(1)
-                .ok_or_else(|| HuobiError::ParseError("Invalid channel format".to_string()))?
+    fn process_kline(&self, data: &Value) -> Result<Option<MarketData>, GateioError> {
+        if let Some(kline) = data["result"].as_array().and_then(|arr| arr.first()) {
+            let symbol = data["currency_pair"].as_str()
+                .ok_or_else(|| GateioError::ParseError("Missing symbol".to_string()))?
                 .to_string();
 
             let market_data = MarketData {
-                exchange: Exchange::Huobi,
+                exchange: Exchange::Gateio,
                 symbol,
-                timestamp: DateTime::from_timestamp_millis(
-                    data["ts"].as_i64().ok_or_else(|| HuobiError::ParseError("Missing timestamp".to_string()))?)
-                    .ok_or_else(|| HuobiError::ParseError("Invalid timestamp".to_string()))?
-                    .with_timezone(&Utc),
+                timestamp: Utc::now(),
                 data_type: MarketDataType::Candlestick(Candlestick {
                     timestamp: DateTime::from_timestamp_millis(
-                        kline_data["id"].as_i64().ok_or_else(|| HuobiError::ParseError("Missing timestamp".to_string()))?)
-                        .ok_or_else(|| HuobiError::ParseError("Invalid timestamp".to_string()))?
+                        kline[0].as_i64().ok_or_else(|| GateioError::ParseError("Missing timestamp".to_string()))?)
+                        .ok_or_else(|| GateioError::ParseError("Invalid timestamp".to_string()))?
                         .with_timezone(&Utc),
-                    open: Decimal::from_str_exact(kline_data["open"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing open price".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid open price: {}", e)))?,
-                    high: Decimal::from_str_exact(kline_data["high"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing high price".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid high price: {}", e)))?,
-                    low: Decimal::from_str_exact(kline_data["low"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing low price".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid low price: {}", e)))?,
-                    close: Decimal::from_str_exact(kline_data["close"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing close price".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid close price: {}", e)))?,
-                    volume: Decimal::from_str_exact(kline_data["amount"].as_str()
-                        .ok_or_else(|| HuobiError::ParseError("Missing volume".to_string()))?)
-                        .map_err(|e| HuobiError::ParseError(format!("Invalid volume: {}", e)))?,
+                    open: Decimal::from_str_exact(kline[1].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing open price".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid open price: {}", e)))?,
+                    high: Decimal::from_str_exact(kline[2].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing high price".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid high price: {}", e)))?,
+                    low: Decimal::from_str_exact(kline[3].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing low price".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid low price: {}", e)))?,
+                    close: Decimal::from_str_exact(kline[4].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing close price".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid close price: {}", e)))?,
+                    volume: Decimal::from_str_exact(kline[5].as_str()
+                        .ok_or_else(|| GateioError::ParseError("Missing volume".to_string()))?)
+                        .map_err(|e| GateioError::ParseError(format!("Invalid volume: {}", e)))?,
                 }),
                 quality: DataQuality::Real,
             };
@@ -312,19 +294,19 @@ impl HuobiProcessor {
         score.max(0.0)
     }
 
-    // 标准化交易对格式（Huobi特有的格式转换）
+    // 标准化交易对格式（Gate.io特有的格式转换）
     fn normalize_symbol(&self, symbol: &str) -> String {
-        symbol.to_uppercase()
+        symbol.replace('_', "").to_uppercase()
     }
 }
 
 #[async_trait]
-impl DataProcessor for HuobiProcessor {
+impl DataProcessor for GateioProcessor {
     async fn process(&self, mut data: MarketData) -> Result<MarketData, Box<dyn std::error::Error>> {
         let start_time = std::time::Instant::now();
 
         // 标准化交易所名称
-        data.exchange = Exchange::Huobi;
+        data.exchange = Exchange::Gateio;
 
         // 标准化交易对格式
         data.symbol = self.normalize_symbol(&data.symbol);
@@ -355,7 +337,7 @@ impl DataProcessor for HuobiProcessor {
 
         // 记录处理延迟
         metrics::record_rest_latency(
-            "huobi",
+            "gateio",
             "data_processing",
             start_time,
         );
@@ -370,11 +352,11 @@ impl DataProcessor for HuobiProcessor {
         let quality_score = self.calculate_quality_score(data);
         
         // 更新监控指标
-        metrics::update_data_quality("huobi", "market_data", quality_score);
+        metrics::update_data_quality("gateio", "market_data", quality_score);
 
         // 记录验证延迟
         metrics::record_rest_latency(
-            "huobi",
+            "gateio",
             "data_validation",
             start_time,
         );
@@ -399,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_trade() {
-        let processor = HuobiProcessor::new(HashMap::new());
+        let processor = GateioProcessor::new(HashMap::new());
         
         let trade = Trade {
             id: "1".to_string(),
@@ -411,8 +393,8 @@ mod tests {
         };
 
         let input = MarketData {
-            exchange: Exchange::Huobi,
-            symbol: "btcusdt".to_string(),
+            exchange: Exchange::Gateio,
+            symbol: "btc_usdt".to_string(),
             timestamp: Utc::now(),
             data_type: MarketDataType::Trade(vec![trade]),
             quality: DataQuality::Real,
@@ -430,11 +412,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_orderbook() {
-        let processor = HuobiProcessor::new(HashMap::new());
+        let processor = GateioProcessor::new(HashMap::new());
         
         let input = MarketData {
-            exchange: Exchange::Huobi,
-            symbol: "btcusdt".to_string(),
+            exchange: Exchange::Gateio,
+            symbol: "btc_usdt".to_string(),
             timestamp: Utc::now(),
             data_type: MarketDataType::OrderBook {
                 bids: vec![
@@ -474,11 +456,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_data() {
-        let processor = HuobiProcessor::new(HashMap::new());
+        let processor = GateioProcessor::new(HashMap::new());
         
         let good_data = MarketData {
-            exchange: Exchange::Huobi,
-            symbol: "btcusdt".to_string(),
+            exchange: Exchange::Gateio,
+            symbol: "btc_usdt".to_string(),
             timestamp: Utc::now(),
             data_type: MarketDataType::Trade(vec![Trade {
                 id: "1".to_string(),
@@ -495,8 +477,8 @@ mod tests {
         assert_eq!(quality, DataQuality::Real);
 
         let bad_data = MarketData {
-            exchange: Exchange::Huobi,
-            symbol: "btcusdt".to_string(),
+            exchange: Exchange::Gateio,
+            symbol: "btc_usdt".to_string(),
             timestamp: Utc::now(),
             data_type: MarketDataType::Trade(vec![Trade {
                 id: "1".to_string(),
@@ -515,9 +497,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_symbol_normalization() {
-        let processor = HuobiProcessor::new(HashMap::new());
+        let processor = GateioProcessor::new(HashMap::new());
         
-        assert_eq!(processor.normalize_symbol("btcusdt"), "BTCUSDT");
-        assert_eq!(processor.normalize_symbol("ethusdt"), "ETHUSDT");
+        assert_eq!(processor.normalize_symbol("btc_usdt"), "BTCUSDT");
+        assert_eq!(processor.normalize_symbol("eth_usdt"), "ETHUSDT");
     }
 } 

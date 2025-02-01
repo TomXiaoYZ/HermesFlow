@@ -19,6 +19,7 @@ use tokio::time::sleep;
 use common::{MarketData, DataQuality, MarketDataType, CollectorError};
 use crate::error::{BinanceError, WebSocketErrorKind};
 use crate::types::{WebSocketResponse, WebSocketEvent, SubscribeRequest, UnsubscribeRequest};
+use common::metrics;
 
 type WebSocketConnection = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -53,6 +54,7 @@ pub struct WebSocketClient {
 
 impl WebSocketClient {
     pub fn new(endpoint: &str) -> Self {
+        metrics::init(); // 初始化监控系统
         Self {
             endpoint: endpoint.to_string(),
             state: Arc::new(Mutex::new(WebSocketState {
@@ -82,12 +84,14 @@ impl WebSocketClient {
     pub async fn connect(&mut self) -> Result<(), BinanceError> {
         let mut state = self.state.lock().await;
         if state.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+            metrics::record_error("binance", "max_reconnect_attempts_reached");
             return Err(CollectorError::ConnectionError(
                 "Max reconnection attempts reached".to_string()
             ).into());
         }
 
         let url = Url::parse(&self.endpoint)?;
+        let start_time = Instant::now();
 
         match connect_async(url).await {
             Ok((ws_stream, _)) => {
@@ -95,20 +99,20 @@ impl WebSocketClient {
                 state.is_connected = true;
                 state.last_reconnect = Some(Instant::now());
                 state.reconnect_attempts = 0;
+                metrics::update_connection_status("binance", "websocket", true);
+                metrics::record_ws_latency("binance", "connect", start_time);
                 info!("Connected to Binance WebSocket server");
                 self.last_ping = Some(Instant::now());
                 self.last_pong = Some(Instant::now());
                 Ok(())
             }
             Err(e) => {
-                state.reconnect_attempts += 1;
-                let delay = Self::calculate_reconnect_delay(state.reconnect_attempts);
-                error!(
-                    "Connection failed (attempt {}/{}), retrying in {:?}: {}",
-                    state.reconnect_attempts, MAX_RECONNECT_ATTEMPTS, delay, e
-                );
-                tokio::time::sleep(delay).await;
-                Err(e.into())
+                metrics::record_error("binance", "connection_failed");
+                metrics::update_connection_status("binance", "websocket", false);
+                Err(BinanceError::WebSocketError {
+                    kind: WebSocketErrorKind::ConnectionFailed,
+                    source: Some(Box::new(e)),
+                })
             }
         }
     }
@@ -325,12 +329,14 @@ impl WebSocketClient {
         text: String,
         tx: &mpsc::Sender<(MarketData, DataQuality)>,
     ) -> Result<(), BinanceError> {
+        let start_time = Instant::now();
         // 解析 WebSocket 响应
         let response: WebSocketResponse = serde_json::from_str(&text)?;
 
         // 如果是订阅响应，直接返回
         if response.id.is_some() {
             debug!("Received subscription response: {:?}", response);
+            metrics::record_ws_latency("binance", "message_processing", start_time);
             return Ok(());
         }
 
@@ -447,6 +453,7 @@ impl WebSocketClient {
                 })?;
         }
 
+        metrics::record_ws_latency("binance", "message_processing", start_time);
         Ok(())
     }
 
