@@ -5,244 +5,115 @@ use reqwest;
 use serde_json;
 use common::CollectorError;
 
-/// Binance 错误类型
-#[derive(Error, Debug)]
-pub enum BinanceError {
-    /// WebSocket 相关错误
-    #[error("WebSocket error: {kind}")]
-    WebSocketError {
-        kind: WebSocketErrorKind,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
+/// WebSocket 错误类型
+#[derive(Debug, Error)]
+pub enum WebSocketErrorKind {
+    #[error("连接错误: {0}")]
+    ConnectionError(String),
 
-    /// REST API 相关错误
-    #[error("REST API error: {kind}")]
-    RestError {
-        kind: RestErrorKind,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
+    #[error("发送错误: {0}")]
+    SendError(String),
 
-    /// 数据解析错误
-    #[error("Parse error: {kind}")]
-    ParseError {
-        kind: ParseErrorKind,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
+    #[error("接收错误: {0}")]
+    ReceiveError(String),
 
-    /// 配置错误
-    #[error("Config error: {msg}")]
-    ConfigError {
-        msg: String,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-
-    /// 网络错误
-    #[error("Network error: {msg}")]
-    NetworkError {
-        msg: String,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-
-    /// 认证错误
-    #[error("Authentication error: {msg}")]
-    AuthError {
-        msg: String,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
-
-    /// 限流错误
-    #[error("Rate limit exceeded: {msg}")]
-    RateLimitError {
-        msg: String,
-        retry_after: Option<std::time::Duration>,
-        weight: Option<u32>,
-    },
-
-    /// 业务逻辑错误
-    #[error("Business error: {code} - {msg}")]
-    BusinessError {
-        code: i32,
-        msg: String,
-    },
-
-    /// 系统错误
-    #[error("System error: {msg}")]
-    SystemError {
-        msg: String,
-        #[source]
-        source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    },
+    #[error("订阅错误: {0}")]
+    SubscriptionError(String),
 }
 
-/// WebSocket 错误类型
-#[derive(Debug)]
-pub enum WebSocketErrorKind {
-    /// 连接错误
-    ConnectionFailed,
-    /// 连接断开
-    ConnectionClosed,
-    /// 消息发送失败
-    SendFailed,
-    /// 消息接收失败
-    ReceiveFailed,
-    /// 认证失败
-    AuthenticationFailed,
-    /// 订阅失败
-    SubscriptionFailed,
-    /// 心跳超时
-    HeartbeatTimeout,
-    /// 其他错误
-    Other(String),
+/// REST API 错误类型
+#[derive(Debug, Error)]
+pub enum RestErrorKind {
+    #[error("请求错误: {0}")]
+    RequestError(String),
+
+    #[error("响应错误: {0}")]
+    ResponseError(String),
+
+    #[error("认证错误: {0}")]
+    AuthenticationError(String),
+}
+
+/// Binance 错误类型
+#[derive(Debug, Error)]
+pub enum BinanceError {
+    #[error("WebSocket错误: {0}")]
+    WebSocketError(#[from] WebSocketErrorKind),
+
+    #[error("REST API错误: {0}")]
+    RestError(#[from] RestErrorKind),
+
+    #[error("解析错误: {0}")]
+    ParseError(String),
+
+    #[error("配置错误: {0}")]
+    ConfigError(String),
+
+    #[error("系统错误: {0}")]
+    SystemError(String),
 }
 
 impl fmt::Display for WebSocketErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ConnectionFailed => write!(f, "Failed to establish WebSocket connection"),
-            Self::ConnectionClosed => write!(f, "WebSocket connection closed"),
-            Self::SendFailed => write!(f, "Failed to send WebSocket message"),
-            Self::ReceiveFailed => write!(f, "Failed to receive WebSocket message"),
-            Self::AuthenticationFailed => write!(f, "WebSocket authentication failed"),
-            Self::SubscriptionFailed => write!(f, "Failed to subscribe to WebSocket channel"),
-            Self::HeartbeatTimeout => write!(f, "WebSocket heartbeat timeout"),
-            Self::Other(msg) => write!(f, "{}", msg),
+            Self::ConnectionError(msg) => write!(f, "WebSocket connection error: {}", msg),
+            Self::SendError(msg) => write!(f, "WebSocket send error: {}", msg),
+            Self::ReceiveError(msg) => write!(f, "WebSocket receive error: {}", msg),
+            Self::SubscriptionError(msg) => write!(f, "WebSocket subscription error: {}", msg),
         }
     }
-}
-
-/// REST API 错误类型
-#[derive(Debug)]
-pub enum RestErrorKind {
-    /// 请求错误
-    RequestFailed,
-    /// 响应错误
-    ResponseError,
-    /// API 限流
-    RateLimit,
-    /// 认证失败
-    AuthenticationFailed,
-    /// 参数错误
-    InvalidParameters,
-    /// 其他错误
-    Other(String),
 }
 
 impl fmt::Display for RestErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RequestFailed => write!(f, "Failed to send REST request"),
-            Self::ResponseError => write!(f, "Invalid REST response"),
-            Self::RateLimit => write!(f, "REST API rate limit exceeded"),
-            Self::AuthenticationFailed => write!(f, "REST API authentication failed"),
-            Self::InvalidParameters => write!(f, "Invalid REST API parameters"),
-            Self::Other(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
-/// 解析错误类型
-#[derive(Debug)]
-pub enum ParseErrorKind {
-    /// JSON 解析错误
-    JsonError,
-    /// 数值解析错误
-    NumberParseError,
-    /// 时间解析错误
-    TimeParseError,
-    /// 字段缺失
-    MissingField(String),
-    /// 字段类型错误
-    InvalidFieldType(String),
-    /// 其他错误
-    Other(String),
-}
-
-impl fmt::Display for ParseErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::JsonError => write!(f, "Failed to parse JSON"),
-            Self::NumberParseError => write!(f, "Failed to parse number"),
-            Self::TimeParseError => write!(f, "Failed to parse timestamp"),
-            Self::MissingField(field) => write!(f, "Missing required field: {}", field),
-            Self::InvalidFieldType(field) => write!(f, "Invalid field type: {}", field),
-            Self::Other(msg) => write!(f, "{}", msg),
+            Self::RequestError(msg) => write!(f, "REST API request error: {}", msg),
+            Self::ResponseError(msg) => write!(f, "REST API response error: {}", msg),
+            Self::AuthenticationError(msg) => write!(f, "REST API authentication error: {}", msg),
         }
     }
 }
 
 impl From<tungstenite::Error> for BinanceError {
     fn from(err: tungstenite::Error) -> Self {
-        BinanceError::WebSocketError {
-            kind: WebSocketErrorKind::Other(err.to_string()),
-            source: Some(Box::new(err)),
-        }
+        BinanceError::WebSocketError(WebSocketErrorKind::ConnectionError(err.to_string()))
     }
 }
 
 impl From<reqwest::Error> for BinanceError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
-            BinanceError::NetworkError {
-                msg: "Request timeout".to_string(),
-                source: Some(Box::new(err)),
-            }
+            BinanceError::SystemError(format!("Network error: Request timeout. {}", err))
         } else if err.is_connect() {
-            BinanceError::NetworkError {
-                msg: "Connection failed".to_string(),
-                source: Some(Box::new(err)),
-            }
+            BinanceError::SystemError(format!("Network error: Connection failed. {}", err))
         } else {
-            BinanceError::RestError {
-                kind: RestErrorKind::Other(err.to_string()),
-                source: Some(Box::new(err)),
-            }
+            BinanceError::RestError(RestErrorKind::RequestError(err.to_string()))
         }
     }
 }
 
 impl From<serde_json::Error> for BinanceError {
     fn from(err: serde_json::Error) -> Self {
-        BinanceError::ParseError {
-            kind: ParseErrorKind::JsonError,
-            source: Some(Box::new(err)),
-        }
+        BinanceError::ParseError(err.to_string())
     }
 }
 
 impl From<BinanceError> for CollectorError {
     fn from(error: BinanceError) -> Self {
         match error {
-            BinanceError::WebSocketError { kind, .. } => {
+            BinanceError::WebSocketError(kind) => {
                 CollectorError::WebSocketError(kind.to_string())
             }
-            BinanceError::RestError { kind, .. } => {
+            BinanceError::RestError(kind) => {
                 CollectorError::RestError(kind.to_string())
             }
-            BinanceError::ParseError { kind, .. } => {
-                CollectorError::ParseError(kind.to_string())
+            BinanceError::ParseError(kind) => {
+                CollectorError::ParseError(kind)
             }
-            BinanceError::ConfigError { msg, .. } => {
+            BinanceError::ConfigError(msg) => {
                 CollectorError::ConfigError(msg)
             }
-            BinanceError::NetworkError { msg, .. } => {
-                CollectorError::NetworkError(msg)
-            }
-            BinanceError::AuthError { msg, .. } => {
-                CollectorError::AuthError(msg)
-            }
-            BinanceError::RateLimitError { msg, .. } => {
-                CollectorError::RestError(format!("Rate limit exceeded: {}", msg))
-            }
-            BinanceError::BusinessError { code, msg } => {
-                CollectorError::RestError(format!("Business error {}: {}", code, msg))
-            }
-            BinanceError::SystemError { msg, .. } => {
+            BinanceError::SystemError(msg) => {
                 CollectorError::SystemError(msg)
             }
         }
@@ -255,55 +126,23 @@ mod tests {
     use std::error::Error;
 
     #[test]
-    fn test_websocket_error() {
-        let err = BinanceError::WebSocketError {
-            kind: WebSocketErrorKind::ConnectionFailed,
-            source: None,
-        };
-        assert!(err.to_string().contains("WebSocket error"));
-        assert!(err.to_string().contains("Failed to establish"));
-    }
-
-    #[test]
-    fn test_rest_error() {
-        let err = BinanceError::RestError {
-            kind: RestErrorKind::RateLimit,
-            source: None,
-        };
-        assert!(err.to_string().contains("REST API error"));
-        assert!(err.to_string().contains("rate limit"));
-    }
-
-    #[test]
-    fn test_parse_error() {
-        let err = BinanceError::ParseError {
-            kind: ParseErrorKind::MissingField("price".to_string()),
-            source: None,
-        };
-        assert!(err.to_string().contains("Parse error"));
-        assert!(err.to_string().contains("Missing required field"));
-    }
-
-    #[test]
     fn test_error_conversion() {
-        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
-        let binance_err: BinanceError = json_err.into();
-        let collector_err: CollectorError = binance_err.into();
-        
-        assert!(matches!(collector_err, CollectorError::ParseError(_)));
+        let ws_error = WebSocketErrorKind::ConnectionError("连接失败".to_string());
+        let error: BinanceError = ws_error.into();
+        assert!(matches!(error, BinanceError::WebSocketError(_)));
+    }
+
+    #[test]
+    fn test_error_display() {
+        let error = BinanceError::ParseError("无效的JSON格式".to_string());
+        assert_eq!(error.to_string(), "解析错误: 无效的JSON格式");
     }
 
     #[test]
     fn test_error_source() {
-        let err = BinanceError::NetworkError {
-            msg: "Connection timeout".to_string(),
-            source: Some(Box::new(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Timeout",
-            ))),
-        };
+        let err = BinanceError::SystemError("Connection timeout".to_string());
         
-        assert!(err.source().is_some());
+        assert!(err.source().is_none());
         assert!(err.to_string().contains("Connection timeout"));
     }
 } 

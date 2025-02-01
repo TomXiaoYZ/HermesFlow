@@ -2,7 +2,7 @@ use std::sync::Arc;
 use reqwest::{Client, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::error;
 use chrono::Utc;
 use serde_json::Value;
@@ -13,10 +13,11 @@ use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use rust_decimal::Decimal;
 use url::Url;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 use common::{MarketData, DataQuality, MarketDataType, CollectorError};
 use crate::error::{BinanceError, RestErrorKind};
-use crate::types::{ApiResponse, Kline};
+use crate::types::{ApiResponse, Kline, Symbol};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -342,67 +343,299 @@ impl RestClient {
             source: Some(Box::new(e)),
         })
     }
+
+    /// 生成签名
+    fn sign(&self, method: &str, path: &str, params: &str) -> Result<String, BinanceError> {
+        if let Some(secret) = &self.config.api_secret {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                .to_string();
+
+            let sign_content = format!(
+                "{}\n{}\n{}\n{}",
+                method.to_uppercase(),
+                path,
+                timestamp,
+                params
+            );
+
+            let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                .map_err(|e| BinanceError::RestError(RestErrorKind::AuthenticationError(e.to_string())))?;
+            mac.update(sign_content.as_bytes());
+            let result = mac.finalize();
+            Ok(BASE64.encode(result.into_bytes()))
+        } else {
+            Err(BinanceError::RestError(RestErrorKind::AuthenticationError(
+                "API secret not configured".to_string(),
+            )))
+        }
+    }
+
+    /// 构建请求
+    async fn request<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        params: Option<String>,
+    ) -> Result<T, BinanceError> {
+        let url = format!("{}{}", self.config.endpoint, path);
+        let mut request_builder = self.client.request(method.clone(), &url);
+
+        // 添加认证信息（如果需要）
+        if let Some(api_key) = &self.config.api_key {
+            let signature = self.sign(
+                method.as_str(),
+                path,
+                &params.clone().unwrap_or_default(),
+            )?;
+            request_builder = request_builder
+                .header("X-MBX-APIKEY", api_key)
+                .header("Content-Type", "application/json");
+        }
+
+        // 添加查询参数
+        if let Some(params) = params {
+            request_builder = request_builder.body(params);
+        }
+
+        debug!("发送请求: {} {}", method, url);
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|e| BinanceError::RestError(RestErrorKind::RequestError(e.to_string())))?;
+
+        // 检查响应状态
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(BinanceError::RestError(RestErrorKind::ResponseError(format!(
+                "HTTP error {}: {}",
+                status,
+                error_text
+            )))));
+        }
+
+        // 解析响应
+        let response_text = response
+            .text()
+            .await
+            .map_err(|e| BinanceError::RestError(RestErrorKind::ResponseError(e.to_string())))?;
+        debug!("收到响应: {}", response_text);
+
+        serde_json::from_str(&response_text)
+            .map_err(|e| BinanceError::RestError(RestErrorKind::ResponseError(e.to_string())))
+    }
+
+    /// 构建请求（带重试机制）
+    async fn request_with_retry<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        params: Option<String>,
+        max_retries: u32,
+    ) -> Result<T, BinanceError> {
+        let mut retries = 0;
+        let mut last_error = None;
+
+        while retries < max_retries {
+            match self.request(method.clone(), path, params.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    last_error = Some(e);
+                    retries += 1;
+                    if retries < max_retries {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            BinanceError::RestError(RestErrorKind::RequestError(
+                "Maximum retries exceeded".to_string(),
+            ))
+        }))
+    }
+
+    /// 获取所有交易对信息（带重试）
+    pub async fn get_symbols(&self) -> Result<Vec<Symbol>, BinanceError> {
+        let response: ApiResponse<Vec<Symbol>> = self
+            .request_with_retry(reqwest::Method::GET, "/api/v3/exchangeInfo", None, 3)
+            .await?;
+
+        match response.data {
+            Some(symbols) => Ok(symbols),
+            None => Err(BinanceError::RestError(RestErrorKind::ResponseError(
+                "No symbols data in response".to_string(),
+            ))),
+        }
+    }
+
+    /// 获取指定交易对的最新行情（带重试）
+    pub async fn get_ticker(&self, symbol: &str) -> Result<serde_json::Value, BinanceError> {
+        let path = format!("/api/v3/ticker/24hr?symbol={}", symbol.to_uppercase());
+        self.request_with_retry(reqwest::Method::GET, &path, None, 3).await
+    }
+
+    /// 获取指定交易对的最新深度数据（带重试）
+    pub async fn get_depth(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<serde_json::Value, BinanceError> {
+        let path = format!(
+            "/api/v3/depth?symbol={}&limit={}",
+            symbol.to_uppercase(),
+            limit
+        );
+        self.request_with_retry(reqwest::Method::GET, &path, None, 3).await
+    }
+
+    /// 获取指定交易对的最新成交记录（带重试）
+    pub async fn get_trades(&self, symbol: &str) -> Result<serde_json::Value, BinanceError> {
+        let path = format!("/api/v3/trades?symbol={}&limit=20", symbol.to_uppercase());
+        self.request_with_retry(reqwest::Method::GET, &path, None, 3).await
+    }
+
+    /// 获取指定交易对的K线数据（带重试）
+    pub async fn get_klines(
+        &self,
+        symbol: &str,
+        interval: &str,
+        limit: u32,
+    ) -> Result<serde_json::Value, BinanceError> {
+        let path = format!(
+            "/api/v3/klines?symbol={}&interval={}&limit={}",
+            symbol.to_uppercase(),
+            interval,
+            limit
+        );
+        self.request_with_retry(reqwest::Method::GET, &path, None, 3).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::timeout;
+    use std::time::Duration;
 
-    #[tokio::test]
-    async fn test_rest_client_init() {
-        let client = RestClient::new(
-            "https://api.binance.com",
-            Some("test_key".to_string()),
-            Some("test_secret".to_string()),
-        );
-        assert_eq!(client.config.endpoint, "https://api.binance.com");
-        assert_eq!(client.config.api_key, Some("test_key".to_string()));
-        assert_eq!(client.config.api_secret, Some("test_secret".to_string()));
+    const TEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+    async fn create_test_client() -> RestClient {
+        RestClient::new("https://api.binance.com", None, None)
     }
 
     #[tokio::test]
-    async fn test_rest_client_rate_limit() {
-        let client = RestClient::new("https://api.binance.com", None, None);
+    async fn test_get_symbols() {
+        let client = create_test_client().await;
+        let result = timeout(TEST_TIMEOUT, client.get_symbols()).await;
         
-        // 测试速率限制检查
-        for _ in 0..5 {
-            let result = client.check_rate_limit().await;
-            assert!(result.is_ok());
+        match result {
+            Ok(Ok(symbols)) => {
+                assert!(!symbols.is_empty(), "应该返回至少一个交易对");
+                let btc_symbol = symbols.iter().find(|s| s.symbol == "BTCUSDT");
+                assert!(btc_symbol.is_some(), "应该包含 BTCUSDT 交易对");
+            }
+            Ok(Err(e)) => {
+                println!("获取交易对信息失败: {:?}", e);
+                assert!(false, "获取交易对信息不应该失败");
+            }
+            Err(_) => {
+                println!("获取交易对信息超时");
+                assert!(false, "获取交易对信息不应该超时");
+            }
         }
     }
 
     #[tokio::test]
-    async fn test_rest_client_get_ticker() {
-        let client = RestClient::new("https://api.binance.com", None, None);
-        let result = client.get_ticker_price("BTCUSDT").await;
-        assert!(result.is_ok());
-
-        if let Ok(data) = result {
-            assert!(data["symbol"].as_str().unwrap() == "BTCUSDT");
-            assert!(data["price"].as_str().is_some());
+    async fn test_get_ticker() {
+        let client = create_test_client().await;
+        let result = timeout(TEST_TIMEOUT, client.get_ticker("BTCUSDT")).await;
+        
+        match result {
+            Ok(Ok(ticker)) => {
+                assert!(ticker.get("symbol").is_some(), "应该包含交易对字段");
+                assert!(ticker.get("lastPrice").is_some(), "应该包含最新价格字段");
+            }
+            Ok(Err(e)) => {
+                println!("获取行情数据失败: {:?}", e);
+                assert!(false, "获取行情数据不应该失败");
+            }
+            Err(_) => {
+                println!("获取行情数据超时");
+                assert!(false, "获取行情数据不应该超时");
+            }
         }
     }
 
     #[tokio::test]
-    async fn test_rest_client_get_klines() {
-        let client = RestClient::new("https://api.binance.com", None, None);
-        let result = client.get_klines("BTCUSDT", "1m", Some(10)).await;
-        assert!(result.is_ok());
-
-        if let Ok(data) = result {
-            assert!(data.as_array().unwrap().len() <= 10);
+    async fn test_get_depth() {
+        let client = create_test_client().await;
+        let result = timeout(TEST_TIMEOUT, client.get_depth("BTCUSDT", 20)).await;
+        
+        match result {
+            Ok(Ok(depth)) => {
+                assert!(depth.get("lastUpdateId").is_some(), "应该包含更新ID字段");
+                assert!(depth.get("bids").is_some(), "应该包含买单数据");
+                assert!(depth.get("asks").is_some(), "应该包含卖单数据");
+            }
+            Ok(Err(e)) => {
+                println!("获取深度数据失败: {:?}", e);
+                assert!(false, "获取深度数据不应该失败");
+            }
+            Err(_) => {
+                println!("获取深度数据超时");
+                assert!(false, "获取深度数据不应该超时");
+            }
         }
     }
 
     #[tokio::test]
-    async fn test_rest_client_get_depth() {
-        let client = RestClient::new("https://api.binance.com", None, None);
-        let result = client.get_depth("BTCUSDT", Some(5)).await;
-        assert!(result.is_ok());
+    async fn test_get_trades() {
+        let client = create_test_client().await;
+        let result = timeout(TEST_TIMEOUT, client.get_trades("BTCUSDT")).await;
+        
+        match result {
+            Ok(Ok(trades)) => {
+                assert!(trades.as_array().is_some(), "应该返回数组格式的成交记录");
+                if let Some(trades_array) = trades.as_array() {
+                    assert!(!trades_array.is_empty(), "应该包含至少一条成交记录");
+                }
+            }
+            Ok(Err(e)) => {
+                println!("获取成交数据失败: {:?}", e);
+                assert!(false, "获取成交数据不应该失败");
+            }
+            Err(_) => {
+                println!("获取成交数据超时");
+                assert!(false, "获取成交数据不应该超时");
+            }
+        }
+    }
 
-        if let Ok(data) = result {
-            assert!(data["bids"].as_array().is_some());
-            assert!(data["asks"].as_array().is_some());
+    #[tokio::test]
+    async fn test_get_klines() {
+        let client = create_test_client().await;
+        let result = timeout(TEST_TIMEOUT, client.get_klines("BTCUSDT", "1m", 10)).await;
+        
+        match result {
+            Ok(Ok(klines)) => {
+                assert!(klines.as_array().is_some(), "应该返回数组格式的K线数据");
+                if let Some(klines_array) = klines.as_array() {
+                    assert!(!klines_array.is_empty(), "应该包含至少一条K线数据");
+                }
+            }
+            Ok(Err(e)) => {
+                println!("获取K线数据失败: {:?}", e);
+                assert!(false, "获取K线数据不应该失败");
+            }
+            Err(_) => {
+                println!("获取K线数据超时");
+                assert!(false, "获取K线数据不应该超时");
+            }
         }
     }
 } 

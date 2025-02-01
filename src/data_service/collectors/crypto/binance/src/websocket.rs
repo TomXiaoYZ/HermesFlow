@@ -14,10 +14,11 @@ use url::Url;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use tokio::net::TcpStream;
+use tokio::time::sleep;
 
 use common::{MarketData, DataQuality, MarketDataType, CollectorError};
 use crate::error::{BinanceError, WebSocketErrorKind};
-use crate::types::{WebSocketResponse, WebSocketEvent};
+use crate::types::{WebSocketResponse, WebSocketEvent, SubscribeRequest, UnsubscribeRequest};
 
 type WebSocketConnection = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -26,6 +27,7 @@ const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const PONG_TIMEOUT: Duration = Duration::from_secs(5);
+const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 /// WebSocket客户端状态
 #[derive(Debug, Clone)]
@@ -44,6 +46,9 @@ pub struct WebSocketClient {
     state: Arc<Mutex<WebSocketState>>,
     ws_stream: Option<WebSocketConnection>,
     shutdown_tx: Option<mpsc::Sender<()>>,
+    last_ping: Option<Instant>,
+    last_pong: Option<Instant>,
+    subscriptions: Vec<String>,
 }
 
 impl WebSocketClient {
@@ -60,6 +65,9 @@ impl WebSocketClient {
             })),
             ws_stream: None,
             shutdown_tx: None,
+            last_ping: None,
+            last_pong: None,
+            subscriptions: Vec::new(),
         }
     }
 
@@ -88,6 +96,8 @@ impl WebSocketClient {
                 state.last_reconnect = Some(Instant::now());
                 state.reconnect_attempts = 0;
                 info!("Connected to Binance WebSocket server");
+                self.last_ping = Some(Instant::now());
+                self.last_pong = Some(Instant::now());
                 Ok(())
             }
             Err(e) => {
@@ -439,6 +449,143 @@ impl WebSocketClient {
 
         Ok(())
     }
+
+    /// 重新连接
+    pub async fn reconnect(&mut self) -> Result<(), BinanceError> {
+        warn!("正在尝试重新连接...");
+        self.ws_stream = None;
+        sleep(RECONNECT_DELAY).await;
+        self.connect().await
+    }
+
+    /// 关闭连接
+    pub async fn close(&mut self) -> Result<(), BinanceError> {
+        if let Some(ws_stream) = self.ws_stream.as_mut() {
+            ws_stream.close(None).await.map_err(|e| {
+                BinanceError::WebSocketError(WebSocketErrorKind::ConnectionError(e.to_string()))
+            })?;
+        }
+        self.ws_stream = None;
+        self.subscriptions.clear();
+        Ok(())
+    }
+
+    /// 订阅特定主题
+    pub async fn subscribe_topic(&mut self, topic: &str) -> Result<(), BinanceError> {
+        let request = SubscribeRequest {
+            method: "SUBSCRIBE".to_string(),
+            params: vec![topic.to_string()],
+            id: 1,
+        };
+
+        if let Some(ws_stream) = self.ws_stream.as_mut() {
+            let message = serde_json::to_string(&request).map_err(|e| {
+                BinanceError::WebSocketError(WebSocketErrorKind::SendError(e.to_string()))
+            })?;
+
+            ws_stream
+                .send(Message::Text(message))
+                .await
+                .map_err(|e| {
+                    BinanceError::WebSocketError(WebSocketErrorKind::SendError(e.to_string()))
+                })?;
+
+            self.subscriptions.push(topic.to_string());
+            debug!("已订阅主题: {}", topic);
+        } else {
+            return Err(BinanceError::WebSocketError(
+                WebSocketErrorKind::ConnectionError("WebSocket未连接".to_string()),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// 取消订阅特定主题
+    pub async fn unsubscribe_topic(&mut self, topic: &str) -> Result<(), BinanceError> {
+        let request = UnsubscribeRequest {
+            method: "UNSUBSCRIBE".to_string(),
+            params: vec![topic.to_string()],
+            id: 1,
+        };
+
+        if let Some(ws_stream) = self.ws_stream.as_mut() {
+            let message = serde_json::to_string(&request).map_err(|e| {
+                BinanceError::WebSocketError(WebSocketErrorKind::SendError(e.to_string()))
+            })?;
+
+            ws_stream
+                .send(Message::Text(message))
+                .await
+                .map_err(|e| {
+                    BinanceError::WebSocketError(WebSocketErrorKind::SendError(e.to_string()))
+                })?;
+
+            self.subscriptions.retain(|x| x != topic);
+            debug!("已取消订阅主题: {}", topic);
+        } else {
+            return Err(BinanceError::WebSocketError(
+                WebSocketErrorKind::ConnectionError("WebSocket未连接".to_string()),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// 接收消息
+    pub async fn receive_message(&mut self) -> Result<Option<String>, BinanceError> {
+        if let Some(ws_stream) = self.ws_stream.as_mut() {
+            match ws_stream.next().await {
+                Some(Ok(message)) => match message {
+                    Message::Text(text) => {
+                        debug!("收到文本消息: {}", text);
+                        Ok(Some(text))
+                    }
+                    Message::Binary(data) => {
+                        let text = String::from_utf8(data).map_err(|e| {
+                            BinanceError::WebSocketError(WebSocketErrorKind::ReceiveError(
+                                e.to_string(),
+                            ))
+                        })?;
+                        debug!("收到二进制消息: {}", text);
+                        Ok(Some(text))
+                    }
+                    Message::Ping(_) => {
+                        ws_stream.send(Message::Pong(vec![])).await.map_err(|e| {
+                            BinanceError::WebSocketError(WebSocketErrorKind::SendError(e.to_string()))
+                        })?;
+                        Ok(None)
+                    }
+                    Message::Pong(_) => {
+                        self.last_pong = Some(Instant::now());
+                        debug!("收到 Pong 响应");
+                        Ok(None)
+                    }
+                    Message::Close(frame) => {
+                        warn!("收到关闭帧: {:?}", frame);
+                        self.reconnect().await?;
+                        Ok(None)
+                    }
+                    Message::Frame(_) => Ok(None),
+                },
+                Some(Err(e)) => {
+                    error!("WebSocket 错误: {}", e);
+                    Err(BinanceError::WebSocketError(WebSocketErrorKind::ReceiveError(
+                        e.to_string(),
+                    )))
+                }
+                None => {
+                    warn!("WebSocket 流已关闭");
+                    self.reconnect().await?;
+                    Ok(None)
+                }
+            }
+        } else {
+            Err(BinanceError::WebSocketError(WebSocketErrorKind::ConnectionError(
+                "WebSocket 未连接".to_string(),
+            )))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -559,5 +706,64 @@ mod tests {
             assert!(data_quality.is_valid);
             assert_eq!(market_data.metadata.get("interval").unwrap(), "5m");
         }
+    }
+
+    #[tokio::test]
+    async fn test_websocket_connection() {
+        let mut client = WebSocketClient::new("wss://stream.binance.com:9443/ws");
+        assert!(client.connect().await.is_ok());
+        assert!(client.close().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_subscription() {
+        let mut client = WebSocketClient::new("wss://stream.binance.com:9443/ws");
+        client.connect().await.unwrap();
+
+        // 订阅 BTC/USDT K线数据
+        let topic = "btcusdt@kline_1m";
+        assert!(client.subscribe_topic(topic).await.is_ok());
+        assert!(client.subscriptions.contains(&topic.to_string()));
+
+        // 等待并接收消息
+        let timeout_duration = Duration::from_secs(5);
+        let result = timeout(timeout_duration, client.receive_message()).await;
+        assert!(result.is_ok());
+
+        // 取消订阅
+        assert!(client.unsubscribe_topic(topic).await.is_ok());
+        assert!(!client.subscriptions.contains(&topic.to_string()));
+
+        client.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ping_pong() {
+        let mut client = WebSocketClient::new("wss://stream.binance.com:9443/ws");
+        client.connect().await.unwrap();
+
+        // 订阅一个主题来验证连接
+        let topic = "btcusdt@kline_1m";
+        assert!(client.subscribe_topic(topic).await.is_ok());
+
+        // 等待接收订阅响应
+        let timeout_duration = Duration::from_secs(5);
+        let start = Instant::now();
+        let mut received_response = false;
+
+        while start.elapsed() < timeout_duration && !received_response {
+            if let Ok(Some(msg)) = client.receive_message().await {
+                if msg.contains("\"result\"") {
+                    received_response = true;
+                }
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        assert!(received_response, "未收到订阅响应");
+
+        // 取消订阅并关闭连接
+        assert!(client.unsubscribe_topic(topic).await.is_ok());
+        client.close().await.unwrap();
     }
 } 
