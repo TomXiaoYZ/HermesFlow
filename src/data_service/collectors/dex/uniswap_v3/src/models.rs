@@ -7,6 +7,13 @@ pub struct Pool {
     pub token0: String,
     pub token1: String,
     pub fee: u32,
+    pub token0_price: f64,
+    pub token1_price: f64,
+    pub tvl_usd: f64,
+    pub token0_symbol: String,
+    pub token1_symbol: String,
+    pub token0_decimals: u8,
+    pub token1_decimals: u8,
 }
 
 /// 池子详细数据
@@ -39,8 +46,9 @@ pub struct TickData {
     pub tick_idx: i32,
     pub liquidity_gross: u128,
     pub liquidity_net: i128,
-    pub price0: Decimal,
-    pub price1: Decimal,
+    pub price: f64,
+    pub price0: f64,
+    pub price1: f64,
 }
 
 /// 头寸信息
@@ -108,6 +116,33 @@ pub enum PoolEvent {
     },
 }
 
+/// 池子状态
+#[derive(Debug, Clone)]
+pub struct PoolState {
+    pub liquidity: u128,
+    pub sqrt_price_x96: u128,
+    pub tick: i32,
+    pub observation_index: u16,
+    pub observation_cardinality: u16,
+    pub observation_cardinality_next: u16,
+    pub fee_protocol: u8,
+    pub unlocked: bool,
+}
+
+/// 交换事件
+#[derive(Debug, Clone)]
+pub struct SwapEvent {
+    pub transaction_hash: String,
+    pub timestamp: i64,
+    pub amount0: f64,
+    pub amount1: f64,
+    pub sqrt_price_x96: u128,
+    pub liquidity: u128,
+    pub tick: i32,
+    pub sender: String,
+    pub recipient: String,
+}
+
 impl Pool {
     pub fn validate_state(&self) -> bool {
         // 验证基本数据
@@ -130,8 +165,8 @@ impl Pool {
 
 impl TickData {
     pub fn validate(&self) -> bool {
-        // 验证价格和流动性
-        if self.price <= 0.0 {
+        // 验证价格
+        if self.price <= 0.0 || self.price0 <= 0.0 || self.price1 <= 0.0 {
             return false;
         }
 

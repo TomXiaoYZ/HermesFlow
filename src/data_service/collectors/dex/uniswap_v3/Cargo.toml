@@ -15,13 +15,14 @@ async-trait = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
-ethers = { version = "1.0.2" }
-ethers-core = { version = "1.0.2" }
-ethers-providers = { version = "1.0.2" }
-ethers-contract = { version = "1.0.2" }
-ethers-middleware = { version = "1.0.2" }
-ethers-signers = { version = "1.0.2" }
+ethers = { workspace = true }
+ethers-core = { workspace = true }
+ethers-providers = { workspace = true }
+ethers-contract = { workspace = true }
+ethers-middleware = { workspace = true }
+ethers-signers = { workspace = true }
 futures = { workspace = true }
+rust_decimal = { version = "1.31", features = ["serde"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
