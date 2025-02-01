@@ -1,19 +1,24 @@
 use rust_decimal::Decimal;
-use chrono::{DateTime, Utc};
 
-/// Uniswap V3 池子信息
+/// Uniswap V3 池子基本信息
 #[derive(Debug, Clone)]
 pub struct Pool {
-    pub id: String,
+    pub address: String,
     pub token0: String,
     pub token1: String,
-    pub fee_tier: u64,
-    pub liquidity: Decimal,
-    pub sqrt_price_x96: Decimal,
-    pub tick: i64,
-    pub token0_price: Decimal,
-    pub token1_price: Decimal,
-    pub updated_at: DateTime<Utc>,
+    pub fee: u32,
+}
+
+/// 池子详细数据
+#[derive(Debug, Clone)]
+pub struct PoolData {
+    pub pool: Pool,
+    pub token0_decimals: u8,
+    pub token1_decimals: u8,
+    pub liquidity: u128,
+    pub sqrt_price_x96: u128,
+    pub tick: i32,
+    pub price: Decimal,
 }
 
 /// 代币信息
@@ -31,9 +36,9 @@ pub struct Token {
 /// Tick数据
 #[derive(Debug, Clone)]
 pub struct TickData {
-    pub tick_idx: i64,
-    pub liquidity_gross: Decimal,
-    pub liquidity_net: Decimal,
+    pub tick_idx: i32,
+    pub liquidity_gross: u128,
+    pub liquidity_net: i128,
     pub price0: Decimal,
     pub price1: Decimal,
 }
@@ -53,7 +58,7 @@ pub struct Position {
 
 /// 池子事件数据
 #[derive(Debug, Clone)]
-pub enum PoolData {
+pub enum PoolEvent {
     /// Swap事件
     Swap {
         sender: String,
@@ -62,14 +67,14 @@ pub enum PoolData {
         amount1: Decimal,
         sqrt_price_x96: Decimal,
         liquidity: Decimal,
-        tick: i64,
+        tick: i32,
     },
     /// Mint事件（添加流动性）
     Mint {
         sender: String,
         owner: String,
-        tick_lower: i64,
-        tick_upper: i64,
+        tick_lower: i32,
+        tick_upper: i32,
         amount: Decimal,
         amount0: Decimal,
         amount1: Decimal,
@@ -77,8 +82,8 @@ pub enum PoolData {
     /// Burn事件（移除流动性）
     Burn {
         owner: String,
-        tick_lower: i64,
-        tick_upper: i64,
+        tick_lower: i32,
+        tick_upper: i32,
         amount: Decimal,
         amount0: Decimal,
         amount1: Decimal,
@@ -96,8 +101,8 @@ pub enum PoolData {
     Collect {
         owner: String,
         recipient: String,
-        tick_lower: i64,
-        tick_upper: i64,
+        tick_lower: i32,
+        tick_upper: i32,
         amount0: Decimal,
         amount1: Decimal,
     },

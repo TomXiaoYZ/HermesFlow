@@ -2,12 +2,19 @@
 members = [
     "src/data_service/common",
     "src/data_service/collectors/crypto/huobi",
+    "src/data_service/collectors/chain/ethereum",
+    "src/data_service/collectors/chain/solana",
+    "src/data_service/collectors/dex/uniswap_v3",
 ]
 
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
 [workspace.dependencies]
-tokio = { version = "1.32", features = ["full"] }
+tokio = { version = "1.36.0", features = ["full"] }
 tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
 futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
