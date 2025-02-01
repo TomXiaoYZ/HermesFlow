@@ -1,6 +1,25 @@
 [workspace]
 members = [
-    "src/data_service/collectors/crypto/binance"
+    "src/data_service/common",
+    "src/data_service/collectors/crypto/huobi",
 ]
 
-resolver = "2" 
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1.32", features = ["full"] }
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+url = "2.4"
+reqwest = { version = "0.11", features = ["json", "native-tls"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1.31", features = ["serde"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.21"
+thiserror = "1.0"
+async-trait = "0.1"
+flate2 = "1.0" 

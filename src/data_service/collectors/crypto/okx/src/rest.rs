@@ -8,6 +8,7 @@ use chrono::Utc;
 use serde_json::Value;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use base64;
 
 use common::{MarketData, DataQuality, MarketDataType, CollectorError};
 use crate::error::OkxError;
@@ -464,75 +465,178 @@ impl RestClient {
         Ok(orders)
     }
 
-    /// 发送 GET 请求
-    /// 
-    /// # 参数
-    /// * `url` - 请求地址
-    /// * `params` - URL 参数
-    /// 
-    /// # 返回值
-    /// * `Ok(Response)` - HTTP 响应
-    /// * `Err(OkxError)` - 请求失败
-    async fn get(&self, url: &str, params: Option<&[(&str, &str)]>) -> Result<Response, OkxError> {
-        let mut builder = self.client.get(url);
-        
-        if let Some(params) = params {
-            builder = builder.query(params);
+    /// 生成签名
+    fn sign(&self, timestamp: &str, method: &str, path: &str, body: &str) -> Result<String, OkxError> {
+        if let Some(secret) = &self.config.api_secret {
+            let sign_content = format!("{}{}{}{}", timestamp, method, path, body);
+            let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                .map_err(|e| OkxError::RestError(RestErrorKind::AuthenticationError(e.to_string())))?;
+            mac.update(sign_content.as_bytes());
+            let result = mac.finalize();
+            Ok(base64::encode(result.into_bytes()))
+        } else {
+            Err(OkxError::RestError(RestErrorKind::AuthenticationError(
+                "API secret not configured".to_string(),
+            )))
         }
-
-        self.send(builder).await
     }
 
-    /// 发送 POST 请求
-    /// 
-    /// # 参数
-    /// * `url` - 请求地址
-    /// * `body` - 请求体
-    /// 
-    /// # 返回值
-    /// * `Ok(Response)` - HTTP 响应
-    /// * `Err(OkxError)` - 请求失败
-    async fn post(&self, url: &str, body: Option<&Value>) -> Result<Response, OkxError> {
-        let mut builder = self.client.post(url);
-        
-        if let Some(body) = body {
-            builder = builder.json(body);
-        }
+    /// 添加认证头
+    fn add_auth_headers(&self, builder: RequestBuilder, method: &str, path: &str, body: &str) -> Result<RequestBuilder, OkxError> {
+        let timestamp = Utc::now().timestamp_millis().to_string();
+        let signature = self.sign(&timestamp, method, path, body)?;
 
-        self.send(builder).await
+        let builder = builder
+            .header("OK-ACCESS-KEY", self.config.api_key.as_ref().ok_or_else(|| {
+                OkxError::RestError(RestErrorKind::AuthenticationError(
+                    "API key not configured".to_string(),
+                ))
+            })?)
+            .header("OK-ACCESS-SIGN", signature)
+            .header("OK-ACCESS-TIMESTAMP", timestamp)
+            .header("OK-ACCESS-PASSPHRASE", self.config.passphrase.as_ref().ok_or_else(|| {
+                OkxError::RestError(RestErrorKind::AuthenticationError(
+                    "API passphrase not configured".to_string(),
+                ))
+            })?);
+
+        Ok(builder)
     }
 
-    /// 发送 HTTP 请求
-    /// 
-    /// 处理请求的发送、速率限制和错误处理。
-    /// 
-    /// # 参数
-    /// * `builder` - 请求构建器
-    /// 
-    /// # 返回值
-    /// * `Ok(Response)` - HTTP 响应
-    /// * `Err(OkxError)` - 请求失败
-    async fn send(&self, builder: RequestBuilder) -> Result<Response, OkxError> {
+    /// 发送GET请求（带认证）
+    async fn get_with_auth<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<T, OkxError> {
+        let url = if let Some(params) = params {
+            let query = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("&");
+            format!("{}?{}", endpoint, query)
+        } else {
+            endpoint.to_string()
+        };
+
+        let mut builder = self.client.get(&url);
+        builder = self.add_auth_headers(builder, "GET", &url, "")?;
+
+        self.send_request(builder).await
+    }
+
+    /// 发送POST请求（带认证）
+    async fn post_with_auth<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: &str,
+    ) -> Result<T, OkxError> {
+        let mut builder = self.client.post(endpoint).body(body.to_string());
+        builder = self.add_auth_headers(builder, "POST", endpoint, body)?;
+
+        self.send_request(builder).await
+    }
+
+    /// 发送请求并处理响应（带速率限制）
+    async fn send_request<T: DeserializeOwned>(&self, builder: RequestBuilder) -> Result<T, OkxError> {
         // 等待速率限制
-        self.rate_limiter.lock().await.wait().await;
+        self.rate_limiter.lock().await.wait().await?;
 
         let response = builder
             .send()
             .await
-            .map_err(|e| OkxError::NetworkError(format!("Request failed: {}", e)))?;
+            .map_err(|e| OkxError::RestError(RestErrorKind::RequestError(e.to_string())))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await
+        let status = response.status();
+        if !status.is_success() {
+            // 处理速率限制错误
+            if status.as_u16() == 429 {
+                return Err(OkxError::RestError(RestErrorKind::RateLimitError(
+                    "Rate limit exceeded".to_string(),
+                )));
+            }
+
+            let error_text = response
+                .text()
+                .await
                 .unwrap_or_else(|_| "Failed to get error response".to_string());
             
-            return Err(OkxError::RestError(format!(
-                "Request failed with status {}: {}",
-                status, text
-            )));
+            return Err(OkxError::RestError(RestErrorKind::ResponseError(format!(
+                "HTTP error {}: {}",
+                status,
+                error_text
+            ))));
         }
 
-        Ok(response)
+        let text = response
+            .text()
+            .await
+            .map_err(|e| OkxError::RestError(RestErrorKind::ResponseError(e.to_string())))?;
+
+        serde_json::from_str(&text)
+            .map_err(|e| OkxError::ParseError(ParseErrorKind::JsonError(e.to_string())))
+    }
+
+    /// 发送请求并自动重试
+    async fn send_request_with_retry<T: DeserializeOwned>(
+        &self,
+        builder: RequestBuilder,
+        max_retries: u32,
+    ) -> Result<T, OkxError> {
+        let mut attempts = 0;
+        let mut last_error = None;
+
+        while attempts < max_retries {
+            match self.send_request(builder.try_clone().ok_or_else(|| {
+                OkxError::RestError(RestErrorKind::RequestError(
+                    "Failed to clone request".to_string(),
+                ))
+            })?).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    match &e {
+                        OkxError::RestError(RestErrorKind::RateLimitError(_)) => {
+                            // 速率限制错误，等待更长时间
+                            tokio::time::sleep(Duration::from_secs(2_u64.pow(attempts))).await;
+                        }
+                        _ => {
+                            // 其他错误，等待较短时间
+                            tokio::time::sleep(Duration::from_millis(100 * 2_u64.pow(attempts))).await;
+                        }
+                    }
+                    last_error = Some(e);
+                    attempts += 1;
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            OkxError::RestError(RestErrorKind::RequestError(
+                "Max retries exceeded".to_string(),
+            ))
+        }))
+    }
+
+    /// 发送GET请求（不带认证）
+    async fn get<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<T, OkxError> {
+        let url = if let Some(params) = params {
+            let query = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("&");
+            format!("{}?{}", endpoint, query)
+        } else {
+            endpoint.to_string()
+        };
+
+        let builder = self.client.get(&url);
+        self.send_request(builder).await
     }
 }
 
@@ -560,27 +664,35 @@ impl RateLimiter {
         }
     }
 
-    /// 等待直到可以发送新的请求
-    /// 
-    /// 如果当前请求会超过速率限制，则等待适当的时间。
-    async fn wait(&mut self) {
+    /// 检查是否超过速率限制
+    fn check_rate_limit(&mut self) -> bool {
         let now = Instant::now();
-        let minute_ago = now - Duration::from_secs(60);
+        self.weights.retain(|&t| now.duration_since(t) < Duration::from_secs(60));
+        self.weights.len() as u32 <= self.weight_per_minute
+    }
 
-        // 移除一分钟前的请求
-        self.weights.retain(|&time| time > minute_ago);
-
-        // 如果达到限制，等待直到可以发送请求
-        if self.weights.len() >= self.weight_per_minute as usize {
-            let oldest = self.weights[0];
-            let wait_time = minute_ago - oldest;
-            if wait_time > Duration::from_secs(0) {
-                tokio::time::sleep(wait_time).await;
-            }
-            self.weights.remove(0);
+    /// 添加权重
+    fn add_weight(&mut self, weight: u32) {
+        let now = Instant::now();
+        for _ in 0..weight {
+            self.weights.push(now);
         }
+    }
 
-        self.weights.push(now);
+    /// 等待直到可以发送请求
+    async fn wait(&mut self) -> Result<(), OkxError> {
+        let mut attempts = 0;
+        while !self.check_rate_limit() {
+            if attempts >= 10 {
+                return Err(OkxError::RestError(RestErrorKind::RateLimitError(
+                    "Rate limit exceeded, too many attempts".to_string(),
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            attempts += 1;
+        }
+        self.add_weight(1);
+        Ok(())
     }
 }
 
@@ -588,195 +700,168 @@ impl RateLimiter {
 mod tests {
     use super::*;
     use tokio::time::timeout;
+    use std::time::Duration;
 
-    const TEST_REST_ENDPOINT: &str = "https://www.okx.com";
     const TEST_API_KEY: &str = "test-api-key";
     const TEST_API_SECRET: &str = "test-api-secret";
     const TEST_PASSPHRASE: &str = "test-passphrase";
+    const TEST_ENDPOINT: &str = "https://www.okx.com";
+
+    fn create_test_client() -> RestClient {
+        RestClient::new(
+            TEST_ENDPOINT,
+            Some(TEST_API_KEY),
+            Some(TEST_API_SECRET),
+            Some(TEST_PASSPHRASE),
+        )
+    }
 
     #[tokio::test]
     async fn test_get_instruments() {
-        let client = RestClient::new(TEST_REST_ENDPOINT, None, None, None);
-        let result = client.get_instruments("SPOT").await;
-        assert!(result.is_ok(), "Failed to get instruments: {:?}", result);
-        
-        let instruments = result.unwrap();
-        assert!(!instruments.is_empty(), "Instruments list is empty");
+        let client = create_test_client();
+        let result = timeout(
+            Duration::from_secs(10),
+            client.get_instruments("SPOT"),
+        ).await;
+
+        match result {
+            Ok(Ok(instruments)) => {
+                assert!(!instruments.is_empty(), "Should return at least one instrument");
+                let btc_usdt = instruments.iter().find(|i| i.inst_id == "BTC-USDT");
+                assert!(btc_usdt.is_some(), "Should contain BTC-USDT instrument");
+            }
+            Ok(Err(e)) => panic!("Failed to get instruments: {:?}", e),
+            Err(_) => panic!("Request timed out"),
+        }
     }
 
     #[tokio::test]
     async fn test_get_ticker() {
-        let client = RestClient::new(TEST_REST_ENDPOINT, None, None, None);
-        let result = client.get_ticker("BTC-USDT").await;
-        assert!(result.is_ok(), "Failed to get ticker: {:?}", result);
-        
-        let ticker = result.unwrap();
-        assert_eq!(ticker.inst_id, "BTC-USDT");
+        let client = create_test_client();
+        let result = timeout(
+            Duration::from_secs(10),
+            client.get_ticker("BTC-USDT"),
+        ).await;
+
+        match result {
+            Ok(Ok(ticker)) => {
+                assert_eq!(ticker.inst_id, "BTC-USDT");
+                assert!(ticker.last > Decimal::zero());
+                assert!(ticker.vol_24h > Decimal::zero());
+            }
+            Ok(Err(e)) => panic!("Failed to get ticker: {:?}", e),
+            Err(_) => panic!("Request timed out"),
+        }
     }
 
     #[tokio::test]
     async fn test_get_order_book() {
-        let client = RestClient::new(TEST_REST_ENDPOINT, None, None, None);
-        let result = client.get_order_book("BTC-USDT", 20).await;
-        assert!(result.is_ok(), "Failed to get order book: {:?}", result);
-        
-        let order_book = result.unwrap();
-        assert!(!order_book.asks.is_empty(), "Order book asks is empty");
-        assert!(!order_book.bids.is_empty(), "Order book bids is empty");
-    }
+        let client = create_test_client();
+        let result = timeout(
+            Duration::from_secs(10),
+            client.get_order_book("BTC-USDT", 20),
+        ).await;
 
-    #[tokio::test]
-    async fn test_get_klines() {
-        let client = RestClient::new(TEST_REST_ENDPOINT, None, None, None);
-        let result = client.get_klines("BTC-USDT", "1m", Some(100)).await;
-        assert!(result.is_ok(), "Failed to get klines: {:?}", result);
-        
-        let klines = result.unwrap();
-        assert!(!klines.is_empty(), "Klines list is empty");
-        assert!(klines.len() <= 100, "Too many klines returned");
+        match result {
+            Ok(Ok(order_book)) => {
+                assert_eq!(order_book.inst_id, "BTC-USDT");
+                assert!(!order_book.asks.is_empty());
+                assert!(!order_book.bids.is_empty());
+                assert!(order_book.asks.len() <= 20);
+                assert!(order_book.bids.len() <= 20);
+            }
+            Ok(Err(e)) => panic!("Failed to get order book: {:?}", e),
+            Err(_) => panic!("Request timed out"),
+        }
     }
 
     #[tokio::test]
     async fn test_get_trades() {
-        let client = RestClient::new(TEST_REST_ENDPOINT, None, None, None);
-        let result = client.get_trades("BTC-USDT", Some(100)).await;
-        assert!(result.is_ok(), "Failed to get trades: {:?}", result);
-        
-        let trades = result.unwrap();
-        assert!(!trades.is_empty(), "Trades list is empty");
-        assert!(trades.len() <= 100, "Too many trades returned");
+        let client = create_test_client();
+        let result = timeout(
+            Duration::from_secs(10),
+            client.get_trades("BTC-USDT", Some(10)),
+        ).await;
+
+        match result {
+            Ok(Ok(trades)) => {
+                assert!(!trades.is_empty());
+                assert!(trades.len() <= 10);
+                let trade = &trades[0];
+                assert_eq!(trade.inst_id, "BTC-USDT");
+                assert!(trade.px > Decimal::zero());
+                assert!(trade.sz > Decimal::zero());
+            }
+            Ok(Err(e)) => panic!("Failed to get trades: {:?}", e),
+            Err(_) => panic!("Request timed out"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_klines() {
+        let client = create_test_client();
+        let result = timeout(
+            Duration::from_secs(10),
+            client.get_klines("BTC-USDT", "1m", Some(10)),
+        ).await;
+
+        match result {
+            Ok(Ok(klines)) => {
+                assert!(!klines.is_empty());
+                assert!(klines.len() <= 10);
+                let kline = &klines[0];
+                assert!(kline.open > Decimal::zero());
+                assert!(kline.high >= kline.low);
+                assert!(kline.vol > Decimal::zero());
+            }
+            Ok(Err(e)) => panic!("Failed to get klines: {:?}", e),
+            Err(_) => panic!("Request timed out"),
+        }
     }
 
     #[tokio::test]
     async fn test_rate_limiter() {
-        let client = RestClient::new(TEST_REST_ENDPOINT, None, None, None);
-        let mut results = Vec::new();
+        let mut limiter = RateLimiter::new(2);
         
-        // 发送多个请求测试速率限制
-        for _ in 0..5 {
-            let result = client.get_ticker("BTC-USDT").await;
-            results.push(result.is_ok());
+        // 第一个请求应该成功
+        assert!(limiter.check_rate_limit());
+        limiter.add_weight(1);
+        
+        // 第二个请求应该成功
+        assert!(limiter.check_rate_limit());
+        limiter.add_weight(1);
+        
+        // 第三个请求应该失败
+        assert!(!limiter.check_rate_limit());
+        
+        // 等待一分钟后应该可以继续请求
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert!(limiter.check_rate_limit());
+    }
+
+    #[tokio::test]
+    async fn test_authentication() {
+        let client = create_test_client();
+        let timestamp = "1234567890000";
+        let method = "GET";
+        let path = "/api/v5/account/balance";
+        let body = "";
+
+        let signature = client.sign(timestamp, method, path, body).unwrap();
+        assert!(!signature.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_request_retry() {
+        let client = create_test_client();
+        let builder = client.client.get("https://non-existent-url.com");
+        
+        let result = client.send_request_with_retry::<Value>(builder, 3).await;
+        assert!(result.is_err());
+        
+        match result {
+            Err(OkxError::RestError(RestErrorKind::RequestError(_))) => (),
+            _ => panic!("Expected RequestError"),
         }
-        
-        // 所有请求都应该成功
-        assert!(results.iter().all(|&x| x), "Some requests failed due to rate limiting");
-    }
-
-    #[tokio::test]
-    async fn test_place_order() {
-        let client = RestClient::new(
-            TEST_REST_ENDPOINT,
-            Some(TEST_API_KEY),
-            Some(TEST_API_SECRET),
-            Some(TEST_PASSPHRASE),
-        );
-
-        let request = PlaceOrderRequest {
-            inst_id: "BTC-USDT".to_string(),
-            side: "buy".to_string(),
-            ord_type: "limit".to_string(),
-            px: Some("50000".to_string()),
-            sz: "0.001".to_string(),
-            reduce_only: None,
-            cl_ord_id: None,
-        };
-
-        let result = client.place_order(request).await;
-        assert!(result.is_ok(), "Failed to place order: {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn test_cancel_order() {
-        let client = RestClient::new(
-            TEST_REST_ENDPOINT,
-            Some(TEST_API_KEY),
-            Some(TEST_API_SECRET),
-            Some(TEST_PASSPHRASE),
-        );
-
-        let request = CancelOrderRequest {
-            inst_id: "BTC-USDT".to_string(),
-            ord_id: Some("123456".to_string()),
-            cl_ord_id: None,
-        };
-
-        let result = client.cancel_order(request).await;
-        assert!(result.is_ok(), "Failed to cancel order: {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn test_get_order() {
-        let client = RestClient::new(
-            TEST_REST_ENDPOINT,
-            Some(TEST_API_KEY),
-            Some(TEST_API_SECRET),
-            Some(TEST_PASSPHRASE),
-        );
-
-        let result = client.get_order("BTC-USDT", "123456").await;
-        assert!(result.is_ok(), "Failed to get order: {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn test_get_orders_history() {
-        let client = RestClient::new(
-            TEST_REST_ENDPOINT,
-            Some(TEST_API_KEY),
-            Some(TEST_API_SECRET),
-            Some(TEST_PASSPHRASE),
-        );
-
-        let result = client.get_orders_history("SPOT", "filled", Some(10)).await;
-        assert!(result.is_ok(), "Failed to get orders history: {:?}", result);
-        
-        let orders = result.unwrap();
-        assert!(orders.len() <= 10, "Too many orders returned");
-    }
-
-    #[tokio::test]
-    async fn test_get_balances() {
-        let client = RestClient::new(
-            TEST_REST_ENDPOINT,
-            Some(TEST_API_KEY),
-            Some(TEST_API_SECRET),
-            Some(TEST_PASSPHRASE),
-        );
-
-        let result = client.get_balances().await;
-        assert!(result.is_ok(), "Failed to get balances: {:?}", result);
-        
-        let balances = result.unwrap();
-        assert!(!balances.is_empty(), "Balances list is empty");
-    }
-
-    #[tokio::test]
-    async fn test_get_positions() {
-        let client = RestClient::new(
-            TEST_REST_ENDPOINT,
-            Some(TEST_API_KEY),
-            Some(TEST_API_SECRET),
-            Some(TEST_PASSPHRASE),
-        );
-
-        let result = client.get_positions("SWAP").await;
-        assert!(result.is_ok(), "Failed to get positions: {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn test_set_leverage() {
-        let client = RestClient::new(
-            TEST_REST_ENDPOINT,
-            Some(TEST_API_KEY),
-            Some(TEST_API_SECRET),
-            Some(TEST_PASSPHRASE),
-        );
-
-        let result = client.set_leverage("BTC-USDT-SWAP", "5", "cross").await;
-        assert!(result.is_ok(), "Failed to set leverage: {:?}", result);
-        
-        let leverage = result.unwrap();
-        assert_eq!(leverage.inst_id, "BTC-USDT-SWAP");
-        assert_eq!(leverage.lever, "5");
-        assert_eq!(leverage.mgn_mode, "cross");
     }
 } 

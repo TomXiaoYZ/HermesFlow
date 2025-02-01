@@ -1,0 +1,21 @@
+[package]
+name = "uniswap"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../../../../common" }
+tokio = { version = "1.0", features = ["full"] }
+web3 = "0.19"
+ethers = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1.30", features = ["serde"] }
+async-trait = "0.1"
+futures = "0.3"
+reqwest = { version = "0.11", features = ["json"] }
+url = "2.4"
+hex = "0.4" 

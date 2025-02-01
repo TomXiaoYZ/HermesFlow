@@ -225,7 +225,40 @@ impl WebSocketClient {
                 let response: WebSocketResponse = serde_json::from_str(&text)
                     .map_err(|e| OkxError::ParseError(format!("Failed to parse message: {}", e)))?;
 
-                // TODO: 实现消息处理逻辑
+                match response.event.as_deref() {
+                    Some("subscribe") => {
+                        info!("Successfully subscribed to channel");
+                        Ok(None)
+                    }
+                    Some("unsubscribe") => {
+                        info!("Successfully unsubscribed from channel");
+                        Ok(None)
+                    }
+                    Some("error") => {
+                        error!("Error from server: {:?}", response);
+                        Err(OkxError::WebSocketError(format!("Server error: {:?}", response)))
+                    }
+                    None => {
+                        // 处理市场数据
+                        if let Some(data) = response.data {
+                            let market_data = match response.channel.as_deref() {
+                                Some("tickers") => self.process_ticker(data).await?,
+                                Some("trades") => self.process_trade(data).await?,
+                                Some("books") => self.process_orderbook(data).await?,
+                                Some("candles") => self.process_kline(data).await?,
+                                _ => return Ok(None),
+                            };
+                            Ok(Some(market_data))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    _ => Ok(None),
+                }
+            }
+            Message::Binary(data) => {
+                // 处理二进制消息（如果有的话）
+                warn!("Received binary message, length: {}", data.len());
                 Ok(None)
             }
             Message::Ping(_) => {
@@ -242,51 +275,118 @@ impl WebSocketClient {
             }
             Message::Close(frame) => {
                 error!("WebSocket closed: {:?}", frame);
-                let mut state = self.state.lock().await;
-                state.is_connected = false;
-                Err(OkxError::WebSocketError("Connection closed".to_string()))
+                self.handle_disconnect().await?;
+                Ok(None)
             }
             _ => Ok(None)
         }
     }
 
+    /// 处理断开连接
+    async fn handle_disconnect(&mut self) -> Result<(), OkxError> {
+        let mut state = self.state.lock().await;
+        state.is_connected = false;
+        state.reconnect_attempts += 1;
+
+        if state.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+            return Err(OkxError::WebSocketError("Max reconnection attempts reached".to_string()));
+        }
+
+        let delay = self.calculate_reconnect_delay(state.reconnect_attempts);
+        drop(state); // 释放锁
+
+        tokio::time::sleep(delay).await;
+        self.reconnect().await
+    }
+
+    /// 重新连接
+    async fn reconnect(&mut self) -> Result<(), OkxError> {
+        self.connect().await?;
+        
+        // 重新订阅之前的频道
+        let channels = {
+            let state = self.state.lock().await;
+            state.subscribed_channels.clone()
+        };
+
+        for channel in channels {
+            let parts: Vec<&str> = channel.split(':').collect();
+            if parts.len() == 2 {
+                self.subscribe(parts[0], parts[1]).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 计算重连延迟
+    fn calculate_reconnect_delay(&self, attempts: u32) -> Duration {
+        let base_delay = INITIAL_RECONNECT_DELAY.as_secs() as u32;
+        let delay = base_delay * 2u32.pow(attempts.saturating_sub(1));
+        Duration::from_secs(delay.min(MAX_RECONNECT_DELAY.as_secs() as u32) as u64)
+    }
+
     /// 启动消息处理循环
-    pub async fn start_message_loop(&mut self) -> Result<(), OkxError> {
+    pub async fn start(&mut self, tx: mpsc::Sender<MarketData>) -> Result<(), OkxError> {
         if self.ws_stream.is_none() {
-            return Err(OkxError::WebSocketError("WebSocket not connected".to_string()));
+            self.connect().await?;
         }
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
         self.shutdown_tx = Some(shutdown_tx);
 
-        let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+        let ws_stream = self.ws_stream.take()
+            .ok_or_else(|| OkxError::WebSocketError("WebSocket not connected".to_string()))?;
+        let (mut write, mut read) = ws_stream.split();
+
+        let state = self.state.clone();
         
-        while let Some(ws_stream) = &mut self.ws_stream {
-            tokio::select! {
-                _ = ping_interval.tick() => {
-                    if let Err(e) = self.send_ping().await {
+        // 心跳检测任务
+        let heartbeat_state = state.clone();
+        let mut heartbeat_interval = tokio::time::interval(PING_INTERVAL);
+        
+        tokio::spawn(async move {
+            loop {
+                heartbeat_interval.tick().await;
+                
+                let should_ping = {
+                    let state = heartbeat_state.lock().await;
+                    state.is_connected
+                };
+
+                if should_ping {
+                    if let Err(e) = write.send(Message::Ping(vec![])).await {
                         error!("Failed to send ping: {}", e);
+                        break;
                     }
                 }
-                message = ws_stream.next() => {
+            }
+        });
+
+        // 消息处理循环
+        loop {
+            tokio::select! {
+                Some(message) = read.next() => {
                     match message {
-                        Some(Ok(msg)) => {
-                            if let Err(e) = self.handle_message(msg).await {
-                                error!("Failed to handle message: {}", e);
+                        Ok(msg) => {
+                            if let Ok(Some(market_data)) = self.handle_message(msg).await {
+                                if let Err(e) = tx.send(market_data).await {
+                                    error!("Failed to send market data: {}", e);
+                                    break;
+                                }
                             }
                         }
-                        Some(Err(e)) => {
+                        Err(e) => {
                             error!("WebSocket error: {}", e);
-                            break;
-                        }
-                        None => {
-                            error!("WebSocket stream ended");
-                            break;
+                            if let Err(e) = self.handle_disconnect().await {
+                                error!("Failed to handle disconnect: {}", e);
+                                break;
+                            }
                         }
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    info!("Shutting down WebSocket connection");
+                    info!("Received shutdown signal");
                     break;
                 }
             }
@@ -295,14 +395,8 @@ impl WebSocketClient {
         Ok(())
     }
 
-    /// 关闭 WebSocket 连接
-    /// 
-    /// 清理连接状态并关闭连接。
-    /// 
-    /// # 返回值
-    /// * `Ok(())` - 关闭成功
-    /// * `Err(OkxError)` - 关闭失败
-    pub async fn close(&mut self) -> Result<(), OkxError> {
+    /// 停止消息处理
+    pub async fn stop(&mut self) -> Result<(), OkxError> {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(()).await;
         }
@@ -364,47 +458,6 @@ impl WebSocketClient {
         }
     }
 
-    /// 重新连接到服务器
-    /// 
-    /// 在连接断开时尝试重新连接，使用指数退避策略。
-    /// 重连成功后会自动重新订阅之前的频道。
-    /// 
-    /// # 返回值
-    /// * `Ok(())` - 重连成功
-    /// * `Err(OkxError)` - 重连失败或达到最大重试次数
-    pub async fn reconnect(&mut self) -> Result<(), OkxError> {
-        let mut state = self.state.lock().await;
-        if state.reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
-            return Err(OkxError::WebSocketError("Max reconnect attempts reached".to_string()));
-        }
-
-        let delay = std::cmp::min(
-            INITIAL_RECONNECT_DELAY * 2u32.pow(state.reconnect_attempts),
-            MAX_RECONNECT_DELAY,
-        );
-        
-        state.reconnect_attempts += 1;
-        state.last_reconnect = Some(Instant::now());
-        drop(state);
-
-        tokio::time::sleep(delay).await;
-        self.connect().await?;
-
-        // 重新订阅之前的频道
-        let channels = {
-            let state = self.state.lock().await;
-            state.subscribed_channels.clone()
-        };
-
-        for channel in channels {
-            if let Some((channel_name, symbol)) = channel.split_once(':') {
-                self.subscribe(channel_name, symbol).await?;
-            }
-        }
-
-        Ok(())
-    }
-
     /// 检查连接状态
     /// 
     /// 验证连接是否正常，包括检查连接标志和 ping/pong 超时。
@@ -425,6 +478,96 @@ impl WebSocketClient {
         }
 
         Ok(())
+    }
+
+    /// 处理行情数据
+    async fn process_ticker(&self, data: Vec<serde_json::Value>) -> Result<MarketData, OkxError> {
+        let ticker: Ticker = serde_json::from_value(data[0].clone())
+            .map_err(|e| OkxError::ParseError(format!("Failed to parse ticker: {}", e)))?;
+
+        let market_data = MarketData {
+            exchange: "okx".to_string(),
+            symbol: ticker.inst_id,
+            data_type: MarketDataType::Ticker,
+            timestamp: Utc::now(),
+            received_at: Utc::now(),
+            raw_data: serde_json::to_value(&ticker)?,
+            metadata: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("volume_24h".to_string(), ticker.vol_24h.to_string());
+                map
+            },
+        };
+
+        Ok(market_data)
+    }
+
+    /// 处理成交数据
+    async fn process_trade(&self, data: Vec<serde_json::Value>) -> Result<MarketData, OkxError> {
+        let trade: Trade = serde_json::from_value(data[0].clone())
+            .map_err(|e| OkxError::ParseError(format!("Failed to parse trade: {}", e)))?;
+
+        let market_data = MarketData {
+            exchange: "okx".to_string(),
+            symbol: trade.inst_id,
+            data_type: MarketDataType::Trade,
+            timestamp: Utc::now(),
+            received_at: Utc::now(),
+            raw_data: serde_json::to_value(&trade)?,
+            metadata: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("trade_id".to_string(), trade.trade_id);
+                map.insert("side".to_string(), trade.side);
+                map
+            },
+        };
+
+        Ok(market_data)
+    }
+
+    /// 处理深度数据
+    async fn process_orderbook(&self, data: Vec<serde_json::Value>) -> Result<MarketData, OkxError> {
+        let orderbook: OrderBook = serde_json::from_value(data[0].clone())
+            .map_err(|e| OkxError::ParseError(format!("Failed to parse orderbook: {}", e)))?;
+
+        let market_data = MarketData {
+            exchange: "okx".to_string(),
+            symbol: orderbook.inst_id,
+            data_type: MarketDataType::OrderBook,
+            timestamp: Utc::now(),
+            received_at: Utc::now(),
+            raw_data: serde_json::to_value(&orderbook)?,
+            metadata: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("asks_count".to_string(), orderbook.asks.len().to_string());
+                map.insert("bids_count".to_string(), orderbook.bids.len().to_string());
+                map
+            },
+        };
+
+        Ok(market_data)
+    }
+
+    /// 处理K线数据
+    async fn process_kline(&self, data: Vec<serde_json::Value>) -> Result<MarketData, OkxError> {
+        let kline: Kline = serde_json::from_value(data[0].clone())
+            .map_err(|e| OkxError::ParseError(format!("Failed to parse kline: {}", e)))?;
+
+        let market_data = MarketData {
+            exchange: "okx".to_string(),
+            symbol: kline.inst_id,
+            data_type: MarketDataType::Kline,
+            timestamp: Utc::now(),
+            received_at: Utc::now(),
+            raw_data: serde_json::to_value(&kline)?,
+            metadata: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("volume".to_string(), kline.vol.to_string());
+                map
+            },
+        };
+
+        Ok(market_data)
     }
 }
 
@@ -448,7 +591,7 @@ mod tests {
         assert!(result.is_ok(), "Connection check failed: {:?}", result);
         
         // 测试关闭连接
-        let result = client.close().await;
+        let result = client.stop().await;
         assert!(result.is_ok(), "Failed to close connection: {:?}", result);
     }
 
@@ -481,7 +624,7 @@ mod tests {
         assert!(result.is_ok(), "Failed to unsubscribe: {:?}", result);
         
         // 关闭连接
-        client.close().await.expect("Failed to close connection");
+        client.stop().await.expect("Failed to close connection");
     }
 
     #[tokio::test]
@@ -511,7 +654,7 @@ mod tests {
         
         // 关闭连接
         drop(state);
-        client.close().await.expect("Failed to close connection");
+        client.stop().await.expect("Failed to close connection");
     }
 
     #[tokio::test]
@@ -544,6 +687,6 @@ mod tests {
         assert!(result.is_ok(), "Failed to receive pong within timeout");
         
         // 关闭连接
-        client.close().await.expect("Failed to close connection");
+        client.stop().await.expect("Failed to close connection");
     }
 } 
