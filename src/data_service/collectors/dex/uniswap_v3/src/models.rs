@@ -106,4 +106,36 @@ pub enum PoolEvent {
         amount0: Decimal,
         amount1: Decimal,
     },
+}
+
+impl Pool {
+    pub fn validate_state(&self) -> bool {
+        // 验证基本数据
+        if self.address.is_empty() || self.token0.is_empty() || self.token1.is_empty() {
+            return false;
+        }
+
+        // 验证价格和流动性
+        if self.token0_price <= 0.0 || self.token1_price <= 0.0 {
+            return false;
+        }
+
+        if self.tvl_usd < 0.0 {
+            return false;
+        }
+
+        true
+    }
+}
+
+impl TickData {
+    pub fn validate(&self) -> bool {
+        // 验证价格和流动性
+        if self.price <= 0.0 {
+            return false;
+        }
+
+        // 流动性可以为负（移除流动性的情况）
+        true
+    }
 } 

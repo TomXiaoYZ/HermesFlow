@@ -1,1 +1,28 @@
- 
+[package]
+name = "uniswap_v3"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+web3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+ethers = { version = "1.0.2" }
+ethers-core = { version = "1.0.2" }
+ethers-providers = { version = "1.0.2" }
+ethers-contract = { version = "1.0.2" }
+ethers-middleware = { version = "1.0.2" }
+ethers-signers = { version = "1.0.2" }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+pretty_assertions = "1.0" 
