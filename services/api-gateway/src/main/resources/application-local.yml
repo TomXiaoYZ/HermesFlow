@@ -1,0 +1,39 @@
+server:
+  port: 18021
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: nacos:8848
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+      routes:
+        - id: risk-service
+          uri: lb://risk-management
+          predicates:
+            - Path=/api/risk/**
+        - id: analytics-service
+          uri: lb://analytics-service
+          predicates:
+            - Path=/api/analytics/**
+      globalcors:
+        corsConfigurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+            allowCredentials: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'
+  endpoint:
+    health:
+      show-details: always 

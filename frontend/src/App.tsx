@@ -1,36 +1,18 @@
-import { Suspense } from 'react'
-import { Routes, Route } from 'react-router-dom'
-import { Spin } from 'antd'
-import styled from 'styled-components'
-
-import MainLayout from '@layouts/MainLayout'
-import { routes } from '@constants/routes'
-
-const LoadingContainer = styled.div`
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100vh;
-`
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
 
 function App() {
   return (
-    <Suspense
-      fallback={
-        <LoadingContainer>
-          <Spin size="large" />
-        </LoadingContainer>
-      }
-    >
+    <Router>
       <Routes>
-        <Route element={<MainLayout />}>
-          {routes.map((route) => (
-            <Route key={route.path} path={route.path} element={route.element} />
-          ))}
-        </Route>
+        <Route path="/login" element={<Login />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/" element={<Navigate to="/login\" replace />} />
       </Routes>
-    </Suspense>
-  )
+    </Router>
+  );
 }
 
-export default App 
+export default App;

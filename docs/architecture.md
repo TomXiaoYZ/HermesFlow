@@ -1,415 +1,555 @@
-# HermesFlow 系统架构设计文档
+# HermesFlow 系统架构文档
 
-## 1. 系统概述
+## 1. 系统架构与服务划分
 
-HermesFlow 是一个高性能的量化交易系统，支持多交易所、多策略的实时交易。系统采用微服务架构，各个组件之间通过消息队列和缓存进行解耦，保证系统的可扩展性和可维护性。
+**项目名称**: HermesFlow 量化交易平台  
+**版本**: v2.0.0  
+**架构类型**: 混合技术栈微服务架构  
+**最后更新**: 2024-12-19  
 
-## 2. 核心功能模块
+## 项目背景
 
-### 2.1 数据服务层 (Data Service Layer)
-- 市场数据采集
-  - 交易所实时数据
-    - 现货市场数据
-    - 合约市场数据
-    - 订单簿数据
-  - 链上数据
-    - 智能合约事件
-    - DeFi协议数据
-    - NFT市场数据
-  - 传统金融数据
-    - 股票市场数据
-    - 期货市场数据
-    - 外汇市场数据
-- 情绪数据采集
-  - 社交媒体数据
-    - Twitter情绪分析
-    - Reddit讨论热度
-    - 电报群组监控
-  - 新闻数据
-    - 财经新闻分析
-    - 公司公告解析
-    - 监管政策追踪
-  - 市场情绪指标
-    - 恐慌贪婪指数
-    - 期权市场情绪
-    - 市场流动性指标
-- 基础数据管理
-  - 数据清洗和标准化
-  - 数据质量监控
-  - 数据版本控制
-- 衍生数据生成
-  - 技术指标计算
-  - 情绪指标合成
-  - 相关性分析
-- 数据分发服务
-  - 实时数据推送
-  - 历史数据查询
-  - 数据订阅管理
-- AI数据分析
-  - 市场预测模型
-    - 价格趋势预测
-    - 波动率预测
-    - 流动性预测
-  - 情绪分析模型
-    - 新闻情绪分析
-    - 社交媒体情绪
-    - 市场情绪指标
-  - 异常检测模型
-    - 市场异常检测
-    - 交易异常检测
-    - 风险预警模型
-  - 特征工程
-    - 时序特征提取
-    - 关系网络分析
-    - 多模态数据融合
+HermesFlow 是一个个人使用的多租户量化交易平台，专注于成本优化和高性能交易执行。采用混合技术栈架构：Python负责数据采集处理，Java负责用户管理和策略执行，实现各技术栈的最佳适配。
 
-### 2.2 策略引擎层 (Strategy Engine Layer)
-- 策略管理
-  - 策略注册和配置
-  - 策略生命周期管理
-  - 策略权限控制
-- 回测系统
-  - 历史数据回测
-  - 性能分析
-  - 风险评估
-- 实时交易引擎
-  - 信号生成
-  - 订单管理
-  - 仓位管理
-- AI策略引擎
-  - 深度学习模型
-    - 价格预测模型
-    - 趋势识别模型
-    - 套利机会识别
-  - 强化学习模型
-    - 动态仓位管理
-    - 自适应订单执行
-    - 多周期策略优化
-  - 集成学习系统
-    - 多模型组合
-    - 动态权重调整
-    - 模型性能评估
-  - 在线学习系统
-    - 实时模型更新
-    - 增量特征学习
-    - 模型漂移检测
+### 核心设计理念
+- **技术栈优势互补**: Python专注数据处理，Java专注业务逻辑
+- **成本优化**: 轻量级多租户架构，单机支持100+用户
+- **高性能**: JDK 21虚拟线程 + Python asyncio双重优化
+- **易扩展**: 微服务架构，支持独立扩展和部署
 
-### 2.3 风控系统层 (Risk Management Layer)
-- 账户风控
-  - 资金管理
-  - 仓位限制
-  - 下单频率控制
-- 策略风控
-  - 策略监控
-  - 风险指标计算
-  - 预警机制
-- 系统风控
-  - 系统监控
-  - 错误处理
-  - 应急机制
+## 系统架构概览
 
-### 2.4 交易执行层 (Execution Layer)
-- 订单管理
-  - 订单生成
-  - 订单路由
-  - 订单跟踪
-- 交易网关
-  - 交易所接口
-  - 订单执行
-  - 状态同步
-- 清算系统
-  - 成交确认
-  - 持仓管理
-  - 资金结算
+### 混合技术栈架构图
 
-### 2.5 监控分析层 (Monitoring & Analytics Layer)
-- 系统监控
-  - 性能监控
-  - 资源使用监控
-  - 告警管理
-- 交易分析
-  - 交易统计
-  - 性能分析
-  - 策略评估
-- 报表系统
-  - 实时报表
-  - 定期报表
-  - 自定义报表
-
-## 3. 技术架构
-
-### 3.1 基础设施
-- 容器化部署
-  - Docker: 20.10+
-  - Kubernetes: 1.27+
-- 数据存储
-  - PostgreSQL: 13.0 (关系型数据)
-  - ClickHouse: 23.8 (时序数据)
-  - Redis: 7.0 (缓存系统)
-- 消息队列
-  - Kafka: 3.5
-  - ZooKeeper: 3.8
-- 监控系统
-  - Prometheus: 2.45
-  - Grafana: 10.0
-  - ELK Stack: 8.10
-    - Elasticsearch
-    - Logstash
-    - Kibana
-    - Filebeat
-
-### 3.2 核心服务与技术栈
-
-#### 3.2.1 前端技术栈
-- 核心框架
-  - React: 18.2
-  - TypeScript: 5.0
-  - Vite: 4.4
-- 状态管理
-  - Redux Toolkit: 1.9
-  - Redux Saga: 1.2
-- UI组件
-  - Ant Design: 5.8
-  - TradingView Charts: 24
-  - ECharts: 5.4
-- 工具库
-  - Axios: 1.4
-  - Dayjs: 1.11
-  - Decimal.js: 10.4
-- 开发工具
-  - ESLint: 8.45
-  - Prettier: 3.0
-  - Jest: 29.6
-
-#### 3.2.2 后端技术栈
-
-##### 数据采集服务 (Rust/Go)
-- Rust服务
-  - tokio: 1.32 (异步运行时)
-  - tungstenite: 0.20 (WebSocket)
-  - serde: 1.0 (序列化)
-  - rust-decimal: 1.31 (精确计算)
-- Go服务
-  - gin: 1.9 (Web框架)
-  - sarama: 1.38 (Kafka)
-  - zap: 1.25 (日志)
-  - sqlx: 1.20 (数据库)
-
-##### 策略引擎服务 (Python/Rust)
-- Python服务
-  - FastAPI: 0.100
-  - pandas: 2.0
-  - numpy: 1.24
-  - scikit-learn: 1.3
-  - pytorch: 2.0
-- Rust服务
-  - actix-web: 4.3
-  - rdkafka: 0.34
-  - diesel: 2.1
-
-##### 风控服务 (Go/Rust)
-- **Go服务**:
-  - gin: Web框架
-  - gorm: ORM框架
-  - redis: 缓存
-  - prometheus: 指标收集
-- **Rust服务**:
-  - actix-web: Web框架
-  - diesel: ORM框架
-  - rust-decimal: 精确计算
-
-##### 交易执行服务 (Rust/Go)
-- **Rust服务**:
-  - actix-web: Web框架
-  - rdkafka: Kafka客户端
-  - rust-decimal: 精确计算
-  - tokio: 异步运行时
-- **Go服务**:
-  - gin: Web框架
-  - sarama: Kafka客户端
-  - zap: 日志框架
-  - redis: 缓存
-
-##### 监控分析服务 (Go/Python)
-- **Go服务**:
-  - gin: Web框架
-  - prometheus: 指标收集
-  - grafana-api: Grafana集成
-  - elasticsearch: 日志存储
-- **Python服务**:
-  - FastAPI: Web框架
-  - pandas: 数据分析
-  - matplotlib: 数据可视化
-  - scikit-learn: 机器学习
-
-##### AI服务
-- 模型训练服务 (Python + CUDA)
-  - 深度学习框架：PyTorch, TensorFlow
-  - 分布式训练：Horovod, Ray
-  - GPU加速计算：CUDA, cuDNN
-- 模型推理服务 (C++ + TensorRT)
-  - 模型优化：TensorRT, ONNX
-  - 低延迟推理：libtorch, OpenVINO
-  - 批处理优化：CUDA Streams
-- 特征工程服务 (Rust + Python)
-  - 实时特征计算：Rust
-  - 离线特征生成：Python
-  - 特征存储：FeatureStore
-- 模型管理服务 (Python)
-  - 模型版本控制：MLflow
-  - 实验跟踪：Weights & Biases
-  - A/B测试：自研框架
-
-### 3.3 目录结构
-
-```
-hermesflow/
-├── docs/                           # 文档目录
-│   ├── architecture.md            # 系统架构设计文档
-│   ├── development_process.md    # 开发流程规范文档
-│   ├── progress.md              # 项目进度跟踪文档
-│   ├── api/                     # API文档
-│   │   ├── backend/            # 后端API文档
-│   │   └── frontend/           # 前端API文档
-├── frontend/                      # 前端项目
-│   ├── src/
-│   │   ├── api/                 # API接口
-│   │   ├── components/         # 通用组件
-│   │   ├── hooks/             # 自定义Hooks
-│   │   ├── layouts/           # 布局组件
-│   │   ├── pages/            # 页面组件
-│   │   ├── store/            # Redux状态
-│   │   ├── styles/           # 样式文件
-│   │   ├── types/            # 类型定义
-│   │   └── utils/            # 工具函数
-│   └── tests/                   # 测试文件
-├── src/                          # 后端服务
-│   ├── data_service/            # 数据服务
-│   │   ├── collectors/         # 数据采集
-│   │   ├── processors/        # 数据处理
-│   │   ├── storage/          # 数据存储
-│   │   └── distributors/     # 数据分发
-│   ├── strategy_engine/        # 策略引擎
-│   ├── risk_management/       # 风控系统
-│   ├── execution/             # 交易执行
-│   └── monitoring/            # 监控分析
-├── tests/                       # 测试目录
-│   ├── common/                 # 通用测试组件
-│   │   ├── fixtures/          # 测试固件
-│   │   ├── mocks/            # Mock数据和服务
-│   │   └── utils/            # 测试工具函数
-│   ├── integration/          # 集成测试
-│   │   ├── data_service/     # 数据服务测试
-│   │   │   ├── binance/     # Binance相关测试
-│   │   │   ├── okx/         # OKX相关测试
-│   │   │   └── bitget/      # Bitget相关测试
-│   │   ├── strategy_engine/ # 策略引擎测试
-│   │   ├── risk_management/ # 风控系统测试
-│   │   └── execution/       # 交易执行测试
-│   ├── unit/                # 单元测试
-│   │   ├── data_service/    # 数据服务单元测试
-│   │   ├── strategy_engine/ # 策略引擎单元测试
-│   │   ├── risk_management/ # 风控系统单元测试
-│   │   └── execution/       # 交易执行单元测试
-│   ├── performance/         # 性能测试
-│   │   ├── data_service/    # 数据服务性能测试
-│   │   ├── strategy_engine/ # 策略引擎性能测试
-│   │   └── execution/       # 交易执行性能测试
-│   └── test_plan.md         # 测试计划文档
-├── infrastructure/            # 基础设施
-│   ├── docker/              # Docker配置
-│   ├── kubernetes/         # K8s配置
-│   └── terraform/          # Terraform配置
-└── scripts/                  # 脚本工具
+```mermaid
+graph TB
+    subgraph "前端层"
+        WEB[Web界面<br/>React + TypeScript]
+        MOBILE[移动端<br/>React Native]
+    end
+    
+    subgraph "API网关层 (Java)"
+        GATEWAY[API Gateway<br/>Spring Cloud Gateway<br/>Port: 18000]
+    end
+    
+    subgraph "业务服务层"
+        subgraph "Java服务集群"
+            USER[用户管理服务<br/>Spring Boot 3.x<br/>Port: 18010]
+            STRATEGY[策略引擎服务<br/>JDK 21 Virtual Threads<br/>Port: 18020]
+            EXECUTION[交易执行服务<br/>Spring Boot 3.x<br/>Port: 18030]
+        end
+        
+        subgraph "Python服务集群"
+            DATACOLLECTOR[数据采集服务<br/>FastAPI + asyncio<br/>Port: 18001]
+            DATAPROCESSOR[数据处理服务<br/>Python 3.12<br/>Port: 18002]
+        end
+    end
+    
+    subgraph "数据存储层"
+        POSTGRES[(PostgreSQL<br/>主数据库 + RLS<br/>Port: 15432)]
+        CLICKHOUSE[(ClickHouse<br/>分析数据库<br/>Port: 18123)]
+        REDIS[(Redis<br/>缓存 + 消息<br/>Port: 16379)]
+    end
+    
+    subgraph "消息通信层"
+        KAFKA[Kafka<br/>异步消息<br/>Port: 19092]
+        GRPC[gRPC<br/>同步通信]
+    end
+    
+    subgraph "外部数据源"
+        BINANCE[Binance API]
+        OKX[OKX API]
+        BITGET[Bitget API]
+        GMGN[GMGN API]
+    end
+    
+    WEB --> GATEWAY
+    MOBILE --> GATEWAY
+    
+    GATEWAY --> USER
+    GATEWAY --> STRATEGY
+    GATEWAY --> EXECUTION
+    GATEWAY --> DATACOLLECTOR
+    
+    USER --> POSTGRES
+    USER --> REDIS
+    
+    STRATEGY --> POSTGRES
+    STRATEGY --> REDIS
+    STRATEGY --> KAFKA
+    
+    EXECUTION --> POSTGRES
+    EXECUTION --> KAFKA
+    
+    DATACOLLECTOR --> CLICKHOUSE
+    DATACOLLECTOR --> REDIS
+    DATACOLLECTOR --> KAFKA
+    
+    DATAPROCESSOR --> CLICKHOUSE
+    DATAPROCESSOR --> KAFKA
+    
+    DATACOLLECTOR --> BINANCE
+    DATACOLLECTOR --> OKX
+    DATACOLLECTOR --> BITGET
+    DATACOLLECTOR --> GMGN
+    
+    STRATEGY -.->|gRPC| DATACOLLECTOR
+    EXECUTION -.->|gRPC| DATACOLLECTOR
 ```
 
-### 3.4 开发规范
+## 核心服务架构
 
-#### 3.4.1 前端开发规范
-- 组件开发
-  - 使用函数式组件和Hooks
-  - 遵循React最佳实践
-  - 组件粒度适中，避免过度拆分
-- 状态管理
-  - 使用Redux Toolkit管理全局状态
-  - 使用Redux Saga处理异步逻辑
-  - 本地状态优先使用useState/useReducer
-- 样式开发
-  - 使用CSS Modules避免样式冲突
-  - 遵循BEM命名规范
-  - 支持暗色主题
-- 测试规范
-  - 使用Jest + React Testing Library
-  - 单元测试覆盖率>80%
-  - 编写集成测试和E2E测试
+### 1. API网关服务 (Java)
 
-#### 3.4.2 后端开发规范
-- Rust开发规范
-  - 遵循Rust 2021 Edition规范
-  - 使用async/await处理异步
-  - 错误处理使用thiserror
-  - 日志使用tracing
-- Go开发规范
-  - 遵循Effective Go指南
-  - 使用Go Modules管理依赖
-  - 错误处理遵循pkg/errors
-  - 配置使用viper
-- Python开发规范
-  - 遵循PEP 8规范
-  - 类型注解全覆盖
-  - 使用poetry管理依赖
-  - 使用pytest进行测试
+**技术栈**: Spring Cloud Gateway + Spring Security  
+**端口**: 18000  
+**职责**:
+- 统一API入口和路由管理
+- 租户识别和JWT Token验证
+- 负载均衡和熔断保护
+- API版本控制和协议转换
 
-### 3.5 部署架构
+### 2. 用户管理服务 (Java)
 
-#### 3.5.1 环境配置
-- 开发环境
-  - Docker Desktop
-  - Minikube/Kind
-  - 本地数据库
-- 测试环境
-  - AWS EKS (2个节点)
-  - RDS + ElastiCache
-  - 完整监控系统
-- 生产环境
-  - AWS EKS (4-6个节点)
-  - 多可用区部署
-  - 自动扩缩容
+**技术栈**: Spring Boot 3.x + Spring Security + JPA  
+**端口**: 18010  
+**职责**:
+- 多租户用户认证和授权
+- 权限管理和资源配额控制
+- 用户配置和偏好设置
+- 审计日志和安全监控
 
-#### 3.5.2 网络架构
-- VPC配置
-  - 公有子网: 负载均衡器
-  - 私有子网: 应用服务
-  - 数据库子网: 存储服务
-- 安全组
-  - 外部访问控制
-  - 服务间通信规则
-  - 数据库访问限制
+### 3. 策略引擎服务 (Java)
 
-#### 3.5.3 监控配置
-- 系统监控
-  - 节点资源使用率
-  - 容器性能指标
-  - 网络流量统计
-- 应用监控
-  - 服务健康状态
-  - 业务指标统计
-  - 错误率监控
-- 日志管理
-  - 集中式日志收集
-  - 日志分析和检索
-  - 告警规则配置
+**技术栈**: Spring Boot 3.x + JDK 21 Virtual Threads  
+**端口**: 18020  
+**职责**:
+- 策略开发框架和模板管理
+- 策略执行引擎和并发控制
+- 策略性能监控和优化
+- 回测引擎和历史分析
 
-#### 3.5.4 安全配置
-- 访问控制
-  - IAM角色管理
-  - RBAC权限控制
-  - API认证授权
-- 数据安全
-  - 传输加密(TLS)
-  - 存储加密(KMS)
-  - 密钥轮换
-- 审计日志
-  - API调用记录
-  - 资源变更追踪
-  - 安全事件记录
+### 4. 交易执行服务 (Java)
+
+**技术栈**: Spring Boot 3.x + WebFlux  
+**端口**: 18030  
+**职责**:
+- 订单管理和智能路由
+- 多交易所API集成
+- 风险控制和熔断保护
+- 执行报告和性能分析
+
+### 5. 数据采集服务 (Python)
+
+**技术栈**: FastAPI + asyncio + aiohttp  
+**端口**: 18001  
+**职责**:
+- 多交易所实时数据采集
+- 数据标准化和质量控制
+- 高并发WebSocket连接管理
+- 数据分发和缓存
+
+### 6. 数据处理服务 (Python)
+
+**技术栈**: Python 3.12 + Pandas + NumPy  
+**端口**: 18002  
+**职责**:
+- 历史数据处理和分析
+- 技术指标计算
+- 数据清洗和异常检测
+- 报表生成和数据导出
+
+## 多租户架构设计
+
+### 租户隔离策略
+
+**1. 数据库层隔离 (PostgreSQL RLS)**
+```sql
+-- 启用行级安全
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE strategies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+-- 创建租户隔离策略
+CREATE POLICY tenant_isolation ON users
+    USING (tenant_id = current_setting('app.current_tenant')::uuid);
+
+CREATE POLICY tenant_isolation ON strategies
+    USING (tenant_id = current_setting('app.current_tenant')::uuid);
+```
+
+**2. 应用层隔离**
+- JWT Token包含租户信息
+- Spring Security上下文租户绑定
+- 服务间调用租户传递
+
+**3. 缓存层隔离**
+- Redis Key前缀隔离: `tenant:{tenant_id}:{key}`
+- 租户级别的缓存策略和TTL
+
+**4. 消息层隔离**
+- Kafka Topic分区按租户路由
+- 消息头包含租户标识
+
+### 权限模型
+
+**角色定义**:
+```
+管理员 (ADMIN)
+├── 系统配置管理
+├── 用户和租户管理
+├── 资源配额分配
+└── 系统监控和维护
+
+策略开发者 (DEVELOPER)
+├── 策略开发和测试
+├── 历史数据回测
+├── 策略性能分析
+└── 有限的实盘权限
+
+交易员 (TRADER)
+├── 策略执行监控
+├── 交易记录查看
+├── 风险指标监控
+└── 基础配置修改
+
+观察者 (VIEWER)
+├── 只读访问权限
+├── 报表和图表查看
+└── 基础数据导出
+```
+
+**资源配额管理**:
+- CPU时间配额 (基于虚拟线程)
+- 内存使用限制
+- API调用频率限制
+- 存储空间配额
+
+## 2. 技术选型
+
+### Java服务技术栈
+
+**核心框架**:
+- JDK 21 (虚拟线程支持)
+- Spring Boot 3.x
+- Spring Security 6.x
+- Spring Data JPA
+- Spring Cloud Gateway
+
+**构建工具**:
+- Maven 3.9.x
+- Docker多阶段构建
+- 原生镜像支持 (GraalVM)
+
+**数据访问**:
+- PostgreSQL JDBC驱动
+- HikariCP连接池
+- Redis Lettuce客户端
+- Kafka Spring集成
+
+### Python服务技术栈
+
+**核心框架**:
+- Python 3.12
+- FastAPI (异步Web框架)
+- asyncio (异步编程)
+- aiohttp (异步HTTP客户端)
+
+**数据处理**:
+- Pandas (数据分析)
+- NumPy (数值计算)
+- ClickHouse驱动
+- Redis异步客户端
+
+**依赖管理**:
+- Poetry (依赖管理)
+- Docker容器化
+- 虚拟环境隔离
+
+## 服务间通信
+
+### 1. 同步通信 (gRPC)
+
+**协议定义**:
+```protobuf
+syntax = "proto3";
+package hermesflow.data;
+
+service MarketDataService {
+    rpc GetLatestPrice(PriceRequest) returns (PriceResponse);
+    rpc GetOrderBook(OrderBookRequest) returns (OrderBookResponse);
+    rpc StreamMarketData(StreamRequest) returns (stream MarketDataEvent);
+}
+
+message PriceRequest {
+    string exchange = 1;
+    string symbol = 2;
+    string tenant_id = 3;
+}
+```
+
+### 2. 异步通信 (Kafka)
+
+**Topic设计**:
+- `market_data`: 实时行情数据
+- `strategy_signals`: 策略信号
+- `order_events`: 订单事件
+- `system_events`: 系统事件
+
+## 数据架构
+
+### 数据存储分层
+
+**热数据层 (Redis)**:
+- 实时行情数据 (TTL: 1小时)
+- 用户会话信息 (TTL: 24小时)
+- 策略运行状态 (TTL: 7天)
+- API调用缓存 (TTL: 5分钟)
+
+**温数据层 (PostgreSQL)**:
+- 用户和权限数据
+- 策略配置和代码
+- 订单和交易记录
+- 系统配置和日志
+
+**冷数据层 (ClickHouse)**:
+- 历史行情数据 (>30天)
+- 策略回测数据
+- 系统性能指标
+- 审计和合规数据
+
+### 数据模型设计
+
+**用户相关表**:
+```sql
+-- 租户表
+CREATE TABLE tenants (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,
+    plan VARCHAR(20) NOT NULL DEFAULT 'BASIC',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 用户表
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    username VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(20) NOT NULL DEFAULT 'VIEWER',
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 启用RLS
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON users
+    USING (tenant_id = current_setting('app.current_tenant')::uuid);
+```
+
+**策略相关表**:
+```sql
+-- 策略表
+CREATE TABLE strategies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    code TEXT NOT NULL,
+    language VARCHAR(20) NOT NULL DEFAULT 'JAVA',
+    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 策略执行记录
+CREATE TABLE strategy_executions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL,
+    strategy_id UUID NOT NULL REFERENCES strategies(id),
+    status VARCHAR(20) NOT NULL,
+    start_time TIMESTAMPTZ NOT NULL,
+    end_time TIMESTAMPTZ,
+    result JSONB,
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+## 3. 环境与部署架构
+
+### Docker容器化部署
+
+**项目结构**:
+```
+HermesFlow/
+├── services/
+│   ├── api-gateway/           # Java API网关
+│   ├── user-management/       # Java用户管理
+│   ├── strategy-engine/       # Java策略引擎
+│   ├── execution-engine/      # Java交易执行
+│   ├── data-collector/        # Python数据采集
+│   └── data-processor/        # Python数据处理
+├── shared/
+│   ├── proto/                 # gRPC协议定义
+│   ├── config/                # 共享配置
+│   └── sql/                   # 数据库脚本
+├── infrastructure/
+│   ├── docker-compose.yml     # 容器编排
+│   ├── nginx/                 # 反向代理
+│   └── monitoring/            # 监控配置
+└── docs/                      # 文档
+```
+
+**docker-compose.yml**:
+```yaml
+version: '3.8'
+
+services:
+  # API网关
+  api-gateway:
+    build: ./services/api-gateway
+    ports:
+      - "18000:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/hermesflow
+    depends_on:
+      - postgres
+      - redis
+
+  # 用户管理服务
+  user-management:
+    build: ./services/user-management
+    ports:
+      - "18010:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    depends_on:
+      - postgres
+      - redis
+
+  # 策略引擎服务
+  strategy-engine:
+    build: ./services/strategy-engine
+    ports:
+      - "18020:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - JVM_OPTS=-XX:+UseZGC -XX:+UnlockExperimentalVMOptions
+    depends_on:
+      - postgres
+      - kafka
+
+  # 交易执行服务
+  execution-engine:
+    build: ./services/execution-engine
+    ports:
+      - "18030:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    depends_on:
+      - postgres
+      - kafka
+
+  # 数据采集服务 (Python)
+  data-collector:
+    build: ./services/data-collector
+    ports:
+      - "18001:8000"
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    depends_on:
+      - redis
+      - kafka
+      - clickhouse
+
+  # 数据处理服务 (Python)
+  data-processor:
+    build: ./services/data-processor
+    ports:
+      - "18002:8000"
+    environment:
+      - PYTHONPATH=/app
+      - CLICKHOUSE_URL=http://clickhouse:8123
+    depends_on:
+      - clickhouse
+      - kafka
+
+  # 数据库服务
+  postgres:
+    image: postgres:15
+    ports:
+      - "15432:5432"
+    environment:
+      - POSTGRES_DB=hermesflow
+      - POSTGRES_USER=hermesflow
+      - POSTGRES_PASSWORD=hermesflow123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 分析数据库
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "18123:8123"
+      - "19000:9000"
+    environment:
+      - CLICKHOUSE_DB=hermesflow
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  # 缓存服务
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis_data:/data
+
+  # 消息队列
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    ports:
+      - "19092:9092"
+    environment:
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:19092
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+    depends_on:
+      - zookeeper
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  redis_data:
+```
+
+### 脚本体系
+- 所有自动化部署、编译、打包、上传、启动脚本统一放置于 `scripts/` 目录。
+- 脚本支持参数：环境（local/dev/prod）、端（front/back/all）、服务名（web/gateway/api-gateway/all等）。
+- Java 服务采用 Spring Boot 多 profile（application-local.yml、application-dev.yml、application-prod.yml）管理环境。
+- 前端采用 .env.local、.env.dev、.env.prod 文件管理环境变量。
+- Python/其他服务采用 config/env.local.yaml 等方式。
+
+### 数据库DDL管理
+- 根目录 `db/` 目录下，按数据库类型和环境分类存放所有DDL。
+- 变更需同步更新 `docs/db-changelog.md`。
+
+### 环境变量与新增应用/变量流程
+- 所有环境变量在 `docs/env-variables.md` 统一登记。
+- 新增应用/变量需同步补充脚本、配置文件和文档。
+- 变更需 Pull Request 审核，确保文档与代码同步。
+
+- local环境下，所有基础设施和服务统一通过docker-compose容器化部署，确保开发环境与生产环境一致。
