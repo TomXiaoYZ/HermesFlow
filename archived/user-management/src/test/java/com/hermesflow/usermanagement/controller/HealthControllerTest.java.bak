@@ -1,0 +1,369 @@
+package com.hermesflow.usermanagement.controller;
+
+import com.hermesflow.usermanagement.BaseTest;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.hamcrest.Matchers.*;
+
+/**
+ * HealthController单元测试
+ * 
+ * 测试健康检查控制器的所有功能，包括：
+ * - 健康检查端点响应
+ * - JSON格式验证
+ * - 状态码验证
+ * - 响应时间测试
+ * - 错误处理
+ */
+@WebMvcTest(HealthController.class)
+@DisplayName("HealthController测试")
+class HealthControllerTest extends BaseTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Nested
+    @DisplayName("健康检查端点测试")
+    class HealthCheckEndpointTests {
+
+        @Test
+        @DisplayName("GET /api/v1/health 应该返回健康状态")
+        void getHealth_ShouldReturnHealthStatus() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health")
+                    .contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(jsonPath("$.service", is("HermesFlow User Management Service")))
+                    .andExpect(jsonPath("$.status", is("UP")))
+                    .andExpect(jsonPath("$.timestamp", notNullValue()))
+                    .andExpect(jsonPath("$.version", notNullValue()));
+        }
+
+        @Test
+        @DisplayName("健康检查应该返回正确的JSON结构")
+        void healthCheck_ShouldReturnCorrectJsonStructure() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$", hasKey("service")))
+                    .andExpect(jsonPath("$", hasKey("status")))
+                    .andExpect(jsonPath("$", hasKey("timestamp")))
+                    .andExpect(jsonPath("$", hasKey("version")))
+                    .andExpect(jsonPath("$.service", isA(String.class)))
+                    .andExpect(jsonPath("$.status", isA(String.class)))
+                    .andExpect(jsonPath("$.timestamp", isA(String.class)))
+                    .andExpect(jsonPath("$.version", isA(String.class)));
+        }
+
+        @Test
+        @DisplayName("健康检查应该返回ISO格式的时间戳")
+        void healthCheck_ShouldReturnIsoFormattedTimestamp() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.timestamp", 
+                        matchesPattern("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+.*")));
+        }
+
+        @Test
+        @DisplayName("健康检查应该返回版本信息")
+        void healthCheck_ShouldReturnVersionInfo() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.version", not(emptyString())))
+                    .andExpect(jsonPath("$.version", not(is("unknown"))));
+        }
+    }
+
+    @Nested
+    @DisplayName("HTTP方法测试")
+    class HttpMethodTests {
+
+        @Test
+        @DisplayName("健康检查端点应该只支持GET方法")
+        void healthEndpoint_ShouldOnlySupportGetMethod() throws Exception {
+            // POST should not be allowed
+            mockMvc.perform(post("/api/v1/health"))
+                    .andExpect(status().isMethodNotAllowed());
+
+            // PUT should not be allowed
+            mockMvc.perform(put("/api/v1/health"))
+                    .andExpect(status().isMethodNotAllowed());
+
+            // DELETE should not be allowed
+            mockMvc.perform(delete("/api/v1/health"))
+                    .andExpect(status().isMethodNotAllowed());
+
+            // PATCH should not be allowed
+            mockMvc.perform(patch("/api/v1/health"))
+                    .andExpect(status().isMethodNotAllowed());
+        }
+    }
+
+    @Nested
+    @DisplayName("内容类型测试")
+    class ContentTypeTests {
+
+        @Test
+        @DisplayName("健康检查应该接受任何内容类型的请求")
+        void healthCheck_ShouldAcceptAnyContentType() throws Exception {
+            // Test with different content types
+            mockMvc.perform(get("/api/v1/health")
+                    .contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk());
+
+            mockMvc.perform(get("/api/v1/health")
+                    .contentType(MediaType.TEXT_PLAIN))
+                    .andExpect(status().isOk());
+
+            mockMvc.perform(get("/api/v1/health")
+                    .contentType(MediaType.APPLICATION_XML))
+                    .andExpect(status().isOk());
+
+            // Test without content type
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk());
+        }
+
+        @Test
+        @DisplayName("健康检查应该始终返回JSON内容类型")
+        void healthCheck_ShouldAlwaysReturnJsonContentType() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health")
+                    .accept(MediaType.TEXT_PLAIN))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentType(MediaType.APPLICATION_JSON));
+
+            mockMvc.perform(get("/api/v1/health")
+                    .accept(MediaType.APPLICATION_XML))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentType(MediaType.APPLICATION_JSON));
+        }
+    }
+
+    @Nested
+    @DisplayName("请求头测试")
+    class RequestHeaderTests {
+
+        @Test
+        @DisplayName("健康检查应该处理各种Accept头")
+        void healthCheck_ShouldHandleVariousAcceptHeaders() throws Exception {
+            // Accept JSON
+            mockMvc.perform(get("/api/v1/health")
+                    .accept(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentType(MediaType.APPLICATION_JSON));
+
+            // Accept all
+            mockMvc.perform(get("/api/v1/health")
+                    .accept(MediaType.ALL))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentType(MediaType.APPLICATION_JSON));
+
+            // Multiple accept types
+            mockMvc.perform(get("/api/v1/health")
+                    .accept(MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentType(MediaType.APPLICATION_JSON));
+        }
+
+        @Test
+        @DisplayName("健康检查应该处理自定义请求头")
+        void healthCheck_ShouldHandleCustomHeaders() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health")
+                    .header("X-Custom-Header", "test-value")
+                    .header("User-Agent", "Test-Agent/1.0")
+                    .header("X-Request-ID", "test-request-123"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status", is("UP")));
+        }
+    }
+
+    @Nested
+    @DisplayName("查询参数测试")
+    class QueryParameterTests {
+
+        @Test
+        @DisplayName("健康检查应该忽略查询参数")
+        void healthCheck_ShouldIgnoreQueryParameters() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health")
+                    .param("format", "json")
+                    .param("detailed", "true")
+                    .param("random", "value"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status", is("UP")));
+        }
+    }
+
+    @Nested
+    @DisplayName("响应性能测试")
+    class ResponsePerformanceTests {
+
+        @Test
+        @DisplayName("健康检查应该快速响应")
+        void healthCheck_ShouldRespondQuickly() throws Exception {
+            // Measure response time (this is a basic test, real performance testing would be more sophisticated)
+            long startTime = System.currentTimeMillis();
+            
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk());
+            
+            long endTime = System.currentTimeMillis();
+            long responseTime = endTime - startTime;
+            
+            // Health check should respond within 1 second (very generous for unit test)
+            assertThat(responseTime).isLessThan(1000L);
+        }
+
+        @Test
+        @DisplayName("健康检查应该支持并发请求")
+        void healthCheck_ShouldSupportConcurrentRequests() throws Exception {
+            // Simulate multiple concurrent requests
+            for (int i = 0; i < 10; i++) {
+                mockMvc.perform(get("/api/v1/health"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.status", is("UP")));
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("错误处理测试")
+    class ErrorHandlingTests {
+
+        @Test
+        @DisplayName("不存在的健康检查路径应该返回404")
+        void nonExistentHealthPath_ShouldReturn404() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health/nonexistent"))
+                    .andExpect(status().isNotFound());
+
+            mockMvc.perform(get("/api/v1/health/status"))
+                    .andExpect(status().isNotFound());
+
+            mockMvc.perform(get("/api/v1/healthcheck"))
+                    .andExpect(status().isNotFound());
+        }
+
+        @Test
+        @DisplayName("错误的API版本应该返回404")
+        void wrongApiVersion_ShouldReturn404() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v2/health"))
+                    .andExpect(status().isNotFound());
+
+            mockMvc.perform(get("/api/health"))
+                    .andExpect(status().isNotFound());
+
+            mockMvc.perform(get("/health"))
+                    .andExpect(status().isNotFound());
+        }
+    }
+
+    @Nested
+    @DisplayName("安全性测试")
+    class SecurityTests {
+
+        @Test
+        @DisplayName("健康检查端点应该不需要认证")
+        void healthEndpoint_ShouldNotRequireAuthentication() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status", is("UP")));
+        }
+
+        @Test
+        @DisplayName("健康检查应该不暴露敏感信息")
+        void healthCheck_ShouldNotExposeSensitiveInfo() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$", not(hasKey("password"))))
+                    .andExpect(jsonPath("$", not(hasKey("secret"))))
+                    .andExpect(jsonPath("$", not(hasKey("key"))))
+                    .andExpect(jsonPath("$", not(hasKey("token"))))
+                    .andExpect(jsonPath("$", not(hasKey("database"))))
+                    .andExpect(jsonPath("$", not(hasKey("config"))));
+        }
+    }
+
+    @Nested
+    @DisplayName("响应头测试")
+    class ResponseHeaderTests {
+
+        @Test
+        @DisplayName("健康检查应该设置正确的响应头")
+        void healthCheck_ShouldSetCorrectResponseHeaders() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Content-Type", containsString("application/json")))
+                    .andExpect(header().exists("Date"));
+        }
+
+        @Test
+        @DisplayName("健康检查应该设置缓存控制头")
+        void healthCheck_ShouldSetCacheControlHeaders() throws Exception {
+            // When & Then
+            mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    // Health endpoints typically should not be cached
+                    .andExpect(header().string("Cache-Control", anyOf(
+                        containsString("no-cache"),
+                        containsString("no-store"),
+                        containsString("max-age=0")
+                    )));
+        }
+    }
+
+    @Nested
+    @DisplayName("数据一致性测试")
+    class DataConsistencyTests {
+
+        @Test
+        @DisplayName("多次调用健康检查应该返回一致的服务名称")
+        void multipleHealthChecks_ShouldReturnConsistentServiceName() throws Exception {
+            // First call
+            String firstResponse = mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+
+            // Second call
+            String secondResponse = mockMvc.perform(get("/api/v1/health"))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+
+            // Extract service names and compare
+            assertThat(firstResponse).contains("HermesFlow User Management Service");
+            assertThat(secondResponse).contains("HermesFlow User Management Service");
+        }
+
+        @Test
+        @DisplayName("健康检查状态应该始终为UP")
+        void healthCheckStatus_ShouldAlwaysBeUp() throws Exception {
+            // Multiple calls to ensure consistency
+            for (int i = 0; i < 5; i++) {
+                mockMvc.perform(get("/api/v1/health"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.status", is("UP")));
+            }
+        }
+    }
+} 

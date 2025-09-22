@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: hermesflow-dev
-  labels:
-    name: hermesflow-dev
-    environment: development 

@@ -1,0 +1,122 @@
+server:
+  port: 8081
+  servlet:
+    context-path: /permission-management
+
+spring:
+  application:
+    name: permission-management
+  
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/hermesflow_permission}
+    username: ${SPRING_DATASOURCE_USERNAME:permission_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:permission_password}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+      leak-detection-threshold: 60000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        use_sql_comments: true
+        jdbc:
+          batch_size: 20
+        order_inserts: true
+        order_updates: true
+
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:redis}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:hermesflow_redis_password}
+      database: 1
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
+
+  cache:
+    type: redis
+    redis:
+      time-to-live: 600000
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER_URI:http://user_management:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+logging:
+  level:
+    com.hermesflow.permissionmanagement: INFO
+    org.springframework.security: INFO
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: /app/logs/permission-management.log
+    max-size: 100MB
+    max-history: 30
+
+# JWT配置
+jwt:
+  secret: ${JWT_SECRET:hermesflow-jwt-secret-key-2024-very-long-and-secure-key-for-production}
+  access-token-expiration: ${JWT_ACCESS_TOKEN_EXPIRATION:3600000}
+  refresh-token-expiration: ${JWT_REFRESH_TOKEN_EXPIRATION:604800000}
+
+# 权限管理配置
+permission:
+  cache:
+    enabled: true
+    ttl: 600000
+  default-permissions:
+    - USER_READ
+    - ROLE_READ
+    - PERMISSION_READ
+  security:
+    enabled: true
+    require-authentication: true
+  audit:
+    enabled: true
+  multi-tenancy:
+    enabled: true
+    default-tenant-id: "00000000-0000-0000-0000-000000000000"
+
+# 分布式锁配置
+redisson:
+  address: redis://${SPRING_DATA_REDIS_HOST:redis}:${SPRING_DATA_REDIS_PORT:6379}
+  password: ${SPRING_DATA_REDIS_PASSWORD:hermesflow_redis_password}
+  database: 2
+
+# 外部服务配置
+external-services:
+  user-management:
+    url: ${USER_MANAGEMENT_SERVICE_URL:http://user_management:8080}
+    timeout: 5000 

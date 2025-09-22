@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: hermesflow-postgres-test
+    environment:
+      POSTGRES_DB: hermesflow_user
+      POSTGRES_USER: hermesflow
+      POSTGRES_PASSWORD: hermesflow123
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermesflow -d hermesflow_user"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - hermesflow-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: hermesflow-redis-test
+    command: redis-server --appendonly yes
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - hermesflow-network
+
+  user-management:
+    image: hermesflow/user-management:latest
+    container_name: hermesflow-user-management
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/hermesflow_user
+      SPRING_DATASOURCE_USERNAME: hermesflow
+      SPRING_DATASOURCE_PASSWORD: hermesflow123
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: false
+      JWT_SECRET: hermesflow-jwt-secret-key-for-testing-purposes-only
+      JWT_EXPIRATION: 86400000
+      SERVER_PORT: 18010
+    ports:
+      - "18010:18010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - hermesflow-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  hermesflow-network:
+    driver: bridge 
