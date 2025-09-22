@@ -1,0 +1,84 @@
+# HermesFlow Module CI/CD Pipeline
+name: Build and Push Module
+
+on:
+  push:
+    branches: [dev, main]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Parse Module from Commit
+        id: parse-module
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          
+          if [[ "$COMMIT_MSG" =~ \[module:([^\]]+)\] ]]; then
+            MODULE="${BASH_REMATCH[1]}"
+            echo "✅ Found module: $MODULE"
+            echo "module=$MODULE" >> $GITHUB_OUTPUT
+            echo "has_module=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No module tag found, skipping build"
+            echo "has_module=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set Environment Variables
+        if: steps.parse-module.outputs.has_module == 'true'
+        run: |
+          ENVIRONMENT=${{ github.ref_name }}
+          
+          if [[ "$ENVIRONMENT" == "dev" ]]; then
+            echo "AZURE_REGISTRY=${{ secrets.DEV_AZURE_REGISTRY }}" >> $GITHUB_ENV
+            echo "AZURE_CLIENT_ID=${{ secrets.DEV_AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+            echo "AZURE_CLIENT_SECRET=${{ secrets.DEV_AZURE_CLIENT_SECRET }}" >> $GITHUB_ENV
+          elif [[ "$ENVIRONMENT" == "main" ]]; then
+            echo "AZURE_REGISTRY=${{ secrets.MAIN_AZURE_REGISTRY }}" >> $GITHUB_ENV
+            echo "AZURE_CLIENT_ID=${{ secrets.MAIN_AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+            echo "AZURE_CLIENT_SECRET=${{ secrets.MAIN_AZURE_CLIENT_SECRET }}" >> $GITHUB_ENV
+          else
+            echo "❌ Unsupported environment: $ENVIRONMENT"
+            exit 1
+          fi
+          
+          echo "ENVIRONMENT=$ENVIRONMENT" >> $GITHUB_ENV
+          echo "MODULE=${{ steps.parse-module.outputs.module }}" >> $GITHUB_ENV
+
+      - name: Build and Push Module
+        if: steps.parse-module.outputs.has_module == 'true'
+        run: |
+          chmod +x ./scripts/build-module.sh
+          ./scripts/build-module.sh
+
+      - name: Update GitOps Repository
+        if: steps.parse-module.outputs.has_module == 'true'
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITOPS_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "ref": "main",
+              "inputs": {
+                "module": "${{ env.MODULE }}",
+                "tag": "${{ github.sha }}",
+                "environment": "${{ env.ENVIRONMENT }}",
+                "registry": "${{ env.AZURE_REGISTRY }}"
+              }
+            }' \
+            https://api.github.com/repos/tomxiao/HermesFlow-GitOps/actions/workflows/update-values.yml/dispatches
+
+      - name: Build Summary
+        if: steps.parse-module.outputs.has_module == 'true'
+        run: |
+          echo "## 🎉 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Module**: ${{ env.MODULE }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ env.ENVIRONMENT }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: ${{ env.AZURE_REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ env.AZURE_REGISTRY }}/${{ env.MODULE }}:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: [\`${{ github.sha }}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+
