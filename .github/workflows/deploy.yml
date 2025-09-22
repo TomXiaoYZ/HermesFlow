@@ -1,0 +1,95 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [ main, dev ]
+
+env:
+  AWS_REGION: ap-southeast-1  # 设置你的AWS区域
+  EKS_CLUSTER_NAME: hermesflow  # 设置你的EKS集群名称
+  ECR_REPOSITORY: hermesflow  # 设置你的ECR仓库名称
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Set environment suffix
+      run: |
+        if [[ ${{ github.ref }} == 'refs/heads/main' ]]; then
+          echo "ENV_SUFFIX=prod" >> $GITHUB_ENV
+        else
+          echo "ENV_SUFFIX=dev" >> $GITHUB_ENV
+        fi
+
+    - name: Build and push Docker images
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        # 构建并推送数据服务镜像
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY/data-service:${{ env.ENV_SUFFIX }} -f src/data_service/Dockerfile .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY/data-service:${{ env.ENV_SUFFIX }}
+        
+        # 构建并推送策略引擎镜像
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY/strategy-engine:${{ env.ENV_SUFFIX }} -f src/strategy_engine/Dockerfile .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY/strategy-engine:${{ env.ENV_SUFFIX }}
+        
+        # 构建并推送风控系统镜像
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY/risk-management:${{ env.ENV_SUFFIX }} -f src/risk_management/Dockerfile .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY/risk-management:${{ env.ENV_SUFFIX }}
+        
+        # 构建并推送执行系统镜像
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY/execution:${{ env.ENV_SUFFIX }} -f src/execution/Dockerfile .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY/execution:${{ env.ENV_SUFFIX }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+    - name: Deploy to EKS
+      run: |
+        # 根据不同环境应用不同的配置
+        kubectl apply -k infrastructure/kubernetes/${{ env.ENV_SUFFIX }}
+        
+        # 等待部署完成
+        kubectl rollout status deployment/data-service -n hermesflow-${{ env.ENV_SUFFIX }}
+        kubectl rollout status deployment/strategy-engine -n hermesflow-${{ env.ENV_SUFFIX }}
+        kubectl rollout status deployment/risk-management -n hermesflow-${{ env.ENV_SUFFIX }}
+        kubectl rollout status deployment/execution -n hermesflow-${{ env.ENV_SUFFIX }}
+
+    - name: Verify Deployment
+      run: |
+        # 检查服务健康状态
+        kubectl get pods -n hermesflow-${{ env.ENV_SUFFIX }}
+        kubectl get svc -n hermesflow-${{ env.ENV_SUFFIX }}
+
+    - name: Run Integration Tests
+      if: github.ref == 'refs/heads/dev'
+      run: |
+        # 在开发环境运行集成测试
+        cd tests/integration
+        python -m pytest -v
+
+    - name: Notify Deployment Status
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow,job,took
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 
