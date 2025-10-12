@@ -672,29 +672,412 @@ Scenario: 网格搜索
 
 ---
 
-## 5. 策略模板库
+## 5. 策略模板库 ⭐ **重大扩展**
 
-### 5.1 预定义策略模板
+> **市场分析发现**：当前仅10个策略模板远不能满足快速盈利需求。竞品QuantConnect提供1000+策略，聚宽提供500+策略。我们需要至少50个成熟策略模板才能帮助用户快速启动交易。
 
-1. **趋势跟踪**
-   - 移动平均线交叉
-   - MACD策略
-   - 海龟交易法
+### 5.1 策略模板总览
 
-2. **均值回归**
-   - Bollinger Bands反转
-   - RSI超买超卖
-   - 配对交易
+| 类别 | 策略数量 | 难度 | 预期年化收益率 | 适用市场 |
+|------|---------|------|---------------|---------|
+| 趋势跟踪 | 12个 | 中等 | 20-60% | 牛市/单边市 |
+| 均值回归 | 10个 | 中等 | 15-40% | 震荡市 |
+| 套利策略 | 10个 | 高 | 10-100%+ | 所有市场 |
+| 网格/DCA | 8个 | 简单 | 10-30% | 震荡市/熊市 |
+| 做市策略 | 5个 | 高 | 15-50% | 高流动性市场 |
+| 机器学习 | 8个 | 高 | 30-100%+ | 所有市场 |
+| 高频策略 | 5个 | 极高 | 50-200%+ | 高流动性市场 |
+| **总计** | **58个** | - | - | - |
 
-3. **套利策略**
-   - 跨交易所套利
-   - 三角套利
-   - 期现套利
+---
 
-4. **机器学习**
-   - 价格预测模型
-   - 分类器信号
-   - 强化学习
+### 5.2 趋势跟踪策略（12个）⭐
+
+#### T1. 双移动平均线交叉（经典）
+```python
+# 策略参数
+fast_period = 10  # 快线周期
+slow_period = 30  # 慢线周期
+
+# 信号逻辑
+if fast_ma.crossover(slow_ma):  # 金叉
+    buy()
+elif fast_ma.crossunder(slow_ma):  # 死叉
+    sell()
+```
+**适用场景**：趋势明显的市场  
+**预期收益**：年化30-50%  
+**风险等级**：中等  
+**优势**：简单易懂，参数稳定
+
+#### T2. MACD金叉死叉策略
+```python
+# MACD指标
+macd_line, signal_line, histogram = MACD(12, 26, 9)
+
+# 信号
+if macd_line > signal_line and histogram > 0:
+    buy()
+elif macd_line < signal_line and histogram < 0:
+    sell()
+```
+**适用场景**：中期趋势  
+**预期收益**：年化25-45%
+
+#### T3. 海龟交易法（Turtle Trading）
+```python
+# 突破系统
+if price > highest_high(20):  # 20日新高
+    buy()
+if price < lowest_low(10):    # 10日新低
+    sell()
+
+# 止损：2倍ATR
+stop_loss = entry_price - 2 * ATR(14)
+```
+**适用场景**：大趋势市场  
+**预期收益**：年化40-80%  
+**优势**：经典策略，参数稳定
+
+#### T4. ATR动态止损趋势策略
+- 使用ATR（真实波幅）动态调整止损距离
+- 波动大时止损宽松，波动小时止损紧密
+
+#### T5. Donchian Channel突破
+- 突破N日高点买入，突破N日低点卖出
+
+#### T6. Parabolic SAR跟踪止损
+- 使用抛物线指标跟踪趋势
+
+#### T7. Supertrend策略
+- 基于ATR和价格的趋势指标
+
+#### T8. Ichimoku Cloud（一目均衡表）
+- 日本经典趋势系统
+
+#### T9. 动量策略（Momentum）
+- 买入过去N日涨幅最大的标的
+
+#### T10. 多周期共振策略
+- 日线+小时线+分钟线三周期确认
+
+#### T11. 趋势强度过滤策略
+- 使用ADX（平均趋向指数）过滤弱趋势
+
+#### T12. 突破回踩确认策略
+- 突破后回踩支撑位再买入
+
+---
+
+### 5.3 均值回归策略（10个）⭐
+
+#### M1. Bollinger Bands反转
+```python
+# 布林带参数
+bb_upper, bb_middle, bb_lower = BollingerBands(20, 2.0)
+
+# 超卖买入，超买卖出
+if price < bb_lower:
+    buy()
+elif price > bb_upper:
+    sell()
+```
+**适用场景**：震荡市  
+**预期收益**：年化15-30%
+
+#### M2. RSI超买超卖
+```python
+rsi = RSI(14)
+
+if rsi < 30:  # 超卖
+    buy()
+elif rsi > 70:  # 超买
+    sell()
+```
+**适用场景**：震荡市  
+**预期收益**：年化20-35%
+
+#### M3. 配对交易（Pairs Trading）
+```python
+# 寻找协整资产对
+spread = price_A - hedge_ratio * price_B
+
+if spread < mean - 2 * std:  # 价差过低
+    buy(A), sell(B)
+elif spread > mean + 2 * std:  # 价差过高
+    sell(A), buy(B)
+```
+**适用场景**：相关资产  
+**预期收益**：年化15-25%  
+**优势**：市场中性，风险低
+
+#### M4. Z-Score均值回归
+- 使用标准差倍数判断偏离程度
+
+#### M5. Keltner Channel反转
+- 基于ATR的通道指标
+
+#### M6. Williams %R
+- 动量型超买超卖指标
+
+#### M7. CCI均值回归
+- 顺势指标的逆向应用
+
+#### M8. Stochastic Oscillator
+- 随机震荡指标
+
+#### M9. Mean Reversion Grid
+- 均值回归+网格交易结合
+
+#### M10. Cointegration策略
+- 统计套利的高级形式
+
+---
+
+### 5.4 套利策略（10个）⭐⭐ **高盈利潜力**
+
+#### A1. 跨交易所价差套利
+```python
+# 实时监控价差
+binance_price = get_price('binance', 'BTCUSDT')
+okx_price = get_price('okx', 'BTCUSDT')
+
+spread = (okx_price - binance_price) / binance_price
+
+# 考虑手续费和滑点
+if spread > (fee + slippage + profit_threshold):
+    buy('binance', 'BTCUSDT')
+    sell('okx', 'BTCUSDT')
+```
+**适用场景**：任何市场  
+**预期收益**：单次0.3-1.5%，年化30-100%+  
+**优势**：市场中性，低风险
+
+#### A2. 三角套利（Triangular Arbitrage）
+```python
+# 例如：USDT -> BTC -> ETH -> USDT
+rate_1 = get_price('BTC/USDT')
+rate_2 = get_price('ETH/BTC')
+rate_3 = get_price('USDT/ETH')
+
+implied_rate = rate_1 * rate_2 * rate_3
+
+if implied_rate > 1 + threshold:
+    execute_arbitrage()
+```
+**预期收益**：单次0.1-0.5%，年化20-60%
+
+#### A3. 期现套利
+- 合约价格与现货价格偏离时套利
+
+#### A4. 资金费率套利
+```python
+funding_rate = get_funding_rate('BTCUSDT')
+
+if funding_rate > 0.05%:  # 多头支付空头
+    # 做空合约+现货做多
+    sell_perpetual('BTCUSDT')
+    buy_spot('BTCUSDT')
+```
+**预期收益**：年化15-50%
+
+#### A5. DEX-CEX套利
+- Uniswap vs Binance价差套利
+
+#### A6. 闪电贷套利（Flash Loan Arbitrage）
+- 使用无抵押贷款进行套利
+
+#### A7. 流动性挖矿优化
+- 自动切换高收益LP池
+
+#### A8. LP无常损失对冲
+- 使用期权对冲无常损失
+
+#### A9. 跨链桥套利
+- 不同链上同一资产的价差
+
+#### A10. 稳定币套利
+- USDT/USDC/DAI之间的微小价差
+
+---
+
+### 5.5 网格/DCA策略（8个）⭐⭐⭐ **最易上手**
+
+#### G1. 等差网格交易
+```python
+class ArithmeticGridBot:
+    """等差网格交易机器人"""
+    
+    def __init__(self, symbol, price_range, grid_count, investment):
+        self.symbol = symbol
+        self.price_upper = price_range[1]
+        self.price_lower = price_range[0]
+        self.grid_count = grid_count
+        self.investment = investment
+    
+    def calculate_grid_levels(self):
+        """计算网格价格"""
+        step = (self.price_upper - self.price_lower) / (self.grid_count - 1)
+        return [self.price_lower + i * step for i in range(self.grid_count)]
+    
+    def place_grid_orders(self):
+        """在每个价格水平下买单和卖单"""
+        for price in self.grid_levels:
+            place_limit_buy(price, quantity)
+            place_limit_sell(price + step, quantity)
+```
+**适用场景**：震荡市  
+**预期收益**：月收益3-8%，年化40-100%+  
+**优势**：完全自动化，无需盯盘
+
+#### G2. 等比网格交易
+- 适合波动大的币种（如山寨币）
+
+#### G3. 动态网格（根据波动率调整）
+```python
+def adjust_grid_by_volatility():
+    volatility = calculate_atr() / price
+    if volatility > 0.05:  # 高波动
+        grid_count = 20  # 增加网格密度
+    else:
+        grid_count = 10
+```
+
+#### G4. Martingale Grid（马丁格尔网格）
+- 下跌时加倍加仓（高风险）
+
+#### G5. 时间定投（DCA）
+```python
+# 每天固定时间买入固定金额
+schedule.every().day.at("10:00").do(buy, amount=100)
+```
+**适用场景**：长期看好的资产  
+**预期收益**：跟随市场  
+**优势**：平滑成本，降低择时风险
+
+#### G6. RSI触发DCA
+- RSI < 30时加仓
+
+#### G7. 波动率触发DCA
+- 高波动时降低投入，低波动时增加
+
+#### G8. 智能DCA（ML预测）
+- 使用LSTM预测价格，低点加仓
+
+---
+
+### 5.6 做市策略（5个）⭐⭐ **高级策略**
+
+#### MM1. 简单做市策略
+```python
+# 在买一和卖一之间挂单
+bid_price = best_bid + spread / 2
+ask_price = best_ask - spread / 2
+
+place_limit_buy(bid_price, size)
+place_limit_sell(ask_price, size)
+```
+**适用场景**：高流动性市场  
+**预期收益**：年化20-50%
+
+#### MM2. Inventory Management（库存管理）
+- 根据持仓动态调整报价
+
+#### MM3. Order Book Imbalance
+- 根据订单簿失衡调整报价
+
+#### MM4. Avellaneda-Stoikov做市模型
+- 学术界经典做市模型
+
+#### MM5. 多层做市策略
+- 在多个价格水平提供流动性
+
+---
+
+### 5.7 机器学习策略（8个）⭐⭐ **AI驱动**
+
+#### ML1. LSTM价格预测
+```python
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+
+# 构建LSTM模型
+model = Sequential([
+    LSTM(50, return_sequences=True, input_shape=(60, 1)),
+    LSTM(50),
+    Dense(1)
+])
+
+# 预测未来价格
+predicted_price = model.predict(recent_prices)
+
+if predicted_price > current_price * 1.02:
+    buy()
+```
+**预期收益**：年化30-80%（取决于模型质量）
+
+#### ML2. 随机森林分类器
+- 预测涨跌方向
+
+#### ML3. 强化学习（DQN）
+- 让AI自主学习交易策略
+
+#### ML4. 因子模型（Factor Model）
+- 多因子选股/选币
+
+#### ML5. 异常检测（Anomaly Detection）
+- 检测异常交易机会
+
+#### ML6. NLP情绪分析
+- 分析Twitter/Reddit情绪
+
+#### ML7. 集成学习（Ensemble）
+- 结合多个模型提升准确率
+
+#### ML8. 时间序列预测（Prophet/ARIMA）
+- 统计模型预测
+
+---
+
+### 5.8 高频策略（5个）⭐⭐⭐ **极高难度**
+
+#### HFT1. Market Making（做市）
+- 利用买卖价差获利
+
+#### HFT2. Statistical Arbitrage
+- 统计套利的高频版本
+
+#### HFT3. Latency Arbitrage
+- 利用延迟差套利
+
+#### HFT4. Order Flow Imbalance
+- 订单流失衡策略
+
+#### HFT5. Tick数据微观结构
+- 基于Tick级别数据的策略
+
+---
+
+### 5.9 策略实施优先级
+
+**第一阶段（MVP，2周）**：
+1. ✅ 双均线交叉（T1）
+2. ✅ RSI超买超卖（M2）
+3. ✅ 等差网格（G1）
+4. ✅ 时间定投（G5）
+5. ✅ 跨交易所套利（A1）
+
+**第二阶段（1个月）**：
+6-15. 趋势跟踪类（T2-T7）
+16-20. 均值回归类（M3-M7）
+21-25. 套利策略（A2-A6）
+
+**第三阶段（2个月）**：
+26-40. 网格/DCA/做市策略
+41-50. 机器学习策略
+
+**第四阶段（3个月）**：
+51-58. 高频策略
 
 ---
 
