@@ -36,12 +36,20 @@ HermesFlow/
 
 | 模块 | 技术栈 | 端口 | 说明 |
 |------|--------|------|------|
-| strategy-engine | Python 3.12 + FastAPI | 8000 | 策略开发与执行 |
-| risk-engine | Java 21 + Spring Boot | 8080 | 风险控制与监控 |
-| data-engine | Python 3.12 + asyncio | 8001 | 数据采集与处理 |
-| user-management | Java 21 + Spring Boot | 8010 | 用户认证与管理 |
-| api-gateway | Java 21 + Spring Gateway | 8000 | 统一API网关 |
-| frontend | React + TypeScript | 80 | 用户界面 |
+| **data-engine** ⭐ | **Rust + Tokio + Actix-web** | **18001-18002** | **高性能数据采集与处理** |
+| strategy-engine | Python 3.12 + FastAPI | 18020-18021 | 策略开发、回测与执行 |
+| trading-engine | Java 21 + Spring Boot + WebFlux | 18030 | 订单管理与交易执行 |
+| risk-engine | Java 21 + Spring Boot | 18040 | 风险控制与监控 |
+| user-management | Java 21 + Spring Boot | 18010 | 用户认证与管理 |
+| gateway | Java 21 + Spring Cloud Gateway | 18000 | 统一API网关 |
+| frontend | React 18 + TypeScript | 3000 | 用户界面 |
+
+#### 核心优势
+
+- **⚡ 超低延迟**: Rust数据引擎实现<1ms P99延迟
+- **🚀 高吞吐量**: 支持>100k消息/秒的数据处理能力
+- **🔒 内存安全**: Rust零成本抽象保证并发安全
+- **📊 多数据源**: 支持加密货币、美股、期权、舆情等多种数据源
 
 ## 🚀 CI/CD 流程
 
@@ -136,9 +144,29 @@ GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
 
 ## 📚 文档
 
-- [系统架构文档](docs/architecture.md)
-- [开发进度跟踪](docs/progress.md)
-- [模块开发指南](docs/modules/)
+### 核心文档
+- [系统架构文档](docs/architecture.md) - 系统整体架构设计
+- [开发进度跟踪](docs/progress.md) - 开发状态和里程碑
+- [快速参考指南](docs/QUICK-REFERENCE.md) - 常用命令和配置
+
+### PRD与需求文档
+- [产品需求文档 (PRD)](docs/prd/PRD-HermesFlow.md) - 完整产品需求规格说明
+- [数据模块需求 (Rust)](docs/prd/modules/01-data-module.md) ⭐
+- [策略模块需求 (Python)](docs/prd/modules/02-strategy-module.md)
+- [执行模块需求 (Java)](docs/prd/modules/03-execution-module.md)
+- [风控模块需求](docs/prd/modules/04-risk-module.md)
+- [其他模块需求](docs/prd/modules/) - 账户、安全、报表、UX
+
+### 技术文档
+- [API设计文档](docs/api/api-design.md) - RESTful和gRPC API规范
+- [数据库设计文档](docs/database/database-design.md) - PostgreSQL/ClickHouse/Redis设计
+- [开发指南](docs/development/dev-guide.md) - 开发环境搭建与工作流
+- [编码规范](docs/development/coding-standards.md) - Rust/Java/Python编码标准
+- [Docker部署指南](docs/deployment/docker-guide.md) - 容器化部署
+- [测试策略](docs/testing/test-strategy.md) - 测试方法和覆盖率要求
+- [监控方案](docs/operations/monitoring.md) - Prometheus+Grafana监控
+
+完整文档导航请查看 [docs/README.md](docs/README.md)
 
 ## 🤝 贡献指南
 
