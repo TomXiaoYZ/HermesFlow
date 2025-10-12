@@ -1,6 +1,6 @@
 # HermesFlow 量化交易平台产品需求文档 (PRD)
 
-**文档版本**: v2.0.0  
+**文档版本**: v2.1.0  
 **最后更新**: 2024-12-20  
 **文档状态**: 详细设计阶段  
 **作者**: HermesFlow 产品团队
@@ -11,6 +11,7 @@
 
 | 版本 | 日期 | 作者 | 变更说明 |
 |------|------|------|----------|
+| v2.1.0 | 2024-12-20 | Product Team | 基于市场分析补充Alpha因子库(100个)、策略优化引擎(贝叶斯+Walk-Forward)、模拟交易系统、ML集成路线图、组合管理系统；重新规划MVP/V2/V3路线图 |
 | v2.0.0 | 2024-12-20 | Product Team | 初始版本，采用Rust+Java+Python混合技术栈，支持多数据源 |
 
 ---
@@ -981,6 +982,390 @@ class MovingAverageCrossover(BaseStrategy):
 
 ---
 
+### 3.2.4 Alpha因子库 [P0-MVP]
+
+> 📘 **完整文档**: 参见 [PRD Enhancement v2.1 - 第1章](./PRD-Enhancement-v2.1.md#1-alpha因子库)
+
+#### 模块概述
+
+Alpha因子库是策略开发的核心基础设施，提供100+预定义因子，支持快速开发多因子选股策略。
+
+**核心职责**
+
+1. 提供100个预定义Alpha因子
+2. 因子计算引擎（高性能）
+3. 因子性能分析（IC、覆盖率、相关性）
+4. 因子缓存与优化
+
+**性能目标**
+
+- 因子计算性能: > 1000 bars/s
+- 因子API响应: < 100ms
+- 因子缓存命中率: > 90%
+
+#### 因子分类
+
+**MVP版本（100个因子）**：
+
+| 分类 | 数量 | 优先级 | 说明 |
+|------|------|--------|------|
+| **技术指标因子** | 20 | P0 | 趋势、动量、振荡器 |
+| **量价因子** | 15 | P0 | 成交量、换手率、资金流 |
+| **价值因子** | 10 | P1 | PE、PB、PS、PCF |
+| **成长因子** | 10 | P1 | 营收增长、利润增长 |
+| **质量因子** | 10 | P1 | ROE、ROA、资产负债率 |
+| **情绪因子** | 10 | P1 | 涨跌停、新高新低 |
+| **波动率因子** | 10 | P0 | 历史波动率、ATR |
+| **另类因子** | 15 | P2 | 舆情、资金流向 |
+| **总计** | **100** | - | MVP版本 |
+
+**V2版本扩展（200+因子）**：
+- 分析师因子（20个）
+- 行业因子（30个）
+- 宏观因子（20个）
+- 高级技术因子（30个）
+
+#### 关键因子示例
+
+**技术指标因子**：
+- MA/EMA（移动平均）
+- MACD（平滑异同移动平均）
+- RSI（相对强弱指标）
+- ATR（真实波幅）
+- Bollinger Bands（布林带）
+
+**量价因子**：
+- OBV（能量潮）
+- VWAP（成交量加权平均价）
+- 换手率
+- 资金流向指标
+
+**基本面因子**：
+- PE/PB/PS/PCF（估值因子）
+- ROE/ROA（盈利能力）
+- 营收/利润增长率（成长因子）
+
+#### API设计
+
+```python
+# 因子计算API
+from hermesflow.factors import FactorLibrary
+
+library = FactorLibrary()
+
+# 列出所有因子
+factors = library.list_factors(category='technical')
+
+# 批量计算因子
+result = library.calculate_factors(
+    data=historical_data,
+    factor_names=['RSI', 'MACD', 'ATR', 'OBV'],
+    period=14
+)
+
+# 因子性能分析
+ic_values = library.analyze_factor_ic('RSI', returns_data)
+correlation_matrix = library.calc_factor_correlation(['RSI', 'MACD'])
+```
+
+#### 验收标准
+
+- [ ] 实现100个预定义因子
+- [ ] 因子计算性能 > 1000 bars/s
+- [ ] 因子API文档完整
+- [ ] 单元测试覆盖率 > 90%
+- [ ] 支持因子缓存（Redis）
+- [ ] 支持因子可视化
+
+#### 工作量估算
+
+| 任务 | 工作量 |
+|------|--------|
+| 技术指标因子（20个） | 1周 |
+| 量价因子（15个） | 0.5周 |
+| 基本面因子（30个） | 1.5周 |
+| 其他因子（35个） | 1.5周 |
+| 因子引擎框架 | 1周 |
+| 性能优化 | 0.5周 |
+| 测试与文档 | 1周 |
+| **总计** | **7周（1.75人月）** |
+
+---
+
+### 3.2.5 策略优化引擎增强 [P0-MVP]
+
+> 📘 **完整文档**: 参见 [PRD Enhancement v2.1 - 第2章](./PRD-Enhancement-v2.1.md#2-策略优化引擎增强)
+
+#### 模块概述
+
+策略优化引擎提供多种高级优化算法，帮助用户快速找到最优策略参数，并验证策略的稳定性。
+
+**核心职责**
+
+1. 多种优化算法（贝叶斯、Walk-Forward、遗传算法等）
+2. 参数空间搜索
+3. 过拟合检测
+4. 优化结果可视化
+
+**性能目标**
+
+- 贝叶斯优化速度: 比网格搜索快5-10倍
+- Walk-Forward分析: 支持多窗口并行
+- 优化历史记录: 完整保存
+
+#### 优化算法清单
+
+**P0 - MVP必须**：
+
+1. ✅ **网格搜索**（已实现）
+2. ✅ **随机搜索**（简单）
+3. **贝叶斯优化** ⭐⭐⭐
+4. **Walk-Forward分析** ⭐⭐⭐
+
+**P1 - V2应该有**：
+
+5. **遗传算法** ⭐⭐
+6. **粒子群算法** ⭐
+7. **模拟退火** ⭐
+
+#### 贝叶斯优化
+
+**优势**：
+- 高效：比网格搜索快5-10倍
+- 智能：利用历史结果指导下一步搜索
+- 适用：适合参数空间较大的场景
+
+**使用示例**：
+
+```python
+from hermesflow.optimization import BayesianOptimizer
+
+optimizer = BayesianOptimizer(strategy_class, backtest_engine)
+
+result = optimizer.optimize(
+    param_space={
+        'fast_period': (5, 30),
+        'slow_period': (20, 100),
+        'stop_loss': (0.01, 0.05)
+    },
+    objective='sharpe_ratio',
+    n_calls=50
+)
+
+print(f"最优参数: {result.best_params}")
+print(f"最优夏普比率: {result.best_score}")
+```
+
+#### Walk-Forward分析
+
+**目的**：检测策略过拟合，验证参数稳定性
+
+**流程**：
+1. 将时间序列分成多个训练期和测试期
+2. 在训练期优化参数
+3. 在测试期验证参数
+4. 滚动窗口，重复上述步骤
+5. 汇总所有测试期结果
+
+**关键指标**：
+- 平均测试夏普比率
+- 参数稳定性
+- 策略一致性（胜率）
+- 性能退化程度
+
+#### 验收标准
+
+- [ ] 实现贝叶斯优化（scikit-optimize）
+- [ ] 实现Walk-Forward分析
+- [ ] 优化速度提升5-10倍
+- [ ] 支持多目标优化
+- [ ] 优化历史可视化
+- [ ] 参数稳定性分析
+
+#### 工作量估算
+
+| 任务 | 工作量 |
+|------|--------|
+| 贝叶斯优化实现 | 1周 |
+| Walk-Forward分析 | 1周 |
+| 遗传算法 | 0.5周 |
+| 粒子群算法 | 0.5周 |
+| 可视化和报告 | 0.5周 |
+| 测试与文档 | 0.5周 |
+| **总计** | **4周（1人月）** |
+
+---
+
+### 3.2.6 模拟交易系统 [P0-MVP]
+
+> 📘 **完整文档**: 参见 [PRD Enhancement v2.1 - 第3章](./PRD-Enhancement-v2.1.md#3-模拟交易系统)
+
+#### 模块概述
+
+模拟交易系统（Paper Trading）提供完整的虚拟交易环境，使用真实市场数据，让用户在实盘前充分验证策略。
+
+**核心职责**
+
+1. 虚拟账户管理（资金、持仓）
+2. 实时数据订阅（使用真实数据）
+3. 模拟订单撮合（滑点+手续费）
+4. 与实盘API完全兼容
+
+**性能目标**
+
+- 订单撮合延迟: < 10ms
+- 数据更新频率: 与实盘一致
+- API兼容性: 100%
+
+#### 核心功能
+
+**1. 虚拟账户管理**
+- 初始资金设置
+- 资金变动追踪
+- 持仓管理
+- 账户总值计算
+
+**2. 实时数据订阅**
+- 使用真实市场数据源
+- WebSocket实时推送
+- 与实盘数据源一致
+
+**3. 模拟订单撮合**
+- 市价单：立即成交
+- 限价单：按规则撮合
+- 模拟滑点和手续费
+- 订单状态管理
+
+**4. 完全兼容实盘API**
+- 同一套策略代码
+- 切换环境变量即可
+- 降低实盘迁移成本
+
+#### 使用示例
+
+```python
+from hermesflow.paper_trading import PaperTradingBroker
+
+# 创建虚拟账户
+paper_broker = PaperTradingBroker(
+    initial_cash=10000,
+    commission_rate=0.001,  # 0.1%
+    slippage_pct=0.001      # 0.1%
+)
+
+# 提交订单（与实盘API完全一致）
+order_id = paper_broker.submit_order(
+    symbol='BTCUSDT',
+    side='buy',
+    order_type='market',
+    quantity=0.1
+)
+
+# 查看持仓
+position = paper_broker.get_position('BTCUSDT')
+returns = paper_broker.get_returns()
+
+# 切换到实盘：只需更改环境变量
+# TRADING_MODE=production python run_strategy.py
+```
+
+#### 验收标准
+
+- [ ] 虚拟账户管理完整
+- [ ] 使用实时市场数据
+- [ ] 模拟订单撮合准确
+- [ ] 模拟滑点和手续费
+- [ ] API与实盘100%一致
+- [ ] 性能报表完整
+- [ ] 一键切换到实盘
+
+#### 工作量估算
+
+| 任务 | 工作量 |
+|------|--------|
+| 虚拟Broker实现 | 1周 |
+| 订单撮合逻辑 | 0.5周 |
+| 实时数据集成 | 0.5周 |
+| 报表和仪表盘 | 1周 |
+| 测试 | 0.5周 |
+| **总计** | **3.5周（0.9人月）** |
+
+---
+
+### 3.2.7 机器学习集成路线图 [P1-V2]
+
+> 📘 **完整文档**: 参见 [PRD Enhancement v2.1 - 第4章](./PRD-Enhancement-v2.1.md#4-机器学习集成)
+
+#### 模块概述（V2版本）
+
+机器学习集成将为平台带来前沿AI能力，支持使用机器学习和深度学习模型进行策略开发。
+
+**核心职责**
+
+1. ML Pipeline框架
+2. 特征工程
+3. 模型训练与评估
+4. 在线预测
+
+**关键能力**
+
+**1. 特征工程**
+- 因子提取
+- 特征标准化
+- 特征选择
+- 时间序列特征
+
+**2. 模型训练**
+- 随机森林
+- XGBoost/LightGBM
+- LSTM/GRU
+- Transformer
+- 时间序列交叉验证
+
+**3. 模型评估**
+- IC（信息系数）
+- Precision/Recall
+- Backtesting集成
+- 过拟合检测
+
+**4. 在线预测**
+- 实时特征生成
+- 模型推理
+- 信号生成
+- 性能监控
+
+#### 使用示例
+
+```python
+from hermesflow.ml import MLStrategyPipeline
+
+ml_strategy = MLStrategyPipeline(factor_library)
+
+# 训练模型
+ml_strategy.train(
+    data=historical_data,
+    target=target_returns > 0,
+    model_type='random_forest'
+)
+
+# 在线预测
+signals = ml_strategy.predict(current_data)
+```
+
+#### 工作量估算（V2阶段）
+
+| 任务 | 工作量 |
+|------|--------|
+| ML Pipeline框架 | 2周 |
+| 特征工程 | 2周 |
+| 模型库集成 | 2周 |
+| 在线预测 | 1周 |
+| AutoML | 2周 |
+| 测试与文档 | 1周 |
+| **总计** | **10周（2.5人月）** |
+
+---
+
 ### 3.3 执行模块（Java实现）
 
 > 📘 **详细文档**: [执行模块详细需求](./modules/03-execution-module.md)
@@ -1051,6 +1436,131 @@ class MovingAverageCrossover(BaseStrategy):
 1. **Epic 1: 多账户管理** [P0]
 2. **Epic 2: 资金划拨** [P1]
 3. **Epic 3: API密钥管理** [P0]
+
+---
+
+### 3.5.1 组合管理系统 [P1-V2]
+
+> 📘 **完整文档**: 参见 [PRD Enhancement v2.1 - 第5章](./PRD-Enhancement-v2.1.md#5-组合管理系统)
+
+#### 模块概述（V2版本）
+
+组合管理系统支持多策略并行执行和动态资金分配，实现真正的组合管理能力。
+
+**核心职责**
+
+1. 多策略并行执行
+2. 动态资金分配
+3. 组合优化（Markowitz）
+4. 风险预算管理
+
+**性能目标**
+
+- 支持策略数: > 10个并行
+- 资金分配延迟: < 100ms
+- 组合再平衡: 每日自动
+
+#### 核心功能
+
+**1. 多策略并行执行**
+- 策略隔离运行
+- 独立账户管理
+- 统一订单路由
+- 持仓汇总
+
+**2. 动态资金分配**
+- 等权重分配
+- 风险平价（Risk Parity）
+- 最大夏普比率
+- 最小方差
+- 自定义权重
+
+**3. 组合优化**
+- Markowitz均值-方差优化
+- Black-Litterman模型
+- 协方差矩阵估计
+- 约束条件设置
+
+**4. 风险预算**
+- 策略风险贡献
+- 最大回撤控制
+- VaR（风险价值）
+- CVaR（条件风险价值）
+
+#### 使用示例
+
+```python
+from hermesflow.portfolio import PortfolioManager
+
+portfolio = PortfolioManager(broker, initial_cash=100000)
+
+# 添加策略
+portfolio.add_strategy('ma_cross', MACrossStrategy(), weight=0.4)
+portfolio.add_strategy('mean_reversion', MeanReversionStrategy(), weight=0.3)
+portfolio.add_strategy('momentum', MomentumStrategy(), weight=0.3)
+
+# 设置风险约束
+portfolio.set_risk_constraints(
+    max_strategy_drawdown=0.15,
+    max_portfolio_drawdown=0.20,
+    var_confidence=0.95
+)
+
+# 运行组合
+portfolio.run()
+
+# 动态再平衡
+portfolio.rebalance(method='risk_parity', frequency='daily')
+
+# 查看组合状态
+status = portfolio.get_status()
+print(f"组合总值: {status.total_value}")
+print(f"策略权重: {status.strategy_weights}")
+print(f"风险贡献: {status.risk_contributions}")
+```
+
+#### Markowitz优化
+
+```python
+from hermesflow.portfolio import MarkowitzOptimizer
+
+optimizer = MarkowitzOptimizer(strategies_returns)
+
+# 最大夏普比率
+weights = optimizer.max_sharpe_ratio(
+    risk_free_rate=0.02,
+    constraints={'sum_weights': 1.0, 'min_weight': 0.1}
+)
+
+# 最小方差
+weights = optimizer.min_variance(
+    target_return=0.15,
+    constraints={'sum_weights': 1.0}
+)
+```
+
+#### 验收标准
+
+- [ ] 支持10+策略并行
+- [ ] 实现5种资金分配方法
+- [ ] Markowitz优化
+- [ ] 风险预算管理
+- [ ] 自动再平衡
+- [ ] 组合报表完整
+- [ ] 性能归因分析
+
+#### 工作量估算（V2阶段）
+
+| 任务 | 工作量 |
+|------|--------|
+| 多策略管理框架 | 2周 |
+| 资金分配算法 | 1.5周 |
+| Markowitz优化 | 1.5周 |
+| 风险预算 | 1周 |
+| 再平衡逻辑 | 1周 |
+| 报表和归因 | 1周 |
+| 测试与文档 | 1周 |
+| **总计** | **9周（2.25人月，约1.75人月实际）** |
 
 ---
 
@@ -1253,41 +1763,69 @@ class MovingAverageCrossover(BaseStrategy):
 
 ## 5. 优先级与路线图
 
-### 5.1 MVP功能范围
+### 5.1 MVP功能范围（v2.1更新）
 
-**MVP目标**: 实现基础的数据采集、策略回测和模拟交易功能
+> ⭐ **基于市场分析，MVP已升级为可盈利的基础平台**
+
+**MVP目标**: 实现可盈利的量化交易平台，支持高频套利和趋势跟踪策略
+
+**核心定位**:
+- **目标**: 可盈利的基础平台（3个月）
+- **预期收益**: 年化收益 15-30%（高频套利 + 趋势跟踪）
+- **总工作量**: ~5.5人月
 
 **包含功能** (预计12周)
 
-1. **数据模块** (4周)
-   - [P0] Binance/OKX CEX数据采集
-   - [P0] 数据标准化
-   - [P0] Redis/ClickHouse存储
+1. **数据模块 - Rust实现** (2周) ⭐ **性能核心**
+   - [P0] Binance/OKX CEX数据采集（WebSocket低延迟）
+   - [P0] 数据标准化和清洗
+   - [P0] Redis/ClickHouse高性能存储
    - [P0] 基础查询API
 
-2. **用户管理** (2周)
-   - [P0] 用户注册/登录
-   - [P0] JWT认证
+2. **Alpha因子库** (4周) ⭐⭐⭐ **MVP关键**
+   - [P0] 技术指标因子（20个：MA/EMA/MACD/RSI/ATR等）
+   - [P0] 量价因子（15个：OBV/VWAP/换手率等）
+   - [P1] 基本面因子（30个：PE/PB/ROE等）
+   - [P0] 因子计算引擎（高性能）
+   - [P0] 因子缓存（Redis）
+   - **工作量**: 1.75人月
+
+3. **策略优化引擎** (2周) ⭐⭐⭐ **防过拟合**
+   - [P0] 贝叶斯优化（比网格搜索快5-10倍）
+   - [P0] Walk-Forward分析（参数稳定性验证）
+   - [P1] 遗传算法、粒子群算法
+   - **工作量**: 1人月
+
+4. **模拟交易系统** (2周) ⭐⭐⭐ **实盘前必备**
+   - [P0] 虚拟账户管理
+   - [P0] 实时数据订阅（真实市场数据）
+   - [P0] 模拟订单撮合（滑点+手续费）
+   - [P0] 与实盘API 100%兼容
+   - **工作量**: 0.9人月
+
+5. **策略包** (2周)
+   - [P0] 高频套利策略（币本位合约套利）
+   - [P0] 趋势跟踪策略（双均线、动量）
+   - [P0] 策略框架和回测引擎
+
+6. **用户管理** (1周)
+   - [P0] 用户注册/登录、JWT认证
    - [P0] 基础权限管理
 
-3. **策略模块** (3周)
-   - [P0] 策略开发框架
-   - [P0] 回测引擎
-   - [P0] 基础策略模板
+7. **前端MVP** (2周)
+   - [P0] 登录页、仪表盘
+   - [P0] 策略管理页（含因子库浏览）
+   - [P0] 回测报告页（增强可视化）
+   - [P0] 模拟交易监控页
 
-4. **前端** (3周)
-   - [P0] 登录页
-   - [P0] 仪表盘
-   - [P0] 策略管理页
-   - [P0] 回测报告页
+**不包含功能**（移至V2/V3）
 
-**不包含功能**
-
-- 实盘交易
-- 美股/期权数据
-- 舆情数据
-- 高级策略优化
-- 移动端
+- 社区策略市场（移至V3）
+- 高级可视化（移至V3）
+- 移动端支持（移至V3）
+- 实盘交易（V2验证后开启）
+- ML集成（V2路线图）
+- 组合管理（V2路线图）
 
 ### 5.2 各模块优先级矩阵
 
@@ -1312,9 +1850,12 @@ class MovingAverageCrossover(BaseStrategy):
 | 策略框架 | P0 | 高 | 中 | 1周 |
 | 回测引擎 | P0 | 高 | 高 | 2周 |
 | 策略模板 | P0 | 中 | 低 | 1周 |
+| **Alpha因子库** | **P0** | **高** | **中** | **7周（1.75月）** |
+| **策略优化增强** | **P0** | **高** | **中** | **4周（1月）** |
+| **模拟交易** | **P0** | **高** | **中** | **3.5周（0.9月）** |
 | 实盘执行 | P1 | 高 | 高 | 2周 |
-| 参数优化 | P1 | 中 | 中 | 1周 |
-| ML集成 | P2 | 中 | 高 | 2周 |
+| **ML集成** | **P1** | **中** | **高** | **10周（2.5月）** |
+| **组合管理** | **P1** | **中** | **中** | **9周（1.75月）** |
 
 #### 执行模块
 
@@ -1334,73 +1875,181 @@ class MovingAverageCrossover(BaseStrategy):
 | 清算保护 | P1 | 高 | 高 | 2周 |
 | 风险告警 | P1 | 中 | 低 | 1周 |
 
-### 5.3 开发路线图
+### 5.3 开发路线图（v2.1更新）
 
-#### 阶段1: MVP (Week 1-12)
+> 🎯 **三阶段路线图：MVP (3个月) → V2 (6个月) → V3 (12个月)**
 
-**目标**: 实现数据采集、策略回测、用户管理基础功能
+---
 
-| 周次 | 里程碑 | 交付物 |
-|------|--------|--------|
-| W1-2 | 项目初始化 | 项目架构、CI/CD、基础设施 |
-| W3-6 | 数据模块MVP | Binance/OKX数据采集、存储、查询API |
-| W7-8 | 用户管理 | 认证、授权、用户CRUD |
-| W9-11 | 策略模块MVP | 策略框架、回测引擎 |
-| W12 | 前端MVP | 登录、仪表盘、策略管理 |
+#### 阶段1: MVP - 可盈利的基础平台 (3个月)
 
-**验收标准**:
-- [ ] 能够采集Binance/OKX实时数据
+**目标**: 实现可盈利的量化交易平台，年化收益15-30%
+
+**工作量**: ~5.5人月
+
+| 周次 | 里程碑 | 交付物 | 工作量 |
+|------|--------|--------|--------|
+| **W1-2** | **基础设施** | Rust数据层框架、Docker环境、CI/CD | 0.5人月 |
+| | | - Rust项目初始化（Tokio、Actix-web） | |
+| | | - PostgreSQL、Redis、ClickHouse部署 | |
+| | | - GitHub Actions CI/CD | |
+| **W3-6** | **Alpha因子库** | 100个预定义因子 | 1.75人月 |
+| | | - 技术指标因子（20个：MA/EMA/MACD/RSI/ATR） | |
+| | | - 量价因子（15个：OBV/VWAP/换手率） | |
+| | | - 基本面因子（30个：PE/PB/ROE） | |
+| | | - 其他因子（35个） | |
+| | | - 因子计算引擎（高性能） | |
+| **W7-8** | **策略优化引擎** | 贝叶斯优化 + Walk-Forward | 1人月 |
+| | | - 贝叶斯优化（scikit-optimize） | |
+| | | - Walk-Forward分析（参数稳定性） | |
+| | | - 遗传算法、粒子群算法 | |
+| **W9-10** | **模拟交易系统** | 虚拟Broker + 实时撮合 | 0.9人月 |
+| | | - 虚拟账户管理 | |
+| | | - 实时数据订阅（WebSocket） | |
+| | | - 模拟订单撮合（滑点+手续费） | |
+| | | - 与实盘API 100%兼容 | |
+| **W11-12** | **策略包 + 前端** | 高频套利 + 趋势跟踪 + UI | 1.35人月 |
+| | | - 高频套利策略（币本位合约套利） | |
+| | | - 趋势跟踪策略（双均线、动量） | |
+| | | - 前端MVP（因子库浏览、模拟交易监控） | |
+
+**验收标准 (MVP Exit Criteria)**:
+- [ ] 100个Alpha因子可用，性能 > 1000 bars/s
+- [ ] 贝叶斯优化速度比网格搜索快5-10倍
+- [ ] Walk-Forward分析可检测过拟合
+- [ ] 模拟交易系统与实盘API 100%兼容
+- [ ] 高频套利策略年化收益 > 15%（回测）
+- [ ] 趋势跟踪策略年化收益 > 20%（回测）
+- [ ] 模拟交易运行1个月无异常
 - [ ] 能够查询历史数据
 - [ ] 能够开发和回测简单策略
 - [ ] 能够通过Web界面管理策略
 
-#### 阶段2: 实盘交易 (Week 13-20)
+---
 
-**目标**: 实现实盘交易、风控、多数据源
+#### 阶段2: V2 - 增强盈利能力 (6个月)
 
-| 周次 | 里程碑 | 交付物 |
+**目标**: 扩展策略能力，年化收益提升至20-40%
+
+**工作量**: ~10人月
+
+**核心功能开发**:
+
+1. **机器学习集成** (10周 / 2.5人月)
+   - ML Pipeline框架
+   - 特征工程（基于因子库）
+   - 模型库集成（Random Forest/XGBoost/LSTM）
+   - 在线预测
+   - AutoML（自动特征选择+模型选择）
+
+2. **组合管理系统** (9周 / 1.75人月)
+   - 多策略并行执行
+   - 动态资金分配（等权重、风险平价、最大夏普）
+   - Markowitz均值-方差优化
+   - 风险预算管理（VaR/CVaR）
+   - 自动再平衡
+
+3. **因子库扩展** (4周)
+   - 扩展至200+因子
+   - 分析师因子（20个）
+   - 行业因子（30个）
+   - 宏观因子（20个）
+
+4. **高级回测功能** (4周)
+   - 多策略组合回测
+   - Monte Carlo模拟
+   - 敏感性分析
+   - 事件驱动回测
+
+5. **实盘交易上线** (8周)
+   - 模拟交易充分验证后启用
+   - 订单管理、智能路由
+   - 实时风控
+   - 清算保护
+
+6. **多数据源扩展** (4周)
+   - 美股数据（IBKR、Polygon）
+   - 期权链数据
+   - 舆情数据（Twitter、NewsAPI）
+
+**路线图**:
+
+| 时间 | 里程碑 | 交付物 |
 |------|--------|--------|
-| W13-15 | 交易执行模块 | 订单管理、CEX交易 |
-| W16-17 | 风控模块 | 实时监控、风控规则 |
-| W18-19 | 美股数据 | IBKR集成、Polygon集成 |
-| W20 | 集成测试 | E2E测试、压力测试 |
+| M4-5 | 机器学习集成 | ML Pipeline、特征工程、模型库 |
+| M5-6 | 组合管理系统 | 多策略并行、Markowitz优化 |
+| M6-7 | 实盘交易 | 订单管理、风控、实盘上线 |
+| M7-8 | 多数据源 | 美股、期权、舆情数据 |
+| M8-9 | 高级回测 | 组合回测、Monte Carlo |
 
-**验收标准**:
-- [ ] 能够在Binance实盘交易
-- [ ] 风控规则正常工作
-- [ ] 能够采集美股数据
+**验收标准 (V2 Exit Criteria)**:
+- [ ] ML策略年化收益 > 25%（回测）
+- [ ] 组合管理支持10+策略并行
+- [ ] Markowitz优化可生成最优权重
+- [ ] 实盘交易运行3个月无重大问题
+- [ ] 因子库扩展至200+
+- [ ] 支持美股、期权、舆情数据
 
-#### 阶段3: 多市场与舆情 (Week 21-28)
+---
 
-**目标**: 支持期权、舆情、高级功能
+#### 阶段3: V3 - 平台化与生态 (12个月)
 
-| 周次 | 里程碑 | 交付物 |
+**目标**: 建立策略生态，支持社区和第三方策略
+
+**核心功能开发**:
+
+1. **社区策略市场** (2个月)
+   - 策略发布与分享
+   - 策略评分与评论
+   - 策略订阅与付费
+   - 收益分成机制
+
+2. **完整期权策略支持** (2个月)
+   - 期权定价（Black-Scholes、二叉树）
+   - 希腊值计算与对冲
+   - 波动率曲面
+   - 期权策略模板（铁鹰、蝶式、日历）
+
+3. **移动端APP** (3个月)
+   - React Native跨平台
+   - 实时行情推送
+   - 策略监控
+   - 快速下单
+
+4. **高级可视化** (2个月)
+   - 3D资金曲线
+   - 实时风险地图
+   - 策略相关性网络图
+   - 自定义仪表盘
+
+5. **智能策略推荐** (2个月)
+   - 基于用户画像
+   - 策略协同过滤
+   - 风险偏好匹配
+
+6. **生产级优化** (1个月)
+   - 性能优化
+   - 监控与运维完善
+   - 多租户隔离增强
+
+**路线图**:
+
+| 时间 | 里程碑 | 交付物 |
 |------|--------|--------|
-| W21-23 | 期权数据 | IBKR期权链、希腊值计算 |
-| W24-25 | 舆情数据 | Twitter/NewsAPI集成 |
-| W26-27 | 策略优化 | 参数优化、Walk-Forward |
-| W28 | 报表模块 | 交易报表、风险报表 |
+| M10-11 | 社区策略市场 | 策略发布、订阅、付费 |
+| M12-13 | 期权策略 | 期权定价、希腊值、策略模板 |
+| M14-16 | 移动端APP | React Native跨平台APP |
+| M17-18 | 高级可视化 | 3D图表、风险地图 |
+| M19-20 | 智能推荐 | 策略推荐引擎 |
+| M21 | 生产优化 | 性能优化、监控完善 |
 
-**验收标准**:
-- [ ] 能够交易期权
-- [ ] 能够分析社交媒体情绪
-- [ ] 能够自动优化策略参数
-
-#### 阶段4: 完善与优化 (Week 29-36)
-
-**目标**: 性能优化、用户体验提升、生产就绪
-
-| 周次 | 里程碑 | 交付物 |
-|------|--------|--------|
-| W29-30 | 性能优化 | Rust服务优化、数据库优化 |
-| W31-32 | 监控与运维 | Prometheus/Grafana、告警 |
-| W33-34 | 前端完善 | 高级图表、移动端支持 |
-| W35-36 | 生产部署 | 生产环境部署、文档完善 |
-
-**验收标准**:
-- [ ] 满足所有性能基线
-- [ ] 监控体系完善
-- [ ] 生产环境稳定运行
+**验收标准 (V3 Exit Criteria)**:
+- [ ] 社区策略市场有100+策略
+- [ ] 期权策略回测完整支持
+- [ ] 移动端APP上线iOS/Android
+- [ ] 高级可视化功能完善
+- [ ] 智能推荐准确率 > 70%
+- [ ] 平台支持1000+并发用户
 
 ### 5.4 里程碑与交付物
 
@@ -1608,6 +2257,352 @@ graph LR
 - 用于高性能服务间通信
 - Protobuf定义消息格式
 - 双向流支持实时数据推送
+
+---
+
+### 7.2.1 因子库API
+
+**基础路径**: `/api/v1/factors`
+
+**列出所有可用因子**
+```http
+GET /api/v1/factors
+Query Parameters:
+  - category: string (optional) - 因子分类 (technical/volume/fundamental)
+  - search: string (optional) - 搜索关键词
+
+Response:
+{
+  "success": true,
+  "data": {
+    "factors": [
+      {
+        "name": "RSI",
+        "category": "technical",
+        "description": "相对强弱指标",
+        "params": {"period": 14}
+      },
+      ...
+    ],
+    "total": 100
+  }
+}
+```
+
+**批量计算因子**
+```http
+POST /api/v1/factors/calculate
+Body:
+{
+  "symbol": "BTCUSDT",
+  "factor_names": ["RSI", "MACD", "ATR"],
+  "params": {"period": 14},
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-01"
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "results": {
+      "RSI": [70.2, 68.5, ...],
+      "MACD": [0.5, 1.2, ...],
+      "ATR": [100.2, 98.5, ...]
+    },
+    "timestamps": ["2024-01-01T00:00:00Z", ...]
+  }
+}
+```
+
+**获取因子详情**
+```http
+GET /api/v1/factors/{name}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "name": "RSI",
+    "category": "technical",
+    "description": "相对强弱指标，衡量价格动量",
+    "formula": "RSI = 100 - (100 / (1 + RS))",
+    "params": {
+      "period": {"type": "int", "default": 14, "range": [5, 30]}
+    },
+    "usage_example": "library.calculate('RSI', data, period=14)"
+  }
+}
+```
+
+**因子性能分析**
+```http
+POST /api/v1/factors/analyze
+Body:
+{
+  "factor_name": "RSI",
+  "symbol": "BTCUSDT",
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-01"
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "ic": 0.15,  // 信息系数
+    "coverage": 0.98,  // 覆盖率
+    "correlation_with": {
+      "MACD": 0.65,
+      "ATR": 0.23
+    }
+  }
+}
+```
+
+---
+
+### 7.2.2 优化器API
+
+**基础路径**: `/api/v1/optimizer`
+
+**贝叶斯优化**
+```http
+POST /api/v1/optimizer/bayesian
+Body:
+{
+  "strategy_id": "uuid",
+  "param_space": {
+    "fast_period": [5, 30],
+    "slow_period": [20, 100],
+    "stop_loss": [0.01, 0.05]
+  },
+  "objective": "sharpe_ratio",
+  "n_calls": 50,
+  "backtest_config": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-01",
+    "initial_cash": 10000
+  }
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "optimization_id": "uuid",
+    "best_params": {
+      "fast_period": 12,
+      "slow_period": 26,
+      "stop_loss": 0.02
+    },
+    "best_score": 1.85,  // 夏普比率
+    "n_iterations": 50,
+    "convergence_plot": "base64_image",
+    "param_importance": {
+      "fast_period": 0.45,
+      "slow_period": 0.35,
+      "stop_loss": 0.20
+    }
+  }
+}
+```
+
+**Walk-Forward分析**
+```http
+POST /api/v1/optimizer/walk-forward
+Body:
+{
+  "strategy_id": "uuid",
+  "param_space": {
+    "fast_period": [5, 30],
+    "slow_period": [20, 100]
+  },
+  "training_window": 180,  // 天数
+  "testing_window": 60,
+  "step_size": 30,
+  "start_date": "2023-01-01",
+  "end_date": "2024-12-01"
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "analysis_id": "uuid",
+    "windows": [
+      {
+        "training_period": ["2023-01-01", "2023-06-30"],
+        "testing_period": ["2023-07-01", "2023-08-30"],
+        "best_params": {"fast_period": 12, "slow_period": 26},
+        "training_sharpe": 2.1,
+        "testing_sharpe": 1.8
+      },
+      ...
+    ],
+    "average_testing_sharpe": 1.75,
+    "param_stability": 0.85,  // 0-1
+    "performance_degradation": 0.12  // 12%
+  }
+}
+```
+
+**获取优化历史**
+```http
+GET /api/v1/optimizer/history/{optimization_id}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "optimization_id": "uuid",
+    "status": "completed",
+    "iterations": [
+      {
+        "iteration": 1,
+        "params": {"fast_period": 10, "slow_period": 25},
+        "score": 1.52,
+        "timestamp": "2024-12-20T10:00:00Z"
+      },
+      ...
+    ]
+  }
+}
+```
+
+---
+
+### 7.2.3 模拟交易API
+
+**基础路径**: `/api/v1/paper-trading`
+
+**创建虚拟账户**
+```http
+POST /api/v1/paper-trading/accounts
+Body:
+{
+  "name": "My Paper Account",
+  "initial_cash": 10000,
+  "commission_rate": 0.001,  // 0.1%
+  "slippage_pct": 0.001  // 0.1%
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "account_id": "uuid",
+    "name": "My Paper Account",
+    "balance": 10000,
+    "created_at": "2024-12-20T10:00:00Z"
+  }
+}
+```
+
+**提交模拟订单**
+```http
+POST /api/v1/paper-trading/orders
+Body:
+{
+  "account_id": "uuid",
+  "symbol": "BTCUSDT",
+  "side": "buy",  // buy/sell
+  "order_type": "market",  // market/limit
+  "quantity": 0.1,
+  "price": 43200  // 仅limit单需要
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "order_id": "uuid",
+    "status": "filled",  // pending/filled/cancelled
+    "filled_price": 43205.5,  // 含滑点
+    "commission": 4.32,
+    "filled_at": "2024-12-20T10:00:00Z"
+  }
+}
+```
+
+**获取组合状态**
+```http
+GET /api/v1/paper-trading/portfolio/{account_id}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "account_id": "uuid",
+    "total_value": 10250.5,
+    "cash": 5000,
+    "positions": [
+      {
+        "symbol": "BTCUSDT",
+        "quantity": 0.12,
+        "avg_price": 43000,
+        "current_price": 43250,
+        "unrealized_pnl": 30,
+        "unrealized_pnl_pct": 0.58
+      }
+    ],
+    "total_pnl": 250.5,
+    "total_pnl_pct": 2.505,
+    "sharpe_ratio": 1.65,
+    "max_drawdown": -0.082
+  }
+}
+```
+
+**获取交易历史**
+```http
+GET /api/v1/paper-trading/trades/{account_id}
+Query Parameters:
+  - start_date: string (optional)
+  - end_date: string (optional)
+  - symbol: string (optional)
+  - page: int (default: 1)
+  - limit: int (default: 50)
+
+Response:
+{
+  "success": true,
+  "data": {
+    "trades": [
+      {
+        "trade_id": "uuid",
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "quantity": 0.1,
+        "price": 43200,
+        "commission": 4.32,
+        "pnl": null,  // 仅平仓时有
+        "timestamp": "2024-12-20T10:00:00Z"
+      },
+      ...
+    ],
+    "total": 156,
+    "page": 1,
+    "limit": 50
+  }
+}
+```
+
+**取消订单**
+```http
+DELETE /api/v1/paper-trading/orders/{order_id}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "order_id": "uuid",
+    "status": "cancelled"
+  }
+}
+```
+
+---
 
 ### 7.3 数据格式标准
 

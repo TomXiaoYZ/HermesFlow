@@ -71,6 +71,7 @@ Thumbs.db
 # Project specific
 logs/
 *.log
+log/
 .env.local
 .env.development.local
 .env.test.local
@@ -137,3 +138,41 @@ db.sqlite3-journal
 *.sst
 *.csr
 *.pub 
+
+# Node build artifacts
+/build
+/dist
+
+# Environment variables
+*.env*
+
+# HermesFlow specific
+# Data collection outputs
+data/raw/
+data/processed/
+data/cache/
+
+# Validation reports
+sentiment_connectors_validation_*.json
+*_validation_*.json
+*_baseline_*.json
+
+# Runtime logs
+logs/*.log
+logs/*.txt
+log/*.log
+log/*.txt
+
+# Production secrets
+deployment/production/.env
+deployment/staging/.env
+config/production.yml
+config/staging.yml
+
+# API keys and credentials
+*.api_key
+*.secret
+credentials/
+
+# Migration backups (temporary files)
+migration_backup/ 
