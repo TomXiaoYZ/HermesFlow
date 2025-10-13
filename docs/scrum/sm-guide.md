@@ -84,7 +84,7 @@
 ```
 
 **使用文档**:
-- [PRD 主文档](../prd/PRD-HermesFlow.md) - 了解功能需求
+- [PRD 主文档](../prd/prd-hermesflow.md) - 了解功能需求
 - [项目进度](../progress.md) - 查看当前状态
 
 #### 2. 确认优先级
@@ -342,7 +342,7 @@ Sprint 容量 = 6 × 10 × 6 × 0.8 = 288 小时 = 36 人日
 6. ✅ **Definition of Done**（团队共识）
 
 **使用清单**:
-👉 [Sprint Planning 清单](./SPRINT-PLANNING-CHECKLIST.md)
+👉 [Sprint Planning 清单](./sprint-planning-checklist.md)
 
 ---
 
@@ -1081,10 +1081,10 @@ Backlog → Ready → In Progress → In Review → Testing → Done
 
 ### HermesFlow 项目文档
 - [项目进度](../progress.md)
-- [Sprint Planning 清单](./SPRINT-PLANNING-CHECKLIST.md)
-- [Retrospective 模板](./RETROSPECTIVE-TEMPLATE.md)
+- [Sprint Planning 清单](./sprint-planning-checklist.md)
+- [Retrospective 模板](./retrospective-template.md)
 - [系统架构](../architecture/system-architecture.md)
-- [PRD 主文档](../prd/PRD-HermesFlow.md)
+- [PRD 主文档](../prd/prd-hermesflow.md)
 
 ### 工具和模板
 - [Retrospective 技巧库](https://retromat.org/)

@@ -838,7 +838,7 @@ class OrderIntegrationTest {
 ## 📞 获取帮助
 
 - **Java Team**: Slack `#java-dev`
-- **技术问题**: [FAQ](../FAQ.md)
+- **技术问题**: [FAQ](../faq.md)
 
 ---
 

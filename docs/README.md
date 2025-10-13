@@ -8,8 +8,8 @@
 
 ## 🚀 快速开始
 
-- **新手上路**: [快速开始指南](./QUICKSTART.md) - 5分钟了解项目基础
-- **常见问题**: [FAQ文档](./FAQ.md) - 解决80%的常见疑问
+- **新手上路**: [快速开始指南](./quickstart.md) - 5分钟了解项目基础
+- **常见问题**: [FAQ文档](./faq.md) - 解决80%的常见疑问
 - **故障排查**: [故障排查手册](./operations/troubleshooting.md) - 应急处理指南
 
 ---
@@ -17,41 +17,41 @@
 ## 🎯 按角色浏览
 
 ### 产品经理 (Product Manager)
-- 📋 [产品需求文档 (PRD)](./prd/PRD-HermesFlow.md)
+- 📋 [产品需求文档 (PRD)](./prd/prd-hermesflow.md)
 - 📊 [项目进度跟踪](./progress.md)
 - 🔍 [市场分析报告](./analysis/market-analysis-and-gap-assessment.md)
-- 📅 [开发路线图](./prd/PRD-HermesFlow.md#53-开发路线图)
+- 📅 [开发路线图](./prd/prd-hermesflow.md#53-开发路线图)
 
 ### Scrum Master
-- 📖 [Scrum Master 完整指南](./scrum/SM-GUIDE.md)
-- ✅ [Sprint Planning 清单](./scrum/SPRINT-PLANNING-CHECKLIST.md)
-- 🔄 [Retrospective 模板](./scrum/RETROSPECTIVE-TEMPLATE.md)
+- 📖 [Scrum Master 完整指南](./scrum/sm-guide.md)
+- ✅ [Sprint Planning 清单](./scrum/sprint-planning-checklist.md)
+- 🔄 [Retrospective 模板](./scrum/retrospective-template.md)
 - 📈 [项目进度仪表盘](./progress.md)
 
 ### 开发者 (Developer)
 
 #### 通用资源
-- 🏁 [开发者快速开始](./development/QUICKSTART.md)
+- 🏁 [开发者快速开始](./developmen./quickstart.md)
 - 📝 [编码规范](./development/coding-standards.md)
-- 🔍 [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md)
+- 🔍 [代码审查清单](./development/code-review-checklist.md)
 - 📚 [开发指南](./development/dev-guide.md)
-- 🔗 [快速参考手册](./QUICK-REFERENCE.md)
+- 🔗 [快速参考手册](./development/quick-reference.md)
 
 #### 分语言指南
-- 🦀 [Rust 开发者指南](./development/RUST-DEVELOPER-GUIDE.md) - 数据引擎
-- ☕ [Java 开发者指南](./development/JAVA-DEVELOPER-GUIDE.md) - 交易/用户/风控服务
-- 🐍 [Python 开发者指南](./development/PYTHON-DEVELOPER-GUIDE.md) - 策略引擎
+- 🦀 [Rust 开发者指南](./development/rust-developer-guide.md) - 数据引擎
+- ☕ [Java 开发者指南](./development/java-developer-guide.md) - 交易/用户/风控服务
+- 🐍 [Python 开发者指南](./development/python-developer-guide.md) - 策略引擎
 
 ### QA 工程师
-- 🧪 [QA 工程师完整指南](./testing/QA-ENGINEER-GUIDE.md)
+- 🧪 [QA 工程师完整指南](./testing/qa-engineer-guide.md)
 - 📋 [测试策略](./testing/test-strategy.md)
-- ✅ [验收测试清单](./testing/ACCEPTANCE-CHECKLIST.md)
+- ✅ [验收测试清单](./testing/acceptance-checklist.md)
 - 🔐 [高风险访问测试](./testing/high-risk-access-testing.md)
 - 🗄️ [测试数据管理](./testing/test-data-management.md)
 - 🔄 [CI/CD 测试集成](./testing/ci-cd-integration.md)
 
 ### DevOps 工程师
-- 🚀 [DevOps 工程师指南](./operations/DEVOPS-GUIDE.md)
+- 🚀 [DevOps 工程师指南](./operations/devops-guide.md)
 - 🐳 [Docker 部署指南](./deployment/docker-guide.md)
 - ☸️ [GitOps 最佳实践](./deployment/gitops-best-practices.md)
 - 📊 [监控方案](./operations/monitoring.md)
@@ -70,8 +70,8 @@
 ### Sprint Planning（Sprint 计划阶段）
 
 **必读文档**:
-1. [产品需求文档 (PRD)](./prd/PRD-HermesFlow.md) - 了解功能需求
-2. [模块详细需求](./modules/MODULE-INDEX.md) - 查看具体模块任务
+1. [产品需求文档 (PRD)](./prd/prd-hermesflow.md) - 了解功能需求
+2. [模块详细需求](./modules/module-index.md) - 查看具体模块任务
 3. [系统架构文档](./architecture/system-architecture.md) - 理解技术架构
 4. [项目进度](./progress.md) - 当前状态和待办事项
 5. [架构决策记录 (ADR)](./architecture/decisions/) - 关键技术选型
@@ -81,28 +81,28 @@
 Sprint Planning清单 → 审查PRD → 选择Story → 估算 → 分配任务
 ```
 
-📋 [使用 Sprint Planning 清单](./scrum/SPRINT-PLANNING-CHECKLIST.md)
+📋 [使用 Sprint Planning 清单](./scrum/sprint-planning-checklist.md)
 
 ---
 
 ### Development（开发阶段）
 
 **必读文档**:
-1. [开发者快速开始](./development/QUICKSTART.md) - 环境搭建
+1. [开发者快速开始](./developmen./quickstart.md) - 环境搭建
 2. [开发指南](./development/dev-guide.md) - 开发流程
 3. [编码规范](./development/coding-standards.md) - 代码质量标准
 4. [API 设计文档](./api/api-design.md) - API 规范
 5. [数据库设计文档](./database/database-design.md) - 数据库 Schema
 
 **分模块导航**:
-- 🔍 [按模块查找文档](./modules/MODULE-INDEX.md)
+- 🔍 [按模块查找文档](./modules/module-index.md)
 
 **工作流程**:
 ```
 创建分支 → 编写代码 → 自测 → Code Review → 合并
 ```
 
-🔍 [使用代码审查清单](./development/CODE-REVIEW-CHECKLIST.md)
+🔍 [使用代码审查清单](./development/code-review-checklist.md)
 
 ---
 
@@ -120,7 +120,7 @@ Sprint Planning清单 → 审查PRD → 选择Story → 估算 → 分配任务
 单元测试 → 集成测试 → 安全测试 → 性能测试 → 验收测试
 ```
 
-✅ [使用验收测试清单](./testing/ACCEPTANCE-CHECKLIST.md)
+✅ [使用验收测试清单](./testing/acceptance-checklist.md)
 
 ---
 
@@ -160,7 +160,7 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 ### Retrospective（回顾阶段）
 
 **必读文档**:
-1. [Retrospective 模板](./scrum/RETROSPECTIVE-TEMPLATE.md)
+1. [Retrospective 模板](./scrum/retrospective-template.md)
 2. [项目进度](./progress.md) - 对比计划与实际
 3. [技术债务](./progress.md#技术债务) - 识别改进点
 
@@ -169,7 +169,7 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 收集反馈 → 分析问题 → 识别改进点 → 制定行动计划 → 更新最佳实践
 ```
 
-🔄 [使用 Retrospective 模板](./scrum/RETROSPECTIVE-TEMPLATE.md)
+🔄 [使用 Retrospective 模板](./scrum/retrospective-template.md)
 
 ---
 
@@ -179,7 +179,7 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 
 | 文档 | 描述 | 优先级 |
 |------|------|--------|
-| [PRD 主文档](./prd/PRD-HermesFlow.md) | 产品整体需求和路线图（80页） | 🔴 P0 |
+| [PRD 主文档](./prd/prd-hermesflow.md) | 产品整体需求和路线图（80页） | 🔴 P0 |
 | [数据模块 (Rust)](./prd/modules/01-data-module.md) | 数据采集、处理、存储 | 🔴 P0 |
 | [策略模块 (Python)](./prd/modules/02-strategy-module.md) | 策略编写、回测、优化 | 🔴 P0 |
 | [执行模块 (Java)](./prd/modules/03-execution-module.md) | 订单执行、风控 | 🔴 P0 |
@@ -218,7 +218,7 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 | **数据库** | [数据库设计文档](./database/database-design.md) | PostgreSQL + ClickHouse + Redis |
 | **开发** | [编码规范](./development/coding-standards.md) | Rust/Java/Python 代码标准 |
 | **开发** | [开发指南](./development/dev-guide.md) | 完整开发流程 |
-| **快速参考** | [快速参考手册](./QUICK-REFERENCE.md) | 常用命令和API |
+| **快速参考** | [快速参考手册](./development/quick-reference.md) | 常用命令和API |
 
 ---
 
@@ -281,11 +281,11 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 
 #### 场景1: 我是新加入的开发者
 ```
-1. 阅读 [快速开始指南](./QUICKSTART.md)
+1. 阅读 [快速开始指南](./quickstart.md)
 2. 根据技术栈选择:
-   - Rust → [Rust 开发者指南](./development/RUST-DEVELOPER-GUIDE.md)
-   - Java → [Java 开发者指南](./development/JAVA-DEVELOPER-GUIDE.md)
-   - Python → [Python 开发者指南](./development/PYTHON-DEVELOPER-GUIDE.md)
+   - Rust → [Rust 开发者指南](./development/rust-developer-guide.md)
+   - Java → [Java 开发者指南](./development/java-developer-guide.md)
+   - Python → [Python 开发者指南](./development/python-developer-guide.md)
 3. 搭建环境 → [开发指南](./development/dev-guide.md)
 4. 查看 [编码规范](./development/coding-standards.md)
 5. 开始第一个任务
@@ -293,12 +293,12 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 
 #### 场景2: 我要开发新功能
 ```
-1. 查看 [PRD 文档](./prd/PRD-HermesFlow.md) 了解需求
-2. 查看 [模块索引](./modules/MODULE-INDEX.md) 找到相关模块
+1. 查看 [PRD 文档](./prd/prd-hermesflow.md) 了解需求
+2. 查看 [模块索引](./modules/module-index.md) 找到相关模块
 3. 查看 [系统架构](./architecture/system-architecture.md) 理解设计
 4. 查看 [API 设计](./api/api-design.md) 和 [数据库设计](./database/database-design.md)
 5. 参考 [编码规范](./development/coding-standards.md) 开始编码
-6. 使用 [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md) 自查
+6. 使用 [代码审查清单](./development/code-review-checklist.md) 自查
 7. 编写测试，参考 [测试策略](./testing/test-strategy.md)
 ```
 
@@ -306,7 +306,7 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 ```
 1. 查看 [故障排查手册](./operations/troubleshooting.md)
 2. 检查 [监控方案](./operations/monitoring.md) 中的日志和指标
-3. 查阅 [FAQ](./FAQ.md) 是否有类似问题
+3. 查阅 [FAQ](./faq.md) 是否有类似问题
 4. 查看相关模块的 [架构文档](./architecture/system-architecture.md)
 ```
 
@@ -322,7 +322,7 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 #### 场景5: 我要编写测试
 ```
 1. 了解 [测试策略](./testing/test-strategy.md)
-2. 查看 [验收测试清单](./testing/ACCEPTANCE-CHECKLIST.md)
+2. 查看 [验收测试清单](./testing/acceptance-checklist.md)
 3. 准备测试数据，参考 [测试数据管理](./testing/test-data-management.md)
 4. 对于安全关键功能，参考 [高风险访问测试](./testing/high-risk-access-testing.md)
 5. 集成到 CI/CD，参考 [CI/CD 测试集成](./testing/ci-cd-integration.md)
@@ -340,7 +340,7 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 - ❓ **测试覆盖率要求?** → [测试策略](./testing/test-strategy.md#覆盖率要求)
 - ❓ **如何部署?** → [Docker 部署指南](./deployment/docker-guide.md)
 - ❓ **系统出问题了?** → [故障排查手册](./operations/troubleshooting.md)
-- ❓ **更多问题?** → [FAQ 文档](./FAQ.md)
+- ❓ **更多问题?** → [FAQ 文档](./faq.md)
 
 ---
 
@@ -433,7 +433,7 @@ GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
 - **DevOps**: 部署指南 + 故障排查手册
 
 ### 提示 3: 使用文档流程图
-不确定从哪开始？查看 [文档流程图](./DOCUMENT-FLOW.md)，它会根据您的场景推荐阅读顺序。
+不确定从哪开始？查看 [文档流程图](./document-flow.md)，它会根据您的场景推荐阅读顺序。
 
 ### 提示 4: 定期查看 progress.md
 [项目进度](./progress.md) 每周更新，了解最新进展和待办事项。

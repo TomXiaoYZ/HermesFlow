@@ -934,7 +934,7 @@ cargo bench --bench market_data_bench -- --baseline before
 
 ### HermesFlow 文档
 - [编码规范](./coding-standards.md)
-- [Code Review 清单](./CODE-REVIEW-CHECKLIST.md)
+- [Code Review 清单](./code-review-checklist.md)
 - [测试策略](../testing/test-strategy.md)
 
 ---
@@ -942,7 +942,7 @@ cargo bench --bench market_data_bench -- --baseline before
 ## 📞 获取帮助
 
 - **Rust Team**: Slack `#rust-dev`
-- **技术问题**: [FAQ](../FAQ.md)
+- **技术问题**: [FAQ](../faq.md)
 - **Bug 报告**: GitHub Issues
 
 ---

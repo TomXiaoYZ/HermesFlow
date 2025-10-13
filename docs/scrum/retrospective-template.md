@@ -237,8 +237,8 @@ _对本次 Retrospective 的反馈（Plus/Delta）：_
 
 ## 📚 相关资源
 
-- [Scrum Master 指南](./SM-GUIDE.md)
-- [Sprint Planning 清单](./SPRINT-PLANNING-CHECKLIST.md)
+- [Scrum Master 指南](./sm-guide.md)
+- [Sprint Planning 清单](./sprint-planning-checklist.md)
 - [项目进度](../progress.md)
 
 ---

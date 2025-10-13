@@ -367,7 +367,7 @@ Closes #xxx
 
 ### 提交 PR 前自查
 
-使用 [代码审查清单](./CODE-REVIEW-CHECKLIST.md):
+使用 [代码审查清单](./code-review-checklist.md):
 
 ```bash
 自查清单：
@@ -669,19 +669,19 @@ poetry run pytest --cache-clear
 根据您的角色，深入学习：
 
 ### 开发者
-- 🦀 [Rust 开发者完整指南](./RUST-DEVELOPER-GUIDE.md)
-- ☕ [Java 开发者完整指南](./JAVA-DEVELOPER-GUIDE.md)
-- 🐍 [Python 开发者完整指南](./PYTHON-DEVELOPER-GUIDE.md)
+- 🦀 [Rust 开发者完整指南](./rust-developer-guide.md)
+- ☕ [Java 开发者完整指南](./java-developer-guide.md)
+- 🐍 [Python 开发者完整指南](./python-developer-guide.md)
 
 ### 必读文档
 - 📝 [编码规范](./coding-standards.md)
 - 📚 [开发指南](./dev-guide.md)
 - 🏗️ [系统架构](../architecture/system-architecture.md)
-- 🔍 [代码审查清单](./CODE-REVIEW-CHECKLIST.md)
+- 🔍 [代码审查清单](./code-review-checklist.md)
 
 ### 获取帮助
 - 💬 Slack: `#hermesflow-dev`
-- 📖 [FAQ](../FAQ.md)
+- 📖 [FAQ](../faq.md)
 - 🔧 [故障排查手册](../operations/troubleshooting.md)
 
 ---

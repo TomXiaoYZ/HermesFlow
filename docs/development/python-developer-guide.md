@@ -697,7 +697,7 @@ def calculate_indicators_fast(prices, period):
 ## 📞 获取帮助
 
 - **Python Team**: Slack `#python-dev`
-- **技术问题**: [FAQ](../FAQ.md)
+- **技术问题**: [FAQ](../faq.md)
 
 ---
 

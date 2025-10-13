@@ -44,7 +44,7 @@
 - 📜 [ADR-006: Rust 数据层决策](../architecture/decisions/ADR-006-rust-data-layer.md)
 
 #### 开发指南
-- 🛠️ [Rust 开发者指南](../development/RUST-DEVELOPER-GUIDE.md)
+- 🛠️ [Rust 开发者指南](../development/rust-developer-guide.md)
   - 环境搭建、常用模式、调试技巧
 - 📝 [编码规范 - Rust 部分](../development/coding-standards.md#rust-规范)
 - 🚀 [开发指南 - Rust 开发](../development/dev-guide.md#rust-开发)
@@ -103,7 +103,7 @@ modules/data-engine/
 - 📜 [ADR-007: Alpha 因子库](../architecture/decisions/ADR-007-alpha-factor-library.md)
 
 #### 开发指南
-- 🛠️ [Python 开发者指南](../development/PYTHON-DEVELOPER-GUIDE.md)
+- 🛠️ [Python 开发者指南](../development/python-developer-guide.md)
   - Poetry、FastAPI、NumPy 优化
 - 📝 [编码规范 - Python 部分](../development/coding-standards.md#python-规范)
 - 🚀 [开发指南 - Python 开发](../development/dev-guide.md#python-开发)
@@ -159,7 +159,7 @@ modules/strategy-engine/
 - 📜 [ADR-008: 模拟交易 API](../architecture/decisions/ADR-008-paper-trading-api.md)
 
 #### 开发指南
-- 🛠️ [Java 开发者指南](../development/JAVA-DEVELOPER-GUIDE.md)
+- 🛠️ [Java 开发者指南](../development/java-developer-guide.md)
   - Spring Boot、Virtual Threads、JPA 最佳实践
 - 📝 [编码规范 - Java 部分](../development/coding-standards.md#java-规范)
 - 🚀 [开发指南 - Java 开发](../development/dev-guide.md#java-开发)
@@ -214,7 +214,7 @@ modules/trading-engine/
 - 📜 [ADR-002: 多租户架构](../architecture/decisions/ADR-002-multi-tenancy-architecture.md)
 
 #### 开发指南
-- 🛠️ [Java 开发者指南](../development/JAVA-DEVELOPER-GUIDE.md)
+- 🛠️ [Java 开发者指南](../development/java-developer-guide.md)
 - 📝 [编码规范 - Java 部分](../development/coding-standards.md#java-规范)
 
 #### API 和数据库
@@ -261,7 +261,7 @@ modules/user-management/
   - 实时计算、Kafka 集成
 
 #### 开发指南
-- 🛠️ [Java 开发者指南](../development/JAVA-DEVELOPER-GUIDE.md)
+- 🛠️ [Java 开发者指南](../development/java-developer-guide.md)
 
 #### API 和数据库
 - 🔌 [API 设计 - 风控服务 API](../api/api-design.md#风控服务-java)
@@ -353,7 +353,7 @@ modules/frontend/
   - Spring Cloud Gateway、JWT 验证、限流
 
 #### 开发指南
-- 🛠️ [Java 开发者指南](../development/JAVA-DEVELOPER-GUIDE.md)
+- 🛠️ [Java 开发者指南](../development/java-developer-guide.md)
 
 ### 代码位置
 ```
@@ -453,7 +453,7 @@ graph TD
 - **测试相关**: 联系 @qa.mdc
 
 ### 一般帮助
-- 📖 [FAQ](../FAQ.md)
+- 📖 [FAQ](../faq.md)
 - 🔧 [故障排查手册](../operations/troubleshooting.md)
 - 💬 Slack: `#hermesflow-dev`
 

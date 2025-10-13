@@ -23,17 +23,17 @@
 
 **A**: 按以下顺序开始：
 
-1. ✅ 阅读 [快速开始指南](./QUICKSTART.md)（5分钟）
+1. ✅ 阅读 [快速开始指南](./quickstart.md)（5分钟）
 2. ✅ 根据技术栈选择开发者指南：
-   - [Rust 开发者指南](./development/RUST-DEVELOPER-GUIDE.md)
-   - [Java 开发者指南](./development/JAVA-DEVELOPER-GUIDE.md)
-   - [Python 开发者指南](./development/PYTHON-DEVELOPER-GUIDE.md)
+   - [Rust 开发者指南](./development/rust-developer-guide.md)
+   - [Java 开发者指南](./development/java-developer-guide.md)
+   - [Python 开发者指南](./development/python-developer-guide.md)
 3. ✅ 搭建本地开发环境（30-40分钟）
 4. ✅ 运行所有测试，确保环境正常
 5. ✅ 找一个 "good first issue" 开始第一个任务
 
 **相关文档**:
-- [快速开始指南](./QUICKSTART.md)
+- [快速开始指南](./quickstart.md)
 - [文档导航](./README.md)
 
 ---
@@ -46,7 +46,7 @@
 - 📋 **按开发周期浏览**: Sprint Planning, Development, Testing, Deployment 等
 - 📚 **按文档类型浏览**: PRD, 架构, API, 测试文档等
 
-也可以使用 [文档流程图](./DOCUMENT-FLOW.md) 按场景导航。
+也可以使用 [文档流程图](./document-flow.md) 按场景导航。
 
 ---
 
@@ -188,17 +188,17 @@ Closes #123"
 **A**: 
 
 **作为提交者**:
-1. 提交 PR 前，使用 [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md) 自查
+1. 提交 PR 前，使用 [代码审查清单](./development/code-review-checklist.md) 自查
 2. 运行 Linter 和测试
 3. 确保 CI/CD 通过
 4. 填写 PR 描述模板
 
 **作为审查者**:
-1. 使用 [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md) 逐项检查
+1. 使用 [代码审查清单](./development/code-review-checklist.md) 逐项检查
 2. 在 4 小时内提供第一次反馈（团队目标）
 3. 提供建设性意见
 
-**相关文档**: [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md)
+**相关文档**: [代码审查清单](./development/code-review-checklist.md)
 
 ---
 
@@ -542,7 +542,7 @@ kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
 - 提供技术估算
 - 识别技术风险和依赖
 
-**相关文档**: [Sprint Planning 清单](./scrum/SPRINT-PLANNING-CHECKLIST.md)
+**相关文档**: [Sprint Planning 清单](./scrum/sprint-planning-checklist.md)
 
 ---
 

@@ -73,7 +73,7 @@ git clone <your-repo-url>/HermesFlow-GitOps.git ../HermesFlow-GitOps
 根据您的角色和技术栈，选择对应的指南：
 
 #### 路径 A: Rust 开发者（数据引擎）
-👉 [Rust 开发者完整指南](./development/RUST-DEVELOPER-GUIDE.md)
+👉 [Rust 开发者完整指南](./development/rust-developer-guide.md)
 
 **您将负责**:
 - 数据采集（Binance, OKX, Polygon 等）
@@ -89,7 +89,7 @@ git clone <your-repo-url>/HermesFlow-GitOps.git ../HermesFlow-GitOps
 ---
 
 #### 路径 B: Java 开发者（交易/用户/风控）
-👉 [Java 开发者完整指南](./development/JAVA-DEVELOPER-GUIDE.md)
+👉 [Java 开发者完整指南](./development/java-developer-guide.md)
 
 **您将负责**:
 - 订单执行和管理
@@ -105,7 +105,7 @@ git clone <your-repo-url>/HermesFlow-GitOps.git ../HermesFlow-GitOps
 ---
 
 #### 路径 C: Python 开发者（策略引擎）
-👉 [Python 开发者完整指南](./development/PYTHON-DEVELOPER-GUIDE.md)
+👉 [Python 开发者完整指南](./development/python-developer-guide.md)
 
 **您将负责**:
 - 量化策略开发
@@ -121,7 +121,7 @@ git clone <your-repo-url>/HermesFlow-GitOps.git ../HermesFlow-GitOps
 ---
 
 #### 路径 D: QA 工程师
-👉 [QA 工程师完整指南](./testing/QA-ENGINEER-GUIDE.md)
+👉 [QA 工程师完整指南](./testing/qa-engineer-guide.md)
 
 **您将负责**:
 - 编写和执行测试用例
@@ -137,7 +137,7 @@ git clone <your-repo-url>/HermesFlow-GitOps.git ../HermesFlow-GitOps
 ---
 
 #### 路径 E: DevOps 工程师
-👉 [DevOps 工程师完整指南](./operations/DEVOPS-GUIDE.md)
+👉 [DevOps 工程师完整指南](./operations/devops-guide.md)
 
 **您将负责**:
 - CI/CD 流水线（GitHub Actions）
@@ -269,7 +269,7 @@ poetry run pytest
 3. **[系统架构文档](./architecture/system-architecture.md)** (30分钟)
    - 理解整体架构设计
    
-4. **[PRD 文档](./prd/PRD-HermesFlow.md)** (60分钟)
+4. **[PRD 文档](./prd/prd-hermesflow.md)** (60分钟)
    - 了解产品需求和功能
 
 ### 按需阅读
@@ -369,7 +369,7 @@ main          ← 生产环境，受保护
 
 ### 3. Code Review 检查项
 
-提交 PR 前，使用 [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md) 自查：
+提交 PR 前，使用 [代码审查清单](./development/code-review-checklist.md) 自查：
 
 - [ ] 代码符合编码规范
 - [ ] 添加了单元测试
@@ -398,14 +398,14 @@ main          ← 生产环境，受保护
 | 问题 | 解决方案 |
 |------|---------|
 | 🔴 **环境搭建失败** | 查看 [开发指南 - 环境搭建](./development/dev-guide.md#环境搭建) |
-| 🔴 **测试失败** | 查看 [FAQ](./FAQ.md#测试相关) |
+| 🔴 **测试失败** | 查看 [FAQ](./faq.md#测试相关) |
 | 🔴 **Docker 启动失败** | 查看 [Docker 部署指南](./deployment/docker-guide.md#故障排查) |
 | 🔴 **代码不符合规范** | 查看 [编码规范](./development/coding-standards.md) |
-| 🔴 **不知道从哪开始** | 查看 [文档流程图](./DOCUMENT-FLOW.md) |
+| 🔴 **不知道从哪开始** | 查看 [文档流程图](./document-flow.md) |
 
 ### 获取帮助
 
-1. **查阅文档**: [FAQ](./FAQ.md) - 80% 的问题都有答案
+1. **查阅文档**: [FAQ](./faq.md) - 80% 的问题都有答案
 2. **故障排查**: [故障排查手册](./operations/troubleshooting.md)
 3. **联系团队**: 
    - Slack: #hermesflow-dev
@@ -450,16 +450,16 @@ main          ← 生产环境，受保护
 根据您的角色，继续阅读：
 
 ### 开发者
-- 🦀 [Rust 开发者指南](./development/RUST-DEVELOPER-GUIDE.md)
-- ☕ [Java 开发者指南](./development/JAVA-DEVELOPER-GUIDE.md)
-- 🐍 [Python 开发者指南](./development/PYTHON-DEVELOPER-GUIDE.md)
+- 🦀 [Rust 开发者指南](./development/rust-developer-guide.md)
+- ☕ [Java 开发者指南](./development/java-developer-guide.md)
+- 🐍 [Python 开发者指南](./development/python-developer-guide.md)
 
 ### QA / DevOps
-- 🧪 [QA 工程师指南](./testing/QA-ENGINEER-GUIDE.md)
-- 🚀 [DevOps 工程师指南](./operations/DEVOPS-GUIDE.md)
+- 🧪 [QA 工程师指南](./testing/qa-engineer-guide.md)
+- 🚀 [DevOps 工程师指南](./operations/devops-guide.md)
 
 ### Scrum Master / PM
-- 📋 [Scrum Master 指南](./scrum/SM-GUIDE.md)
+- 📋 [Scrum Master 指南](./scrum/sm-guide.md)
 - 📊 [项目进度](./progress.md)
 
 ---

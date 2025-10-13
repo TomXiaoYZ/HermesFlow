@@ -29,12 +29,12 @@
 
 ```mermaid
 graph TD
-    A[👋 新开发者入职] --> B[📖 阅读快速开始指南<br/>QUICKSTART.md - 5分钟]
+    A[👋 新开发者入职] --> B[📖 阅读快速开始指南<br/>quickstart.md - 5分钟]
     B --> C{选择技术栈}
     
-    C -->|Rust| D1[🦀 Rust 开发者指南<br/>RUST-DEVELOPER-GUIDE.md]
-    C -->|Java| D2[☕ Java 开发者指南<br/>JAVA-DEVELOPER-GUIDE.md]
-    C -->|Python| D3[🐍 Python 开发者指南<br/>PYTHON-DEVELOPER-GUIDE.md]
+    C -->|Rust| D1[🦀 Rust 开发者指南<br/>rust-developer-guide.md]
+    C -->|Java| D2[☕ Java 开发者指南<br/>java-developer-guide.md]
+    C -->|Python| D3[🐍 Python 开发者指南<br/>python-developer-guide.md]
     
     D1 --> E[🛠️ 搭建本地环境<br/>30-40分钟]
     D2 --> E
@@ -47,11 +47,11 @@ graph TD
 ```
 
 **文档路径**:
-1. [快速开始指南](./QUICKSTART.md)
+1. [快速开始指南](./quickstart.md)
 2. 开发者指南:
-   - [Rust 开发者指南](./development/RUST-DEVELOPER-GUIDE.md)
-   - [Java 开发者指南](./development/JAVA-DEVELOPER-GUIDE.md)
-   - [Python 开发者指南](./development/PYTHON-DEVELOPER-GUIDE.md)
+   - [Rust 开发者指南](./development/rust-developer-guide.md)
+   - [Java 开发者指南](./development/java-developer-guide.md)
+   - [Python 开发者指南](./development/python-developer-guide.md)
 3. [编码规范](./development/coding-standards.md)
 4. [系统架构](./architecture/system-architecture.md)
 
@@ -61,27 +61,27 @@ graph TD
 
 ```mermaid
 graph TD
-    A[🎯 开发新功能] --> B[📋 阅读 PRD<br/>PRD-HermesFlow.md]
-    B --> C[🔍 查找模块文档<br/>MODULE-INDEX.md]
+    A[🎯 开发新功能] --> B[📋 阅读 PRD<br/>prd-hermesflow.md]
+    B --> C[🔍 查找模块文档<br/>module-index.md]
     C --> D[🏗️ 理解架构设计<br/>system-architecture.md]
     D --> E[📡 查看 API 设计<br/>api-design.md]
     E --> F[🗄️ 查看数据库设计<br/>database-design.md]
     F --> G[💻 开始编码]
     G --> H[🧪 编写测试<br/>test-strategy.md]
-    H --> I[🔍 自查 Code Review 清单<br/>CODE-REVIEW-CHECKLIST.md]
+    H --> I[🔍 自查 Code Review 清单<br/>code-review-checklist.md]
     I --> J[📤 提交 Pull Request]
     J --> K[👥 Code Review]
     K --> L[✅ 合并]
 ```
 
 **文档路径**:
-1. [PRD 主文档](./prd/PRD-HermesFlow.md)
-2. [模块文档索引](./modules/MODULE-INDEX.md)
+1. [PRD 主文档](./prd/prd-hermesflow.md)
+2. [模块文档索引](./modules/module-index.md)
 3. [系统架构](./architecture/system-architecture.md)
 4. [API 设计](./api/api-design.md)
 5. [数据库设计](./database/database-design.md)
 6. [测试策略](./testing/test-strategy.md)
-7. [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md)
+7. [代码审查清单](./development/code-review-checklist.md)
 
 ---
 
@@ -117,8 +117,8 @@ graph TD
 graph TD
     A[👥 Code Review] --> B{我的角色}
     
-    B -->|提交者| C1[📋 自查清单<br/>CODE-REVIEW-CHECKLIST.md]
-    B -->|审查者| C2[📋 审查清单<br/>CODE-REVIEW-CHECKLIST.md]
+    B -->|提交者| C1[📋 自查清单<br/>code-review-checklist.md]
+    B -->|审查者| C2[📋 审查清单<br/>code-review-checklist.md]
     
     C1 --> D1[运行 Linter 和测试]
     D1 --> E1[确保 CI/CD 通过]
@@ -137,7 +137,7 @@ graph TD
 ```
 
 **文档路径**:
-1. [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md)
+1. [代码审查清单](./development/code-review-checklist.md)
 2. [编码规范](./development/coding-standards.md)
 3. [测试策略](./testing/test-strategy.md)
 
@@ -152,7 +152,7 @@ graph TD
     C --> D[☸️ 查看 GitOps 最佳实践<br/>gitops-best-practices.md]
     D --> E[📊 配置监控<br/>monitoring.md]
     E --> F[🔧 准备应急预案<br/>troubleshooting.md]
-    F --> G[✅ 验收测试<br/>ACCEPTANCE-CHECKLIST.md]
+    F --> G[✅ 验收测试<br/>acceptance-checklist.md]
     G --> H[📤 提交部署请求]
     H --> I[🔄 GitOps 自动部署]
     I --> J[✅ 验证部署成功]
@@ -164,7 +164,7 @@ graph TD
 3. [GitOps 最佳实践](./deployment/gitops-best-practices.md)
 4. [监控方案](./operations/monitoring.md)
 5. [故障排查手册](./operations/troubleshooting.md)
-6. [验收测试清单](./testing/ACCEPTANCE-CHECKLIST.md)
+6. [验收测试清单](./testing/acceptance-checklist.md)
 
 ---
 
@@ -178,7 +178,7 @@ graph TD
     D --> E{定位问题?}
     
     E -->|是| F[💻 修复或缓解]
-    E -->|否| G[📖 查看 FAQ<br/>FAQ.md]
+    E -->|否| G[📖 查看 FAQ<br/>faq.md]
     
     G --> H{找到答案?}
     H -->|是| F
@@ -192,7 +192,7 @@ graph TD
 **文档路径**:
 1. [故障排查手册](./operations/troubleshooting.md)
 2. [监控方案](./operations/monitoring.md)
-3. [FAQ](./FAQ.md)
+3. [FAQ](./faq.md)
 4. [系统架构](./architecture/system-architecture.md)
 
 ---
@@ -201,10 +201,10 @@ graph TD
 
 ```mermaid
 graph TD
-    A[📅 Sprint Planning] --> B[📋 Sprint Planning 清单<br/>SPRINT-PLANNING-CHECKLIST.md]
+    A[📅 Sprint Planning] --> B[📋 Sprint Planning 清单<br/>sprint-planning-checklist.md]
     B --> C[📖 审查 Product Backlog<br/>progress.md]
     C --> D[🎯 制定 Sprint 目标]
-    D --> E[📋 选择 Story<br/>PRD-HermesFlow.md]
+    D --> E[📋 选择 Story<br/>prd-hermesflow.md]
     E --> F[🔧 任务分解]
     F --> G[⏱️ 估算<br/>Planning Poker]
     G --> H[🚨 识别风险和依赖]
@@ -213,11 +213,11 @@ graph TD
 ```
 
 **文档路径**:
-1. [Sprint Planning 清单](./scrum/SPRINT-PLANNING-CHECKLIST.md)
-2. [Scrum Master 指南](./scrum/SM-GUIDE.md)
+1. [Sprint Planning 清单](./scrum/sprint-planning-checklist.md)
+2. [Scrum Master 指南](./scrum/sm-guide.md)
 3. [项目进度](./progress.md)
-4. [PRD 主文档](./prd/PRD-HermesFlow.md)
-5. [模块文档索引](./modules/MODULE-INDEX.md)
+4. [PRD 主文档](./prd/prd-hermesflow.md)
+5. [模块文档索引](./modules/module-index.md)
 
 ---
 
@@ -249,7 +249,7 @@ graph TD
 2. [高风险访问测试](./testing/high-risk-access-testing.md)
 3. [测试数据管理](./testing/test-data-management.md)
 4. [CI/CD 测试集成](./testing/ci-cd-integration.md)
-5. [验收测试清单](./testing/ACCEPTANCE-CHECKLIST.md)
+5. [验收测试清单](./testing/acceptance-checklist.md)
 
 ---
 
@@ -315,9 +315,9 @@ graph TD
 graph TB
     ROOT[📚 文档中心<br/>README.md]
     
-    ROOT --> QUICK[⚡ 快速开始<br/>QUICKSTART.md]
-    ROOT --> FAQ[❓ FAQ<br/>FAQ.md]
-    ROOT --> FLOW[🗺️ 文档流程<br/>DOCUMENT-FLOW.md]
+    ROOT --> QUICK[⚡ 快速开始<br/>quickstart.md]
+    ROOT --> FAQ[❓ FAQ<br/>faq.md]
+    ROOT --> FLOW[🗺️ 文档流程<br/>document-flow.md]
     
     ROOT --> PRD[📋 PRD文档]
     ROOT --> ARCH[🏗️ 架构文档]
@@ -355,20 +355,20 @@ graph TB
 
 | 关键词 | 相关文档 |
 |--------|---------|
-| **入职、新手** | [QUICKSTART.md](./QUICKSTART.md), 语言开发者指南 |
+| **入职、新手** | [quickstart.md](./quickstart.md), 语言开发者指南 |
 | **编码、开发** | [编码规范](./development/coding-standards.md), [开发指南](./development/dev-guide.md) |
-| **测试、QA** | [测试策略](./testing/test-strategy.md), [验收清单](./testing/ACCEPTANCE-CHECKLIST.md) |
+| **测试、QA** | [测试策略](./testing/test-strategy.md), [验收清单](./testing/acceptance-checklist.md) |
 | **部署、运维** | [Docker指南](./deployment/docker-guide.md), [GitOps](./deployment/gitops-best-practices.md) |
-| **故障、问题** | [故障排查](./operations/troubleshooting.md), [FAQ](./FAQ.md) |
+| **故障、问题** | [故障排查](./operations/troubleshooting.md), [FAQ](./faq.md) |
 | **架构、设计** | [系统架构](./architecture/system-architecture.md), [ADR](./architecture/decisions/) |
-| **Scrum、流程** | [SM指南](./scrum/SM-GUIDE.md), [Sprint Planning](./scrum/SPRINT-PLANNING-CHECKLIST.md) |
+| **Scrum、流程** | [SM指南](./scrum/sm-guide.md), [Sprint Planning](./scrum/sprint-planning-checklist.md) |
 
 ---
 
 ## 📞 仍然找不到？
 
 1. 使用浏览器搜索功能（Ctrl+F / Cmd+F）在 [文档导航](./README.md) 中搜索关键词
-2. 查看 [FAQ](./FAQ.md)
+2. 查看 [FAQ](./faq.md)
 3. 在 Slack `#hermesflow-dev` 提问
 
 ---

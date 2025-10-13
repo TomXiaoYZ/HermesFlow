@@ -56,7 +56,7 @@
   - 识别本 Sprint 需要的新 ADR
   
 - [ ] **准备模块文档索引**
-  - 打开 [模块索引](../modules/MODULE-INDEX.md)
+  - 打开 [模块索引](../modules/module-index.md)
   - 准备相关模块的 PRD 链接
 
 ---
@@ -184,7 +184,7 @@
   - 重新估算直到达成共识
   
 - [ ] **参考历史数据**
-  - 使用 HermesFlow 估算参考表（见 [SM-GUIDE](./SM-GUIDE.md#32-估算技术)）
+  - 使用 HermesFlow 估算参考表（见 [SM-GUIDE](./sm-guide.md#32-估算技术)）
   
 - [ ] **记录估算**
   - 在任务看板中记录每个任务的估算
@@ -432,11 +432,11 @@
 
 ## 📚 相关资源
 
-- [Scrum Master 完整指南](./SM-GUIDE.md)
+- [Scrum Master 完整指南](./sm-guide.md)
 - [项目进度](../progress.md)
-- [模块文档索引](../modules/MODULE-INDEX.md)
+- [模块文档索引](../modules/module-index.md)
 - [系统架构文档](../architecture/system-architecture.md)
-- [PRD 主文档](../prd/PRD-HermesFlow.md)
+- [PRD 主文档](../prd/prd-hermesflow.md)
 
 ---
 

@@ -25,7 +25,7 @@
 - [高风险访问测试](./high-risk-access-testing.md) - 安全关键路径
 - [测试数据管理](./test-data-management.md) - 测试数据准备
 - [CI/CD 测试集成](./ci-cd-integration.md) - 自动化测试
-- [验收测试清单](./ACCEPTANCE-CHECKLIST.md) - 验收标准
+- [验收测试清单](./acceptance-checklist.md) - 验收标准
 
 ---
 
@@ -304,7 +304,7 @@ def auth_headers(client):
 
 ## ✅ 验收测试
 
-使用 [验收测试清单](./ACCEPTANCE-CHECKLIST.md) 进行验收：
+使用 [验收测试清单](./acceptance-checklist.md) 进行验收：
 
 **关键检查项**:
 - [ ] 所有功能验收标准满足
@@ -326,7 +326,7 @@ def auth_headers(client):
 ## 📞 获取帮助
 
 - **QA Team**: Slack `#qa-team`
-- **技术问题**: [FAQ](../FAQ.md)
+- **技术问题**: [FAQ](../faq.md)
 
 ---
 
