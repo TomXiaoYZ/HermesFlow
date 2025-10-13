@@ -149,6 +149,27 @@ GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
 - [开发进度跟踪](docs/progress.md) - 开发状态和里程碑
 - [快速参考指南](docs/QUICK-REFERENCE.md) - 常用命令和配置
 
+### 架构设计文档 ⭐
+- **[系统架构设计](docs/architecture/system-architecture.md)** - 完整系统架构文档（4400+行）
+  - C4架构模型（Context/Container/Component）
+  - 前端架构设计（React 18 + TypeScript + TailwindCSS）
+  - 后端架构设计（Rust数据层 + Java业务层 + Python策略层）
+  - 数据架构设计（PostgreSQL RLS + ClickHouse + Redis + Kafka）
+  - 部署架构设计（Docker Compose + Kubernetes + Azure）
+  - 安全架构设计（JWT + RBAC + 多租户隔离 + 数据加密）
+  - 性能优化策略（零拷贝 + Numba JIT + 多级缓存）
+  - 监控与运维方案（Prometheus + Grafana + ELK）
+
+#### 架构决策记录 (ADR)
+- [ADR-001: 采用混合技术栈架构](docs/architecture/decisions/ADR-001-hybrid-tech-stack.md) - Rust + Java + Python
+- [ADR-002: 选择Tokio作为Rust异步运行时](docs/architecture/decisions/ADR-002-tokio-runtime.md)
+- [ADR-003: PostgreSQL RLS实现多租户隔离](docs/architecture/decisions/ADR-003-postgresql-rls.md)
+- [ADR-004: ClickHouse作为分析数据库](docs/architecture/decisions/ADR-004-clickhouse-analytics.md)
+- [ADR-005: Kafka作为事件流平台](docs/architecture/decisions/ADR-005-kafka-event-streaming.md)
+- [ADR-006: React + TypeScript前端技术栈](docs/architecture/decisions/ADR-006-react-frontend.md)
+- [ADR-007: Alpha因子库使用Numba加速](docs/architecture/decisions/ADR-007-numba-acceleration.md)
+- [ADR-008: 模拟交易与实盘API兼容设计](docs/architecture/decisions/ADR-008-paper-trading-api.md)
+
 ### PRD与需求文档
 - [产品需求文档 (PRD)](docs/prd/PRD-HermesFlow.md) - 完整产品需求规格说明
 - [数据模块需求 (Rust)](docs/prd/modules/01-data-module.md) ⭐
