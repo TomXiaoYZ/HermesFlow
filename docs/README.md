@@ -1,430 +1,445 @@
-# HermesFlow 文档导航
+# HermesFlow 文档导航中心
 
-**版本**: v2.0.0  
-**最后更新**: 2024-12-20  
+> **版本**: v2.1.0 | **更新日期**: 2025-01-13
 
-欢迎来到HermesFlow量化交易平台文档中心！本文档提供完整的系统文档导航。
-
----
-
-## 📚 文档结构
-
-```
-docs/
-├── prd/                          # 产品需求文档
-│   ├── PRD-HermesFlow.md        # 🌟 主PRD文档 (50-80页)
-│   ├── modules/                  # 各模块详细需求
-│   └── user-stories/             # 用户故事集
-├── api/                          # API设计文档
-│   ├── api-design.md            # 🌟 API设计总览
-│   ├── rest-api-spec.yaml       # OpenAPI规范
-│   └── grpc-proto/              # gRPC协议定义
-├── database/                     # 数据库设计文档
-│   ├── database-design.md       # 🌟 数据库设计总览
-│   └── schema/                   # DDL脚本
-├── development/                  # 开发文档
-│   ├── dev-guide.md             # 开发指南
-│   ├── coding-standards.md      # 编码规范
-│   └── module-templates/         # 模块开发模板
-├── deployment/                   # 部署文档
-│   ├── deployment-guide.md      # 部署指南
-│   └── docker-guide.md          # Docker部署
-├── testing/                      # 测试文档
-│   ├── test-plan.md             # 测试计划
-│   └── test-strategy.md         # 测试策略
-├── operations/                   # 运维文档
-│   ├── monitoring.md            # 监控方案
-│   └── troubleshooting.md       # 故障排查
-├── architecture.md               # 🌟 系统架构文档
-├── progress.md                   # 🌟 开发进度跟踪
-└── QUICK-REFERENCE.md           # 快速参考指南
-```
+欢迎使用 HermesFlow 量化交易平台文档中心！本导航旨在帮助团队成员快速找到所需文档，提升开发效率和协作质量。
 
 ---
 
 ## 🚀 快速开始
 
-### 对于产品经理
-
-1. 📖 [主PRD文档](./prd/PRD-HermesFlow.md) - 了解产品全貌
-2. 📊 [开发进度跟踪](./progress.md) - 查看当前进度
-3. 🏗️ [系统架构文档](./architecture.md) - 理解技术架构
-
-### 对于开发者
-
-1. 🛠️ [开发指南](./development/dev-guide.md) - 配置开发环境
-2. 📝 [编码规范](./development/coding-standards.md) - 遵循代码规范
-3. 🔌 [API设计文档](./api/api-design.md) - API接口规范
-4. 💾 [数据库设计](./database/database-design.md) - 数据库结构
-
-### 对于测试工程师
-
-1. 📋 [测试计划](./testing/test-plan.md) - 测试范围与目标
-2. 🧪 [测试策略](./testing/test-strategy.md) - 测试方法论
-3. ✅ [测试指南](./testing/) - 各类测试指南
-
-### 对于运维工程师
-
-1. 🚀 [部署指南](./deployment/deployment-guide.md) - 部署流程
-2. 📊 [监控方案](./operations/monitoring.md) - 监控配置
-3. 🔧 [故障排查](./operations/troubleshooting.md) - 问题诊断
+- **新手上路**: [快速开始指南](./QUICKSTART.md) - 5分钟了解项目基础
+- **常见问题**: [FAQ文档](./FAQ.md) - 解决80%的常见疑问
+- **故障排查**: [故障排查手册](./operations/troubleshooting.md) - 应急处理指南
 
 ---
 
-## 📖 核心文档
+## 🎯 按角色浏览
+
+### 产品经理 (Product Manager)
+- 📋 [产品需求文档 (PRD)](./prd/PRD-HermesFlow.md)
+- 📊 [项目进度跟踪](./progress.md)
+- 🔍 [市场分析报告](./analysis/market-analysis-and-gap-assessment.md)
+- 📅 [开发路线图](./prd/PRD-HermesFlow.md#53-开发路线图)
+
+### Scrum Master
+- 📖 [Scrum Master 完整指南](./scrum/SM-GUIDE.md)
+- ✅ [Sprint Planning 清单](./scrum/SPRINT-PLANNING-CHECKLIST.md)
+- 🔄 [Retrospective 模板](./scrum/RETROSPECTIVE-TEMPLATE.md)
+- 📈 [项目进度仪表盘](./progress.md)
+
+### 开发者 (Developer)
+
+#### 通用资源
+- 🏁 [开发者快速开始](./development/QUICKSTART.md)
+- 📝 [编码规范](./development/coding-standards.md)
+- 🔍 [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md)
+- 📚 [开发指南](./development/dev-guide.md)
+- 🔗 [快速参考手册](./QUICK-REFERENCE.md)
+
+#### 分语言指南
+- 🦀 [Rust 开发者指南](./development/RUST-DEVELOPER-GUIDE.md) - 数据引擎
+- ☕ [Java 开发者指南](./development/JAVA-DEVELOPER-GUIDE.md) - 交易/用户/风控服务
+- 🐍 [Python 开发者指南](./development/PYTHON-DEVELOPER-GUIDE.md) - 策略引擎
+
+### QA 工程师
+- 🧪 [QA 工程师完整指南](./testing/QA-ENGINEER-GUIDE.md)
+- 📋 [测试策略](./testing/test-strategy.md)
+- ✅ [验收测试清单](./testing/ACCEPTANCE-CHECKLIST.md)
+- 🔐 [高风险访问测试](./testing/high-risk-access-testing.md)
+- 🗄️ [测试数据管理](./testing/test-data-management.md)
+- 🔄 [CI/CD 测试集成](./testing/ci-cd-integration.md)
+
+### DevOps 工程师
+- 🚀 [DevOps 工程师指南](./operations/DEVOPS-GUIDE.md)
+- 🐳 [Docker 部署指南](./deployment/docker-guide.md)
+- ☸️ [GitOps 最佳实践](./deployment/gitops-best-practices.md)
+- 📊 [监控方案](./operations/monitoring.md)
+- 🔧 [故障排查手册](./operations/troubleshooting.md)
+- 🔄 [CI/CD 流程图](./architecture/diagrams/cicd-flow.md)
+
+### UX 设计师
+- 🎨 [设计系统](./design/design-system.md)
+- 📱 [页面设计规范](./design/page-designs.md)
+- 💻 [UI 实现指南 (Lovable/V0)](./design/lovable-v0-prompt.md)
+
+---
+
+## 📅 按开发周期浏览
+
+### Sprint Planning（Sprint 计划阶段）
+
+**必读文档**:
+1. [产品需求文档 (PRD)](./prd/PRD-HermesFlow.md) - 了解功能需求
+2. [模块详细需求](./modules/MODULE-INDEX.md) - 查看具体模块任务
+3. [系统架构文档](./architecture/system-architecture.md) - 理解技术架构
+4. [项目进度](./progress.md) - 当前状态和待办事项
+5. [架构决策记录 (ADR)](./architecture/decisions/) - 关键技术选型
+
+**工作流程**:
+```
+Sprint Planning清单 → 审查PRD → 选择Story → 估算 → 分配任务
+```
+
+📋 [使用 Sprint Planning 清单](./scrum/SPRINT-PLANNING-CHECKLIST.md)
+
+---
+
+### Development（开发阶段）
+
+**必读文档**:
+1. [开发者快速开始](./development/QUICKSTART.md) - 环境搭建
+2. [开发指南](./development/dev-guide.md) - 开发流程
+3. [编码规范](./development/coding-standards.md) - 代码质量标准
+4. [API 设计文档](./api/api-design.md) - API 规范
+5. [数据库设计文档](./database/database-design.md) - 数据库 Schema
+
+**分模块导航**:
+- 🔍 [按模块查找文档](./modules/MODULE-INDEX.md)
+
+**工作流程**:
+```
+创建分支 → 编写代码 → 自测 → Code Review → 合并
+```
+
+🔍 [使用代码审查清单](./development/CODE-REVIEW-CHECKLIST.md)
+
+---
+
+### Testing（测试阶段）
+
+**必读文档**:
+1. [测试策略](./testing/test-strategy.md) - 整体测试方法
+2. [早期测试策略](./testing/early-test-strategy.md) - Alpha 阶段测试
+3. [高风险访问测试](./testing/high-risk-access-testing.md) - 安全测试
+4. [测试数据管理](./testing/test-data-management.md) - 测试数据准备
+5. [CI/CD 测试集成](./testing/ci-cd-integration.md) - 自动化测试
+
+**工作流程**:
+```
+单元测试 → 集成测试 → 安全测试 → 性能测试 → 验收测试
+```
+
+✅ [使用验收测试清单](./testing/ACCEPTANCE-CHECKLIST.md)
+
+---
+
+### Deployment（部署阶段）
+
+**必读文档**:
+1. [Docker 部署指南](./deployment/docker-guide.md) - 容器化部署
+2. [GitOps 最佳实践](./deployment/gitops-best-practices.md) - 声明式部署
+3. [CI/CD 架构](./architecture/system-architecture.md#第11章-cicd架构) - 完整 CI/CD 流程
+4. [CI/CD 流程图](./architecture/diagrams/cicd-flow.md) - 可视化流程
+
+**工作流程**:
+```
+GitHub Actions构建 → 推送ACR → ArgoCD同步 → Kubernetes部署
+```
+
+🚀 [查看完整部署流程](./architecture/diagrams/cicd-flow.md)
+
+---
+
+### Operations（运维阶段）
+
+**必读文档**:
+1. [故障排查手册](./operations/troubleshooting.md) - 应急响应
+2. [监控方案](./operations/monitoring.md) - Prometheus + Grafana
+3. [系统架构](./architecture/system-architecture.md) - 理解系统结构
+
+**工作流程**:
+```
+监控告警 → 日志分析 → 故障定位 → 应急处理 → 根因分析 → 改进
+```
+
+🔧 [快速故障排查](./operations/troubleshooting.md#快速诊断流程)
+
+---
+
+### Retrospective（回顾阶段）
+
+**必读文档**:
+1. [Retrospective 模板](./scrum/RETROSPECTIVE-TEMPLATE.md)
+2. [项目进度](./progress.md) - 对比计划与实际
+3. [技术债务](./progress.md#技术债务) - 识别改进点
+
+**工作流程**:
+```
+收集反馈 → 分析问题 → 识别改进点 → 制定行动计划 → 更新最佳实践
+```
+
+🔄 [使用 Retrospective 模板](./scrum/RETROSPECTIVE-TEMPLATE.md)
+
+---
+
+## 📚 按文档类型浏览
 
 ### 产品需求文档 (PRD)
 
-#### 主文档
-- **[PRD-HermesFlow.md](./prd/PRD-HermesFlow.md)** 🌟
-  - 产品概述与愿景
-  - 用户画像与核心价值
-  - 系统架构概览
-  - 8大模块功能需求
-  - 非功能需求与优先级路线图
-  - 约80页详细文档
-
-#### 模块详细需求 (每个6-10页)
-1. **[数据模块 (Rust)](./prd/modules/01-data-module.md)** ⭐ **技术栈变更**
-   - 多数据源接入（加密货币、美股、期权、舆情、宏观）
-   - 超低延迟数据处理（μs级）
-   - 高性能数据分发（>100k msg/s）
-   - 完整的Epic、用户故事、验收标准
-
-2. **[策略模块 (Python)](./prd/modules/02-strategy-module.md)**
-   - 策略开发框架
-   - 回测引擎
-   - 策略执行与优化
-
-3. **[执行模块 (Java)](./prd/modules/03-execution-module.md)**
-   - 订单管理
-   - 智能路由
-   - 多交易所集成
-
-4. **[风控模块 (Java)](./prd/modules/04-risk-module.md)**
-   - 实时风险监控
-   - 风控规则引擎
-   - 清算保护
-
-5. **[账户模块 (Java)](./prd/modules/05-account-module.md)**
-   - 多账户管理
-   - API密钥管理
-   - 资金划拨
-
-6. **[安全模块](./prd/modules/06-security-module.md)**
-   - 认证授权
-   - 数据加密
-   - 审计日志
-
-7. **[报表模块](./prd/modules/07-report-module.md)**
-   - 交易报表
-   - 风险报表
-   - 土狗评分
-
-8. **[用户体验模块](./prd/modules/08-ux-module.md)**
-   - 可视化仪表盘
-   - 通知系统
-   - 移动端支持
-
-### 技术设计文档
-
-#### API文档
-- **[API设计总览](./api/api-design.md)** 🌟
-  - RESTful设计原则
-  - 认证授权机制
-  - 统一响应格式
-  - 错误处理规范
-  - 限流策略
-
-- **[REST API规范](./api/rest-api-spec.yaml)**
-  - OpenAPI 3.0格式
-  - 所有服务API定义
-  - 请求/响应示例
-
-- **[gRPC协议定义](./api/grpc-proto/)**
-  - market_data.proto - 实时数据流
-  - strategy.proto - 策略执行信号
-  - execution.proto - 订单执行通知
-
-- **[API使用示例](./api/api-examples.md)**
-  - curl命令示例
-  - Python/Java/Rust客户端示例
-
-#### 数据库文档
-- **[数据库设计总览](./database/database-design.md)** 🌟
-  - 三层数据架构（热/温/冷）
-  - PostgreSQL主数据库设计
-  - ClickHouse时序数据库设计
-  - Redis缓存结构设计
-  - 数据生命周期管理
-  - 备份与恢复策略
-
-- **[数据库Schema](./database/schema/)**
-  - PostgreSQL DDL脚本
-  - ClickHouse DDL脚本
-  - Redis数据结构文档
-
-- **[ER图](./database/er-diagram.md)**
-  - 实体关系图
-  - 数据流向图
-
-#### 架构文档
-- **[系统架构文档](./architecture.md)** 🌟
-  - 混合技术栈架构（Rust + Java + Python）
-  - 服务拓扑与通信
-  - 多租户架构设计
-  - 技术选型说明
-
-- **[开发进度跟踪](./progress.md)** 🌟
-  - 各模块开发状态
-  - 功能点详细清单
-  - 测试用例与验收标准
-  - 归档代码说明
+| 文档 | 描述 | 优先级 |
+|------|------|--------|
+| [PRD 主文档](./prd/PRD-HermesFlow.md) | 产品整体需求和路线图（80页） | 🔴 P0 |
+| [数据模块 (Rust)](./prd/modules/01-data-module.md) | 数据采集、处理、存储 | 🔴 P0 |
+| [策略模块 (Python)](./prd/modules/02-strategy-module.md) | 策略编写、回测、优化 | 🔴 P0 |
+| [执行模块 (Java)](./prd/modules/03-execution-module.md) | 订单执行、风控 | 🔴 P0 |
+| [风控模块 (Java)](./prd/modules/04-risk-module.md) | 实时风险监控 | 🟡 P1 |
+| [账户模块 (Java)](./prd/modules/05-account-module.md) | 用户管理、多租户 | 🟡 P1 |
+| [安全模块 (Java)](./prd/modules/06-security-module.md) | 身份认证、授权 | 🔴 P0 |
+| [报表模块](./prd/modules/07-report-module.md) | 数据可视化、报表 | 🟢 P2 |
+| [UX 模块](./prd/modules/08-ux-module.md) | 用户体验、交互设计 | 🟡 P1 |
 
 ---
 
-## 🛠️ 开发文档
+### 架构设计文档
 
-### 开发环境
-- **[开发指南](./development/dev-guide.md)**
-  - 项目结构说明
-  - 开发环境要求（Rust/Java/Python/Docker）
-  - IDE配置建议
-  - 调试技巧
+| 文档 | 描述 | 字数 |
+|------|------|------|
+| [系统架构文档](./architecture/system-architecture.md) | 完整系统架构（11章，8000+行） | ~40,000 |
+| [CI/CD 流程图](./architecture/diagrams/cicd-flow.md) | 可视化 CI/CD 流程 | ~2,000 |
 
-- **[本地环境搭建](./development/local-setup.md)**
-  - Rust工具链安装
-  - JDK 21安装
-  - Python 3.12安装
-  - Docker Desktop配置
-  - 服务启动指南
-
-### 开发规范
-- **[编码规范](./development/coding-standards.md)**
-  - **Rust编码规范** ⭐
-    - rustfmt、clippy使用
-    - 错误处理最佳实践
-    - 异步编程规范
-  - Java编码规范（Google Style）
-  - Python编码规范（PEP 8）
-  - TypeScript编码规范
-
-- **[Git工作流](./development/git-workflow.md)**
-  - 分支策略
-  - Commit消息规范
-  - Pull Request流程
-  - Code Review指南
-
-### 开发模板
-- **[Rust服务模板](./development/module-templates/rust-service-template.md)** ⭐
-  - Cargo.toml配置
-  - 项目结构
-  - 日志与错误处理
-  - 测试结构
-  - Dockerfile模板
-
-- **[Java服务模板](./development/module-templates/java-service-template.md)**
-  - Maven配置
-  - Spring Boot结构
-  - 配置管理
-
-- **[Python服务模板](./development/module-templates/python-service-template.md)**
-  - Poetry配置
-  - FastAPI结构
-  - 虚拟环境管理
+**架构决策记录 (ADR)**:
+- [ADR-001: 混合技术栈](./architecture/decisions/ADR-001-hybrid-tech-stack.md)
+- [ADR-002: 多租户架构](./architecture/decisions/ADR-002-multi-tenancy-architecture.md)
+- [ADR-003: 消息通信](./architecture/decisions/ADR-003-message-communication.md)
+- [ADR-004: 数据存储](./architecture/decisions/ADR-004-data-storage-strategy.md)
+- [ADR-005: CI/CD 流程](./architecture/decisions/ADR-005-cicd-gitops.md)
+- [ADR-006: Rust 数据层](./architecture/decisions/ADR-006-rust-data-layer.md)
+- [ADR-007: Alpha 因子库](./architecture/decisions/ADR-007-alpha-factor-library.md)
+- [ADR-008: 模拟交易 API](./architecture/decisions/ADR-008-paper-trading-api.md)
 
 ---
 
-## 🚀 部署文档
+### 技术规范文档
 
-### 部署指南
-- **[部署指南](./deployment/deployment-guide.md)**
-  - 部署架构概览
-  - 环境清单（local/dev/prod）
-  - 部署步骤
-  - 回滚步骤
-
-- **[Docker部署](./deployment/docker-guide.md)**
-  - **Rust多阶段构建** ⭐
-  - docker-compose配置
-  - 镜像优化技巧
-
-- **[Kubernetes部署](./deployment/kubernetes-guide.md)**
-  - Helm Charts说明
-  - Rust服务资源配置
-  - ArgoCD GitOps流程
-
-### 配置管理
-- **[环境变量文档](./deployment/env-variables.md)**
-  - 所有环境变量清单
-  - Rust服务环境变量
-  - 敏感信息管理
-
-- **[基础设施搭建](./deployment/infrastructure-setup.md)**
-  - Azure AKS集群
-  - PostgreSQL/Redis/Kafka配置
-  - 网络配置
+| 类别 | 文档 | 描述 |
+|------|------|------|
+| **API** | [API 设计文档](./api/api-design.md) | OpenAPI + gRPC 规范 |
+| **数据库** | [数据库设计文档](./database/database-design.md) | PostgreSQL + ClickHouse + Redis |
+| **开发** | [编码规范](./development/coding-standards.md) | Rust/Java/Python 代码标准 |
+| **开发** | [开发指南](./development/dev-guide.md) | 完整开发流程 |
+| **快速参考** | [快速参考手册](./QUICK-REFERENCE.md) | 常用命令和API |
 
 ---
 
-## 🧪 测试文档
+### 测试文档
 
-### 测试策略
-- **[测试计划](./testing/test-plan.md)**
-  - 测试目标与范围
-  - Rust服务测试重点
-  - 测试环境
-  - 测试时间表
+| 文档 | 描述 | 覆盖率目标 |
+|------|------|-----------|
+| [测试策略](./testing/test-strategy.md) | 整体测试金字塔和策略 | 总览 |
+| [早期测试策略](./testing/early-test-strategy.md) | Alpha 阶段测试计划 | - |
+| [高风险访问测试](./testing/high-risk-access-testing.md) | 安全关键路径测试 | 100% |
+| [测试数据管理](./testing/test-data-management.md) | Fixtures + Mock + Generators | - |
+| [CI/CD 测试集成](./testing/ci-cd-integration.md) | GitHub Actions 自动化 | - |
 
-- **[测试策略](./testing/test-strategy.md)**
-  - 测试金字塔
-  - 覆盖率要求（Rust >85%）
-  - 自动化测试策略
-
-### 测试指南
-- **[单元测试指南](./testing/unit-test-guide.md)**
-  - **Rust单元测试** ⭐
-    - cargo test使用
-    - Mock框架（mockall）
-    - 异步测试（tokio::test）
-    - 基准测试（criterion）
-  - JUnit 5使用指南
-  - pytest使用指南
-
-- **[集成测试指南](./testing/integration-test-guide.md)**
-  - Rust集成测试
-  - TestContainers使用
-  - API集成测试
-
-- **[性能测试指南](./testing/performance-test-guide.md)**
-  - **Rust性能测试工具** ⭐
-    - Criterion微基准测试
-    - Flamegraph性能分析
-  - JMeter使用
-  - 性能基线
+**覆盖率要求**:
+- Rust: ≥ 85%
+- Java: ≥ 80%
+- Python: ≥ 75%
 
 ---
 
-## 📊 运维文档
+### 运维文档
 
-### 监控与日志
-- **[监控方案](./operations/monitoring.md)**
-  - Prometheus + Grafana
-  - Rust服务指标（prometheus crate）
-  - 告警规则配置
-
-- **[日志方案](./operations/logging.md)**
-  - ELK Stack架构
-  - Rust日志格式（tracing）
-  - 日志查询示例
-
-### 故障排查
-- **[故障排查手册](./operations/troubleshooting.md)**
-  - 常见问题与解决方案
-  - Rust服务问题排查
-  - 日志分析技巧
-
-- **[运维手册](./operations/runbook.md)**
-  - 日常运维任务
-  - 应急响应流程
-  - 升级与回滚
+| 文档 | 描述 | 行数 |
+|------|------|------|
+| [故障排查手册](./operations/troubleshooting.md) | 完整故障处理指南 | ~1,400 |
+| [监控方案](./operations/monitoring.md) | Prometheus + Grafana | ~800 |
 
 ---
 
-## 🔍 快速参考
+### 部署文档
 
-- **[快速参考指南](./QUICK-REFERENCE.md)**
-  - 常用命令速查
-  - Rust开发快速参考
-  - API端点速查
-  - 数据库连接字符串
-  - 常见问题FAQ
+| 文档 | 描述 |
+|------|------|
+| [Docker 部署指南](./deployment/docker-guide.md) | 容器化和多阶段构建 |
+| [GitOps 最佳实践](./deployment/gitops-best-practices.md) | ArgoCD + Helm 声明式部署 |
 
 ---
 
-## 🎯 按角色查找文档
+### 设计文档
 
-### 产品经理
-- [x] [主PRD文档](./prd/PRD-HermesFlow.md)
-- [x] [开发进度跟踪](./progress.md)
-- [x] [系统架构概览](./architecture.md)
-- [x] [各模块详细需求](./prd/modules/)
-
-### 后端开发（Rust）
-- [x] [数据模块需求](./prd/modules/01-data-module.md)
-- [x] [Rust编码规范](./development/coding-standards.md#rust编码规范)
-- [x] [Rust服务模板](./development/module-templates/rust-service-template.md)
-- [x] [Rust单元测试指南](./testing/unit-test-guide.md#rust单元测试)
-- [x] [API设计文档](./api/api-design.md)
-
-### 后端开发（Java）
-- [x] [执行/风控模块需求](./prd/modules/)
-- [x] [Java编码规范](./development/coding-standards.md#java编码规范)
-- [x] [Java服务模板](./development/module-templates/java-service-template.md)
-- [x] [数据库设计](./database/database-design.md)
-
-### 后端开发（Python）
-- [x] [策略模块需求](./prd/modules/02-strategy-module.md)
-- [x] [Python编码规范](./development/coding-standards.md#python编码规范)
-- [x] [Python服务模板](./development/module-templates/python-service-template.md)
-
-### 前端开发
-- [x] [用户体验模块需求](./prd/modules/08-ux-module.md)
-- [x] [API设计文档](./api/api-design.md)
-- [x] [TypeScript编码规范](./development/coding-standards.md#typescript编码规范)
-
-### DevOps工程师
-- [x] [部署指南](./deployment/deployment-guide.md)
-- [x] [Docker部署](./deployment/docker-guide.md)
-- [x] [Kubernetes部署](./deployment/kubernetes-guide.md)
-- [x] [监控方案](./operations/monitoring.md)
-- [x] [故障排查](./operations/troubleshooting.md)
-
-### 测试工程师
-- [x] [测试计划](./testing/test-plan.md)
-- [x] [测试策略](./testing/test-strategy.md)
-- [x] [各类测试指南](./testing/)
+| 文档 | 描述 |
+|------|------|
+| [设计系统](./design/design-system.md) | 颜色、字体、组件规范 |
+| [页面设计](./design/page-designs.md) | 核心页面设计 |
+| [UI 实现指南](./design/lovable-v0-prompt.md) | Lovable/V0 Prompt |
 
 ---
 
-## 📌 重要说明
+### 分析文档
 
-### 技术栈标注
-
-文档中使用以下标注：
-- ⭐ **技术栈变更** - 表示该模块采用Rust开发（原Python）
-- ⭐ **新增功能** - 表示新增的功能需求（如美股、期权、舆情数据）
-- 🌟 - 表示核心文档，建议优先阅读
-- 📋 - 表示规划中的功能
-- 🚧 - 表示开发中的功能
-- ✅ - 表示已完成的功能
-
-### 文档版本控制
-
-- 所有文档版本号与项目版本号同步（当前v2.0.0）
-- 重大变更会在文档顶部标注
-- 文档变更需通过Pull Request审核
-
-### 文档贡献
-
-如需更新文档，请遵循以下流程：
-1. 创建feature分支
-2. 更新文档
-3. 提交Pull Request
-4. Code Review通过后合并
+| 文档 | 描述 | 页数 |
+|------|------|------|
+| [市场分析报告](./analysis/market-analysis-and-gap-assessment.md) | 竞品分析和差距评估 | ~40页 |
 
 ---
 
-## 📞 联系方式
+## 🔍 快速查找
 
-如有文档问题，请联系：
-- **产品团队**: product@hermesflow.com
-- **技术团队**: dev@hermesflow.com
-- **GitHub Issues**: https://github.com/your-org/HermesFlow/issues
+### 按使用场景查找
+
+#### 场景1: 我是新加入的开发者
+```
+1. 阅读 [快速开始指南](./QUICKSTART.md)
+2. 根据技术栈选择:
+   - Rust → [Rust 开发者指南](./development/RUST-DEVELOPER-GUIDE.md)
+   - Java → [Java 开发者指南](./development/JAVA-DEVELOPER-GUIDE.md)
+   - Python → [Python 开发者指南](./development/PYTHON-DEVELOPER-GUIDE.md)
+3. 搭建环境 → [开发指南](./development/dev-guide.md)
+4. 查看 [编码规范](./development/coding-standards.md)
+5. 开始第一个任务
+```
+
+#### 场景2: 我要开发新功能
+```
+1. 查看 [PRD 文档](./prd/PRD-HermesFlow.md) 了解需求
+2. 查看 [模块索引](./modules/MODULE-INDEX.md) 找到相关模块
+3. 查看 [系统架构](./architecture/system-architecture.md) 理解设计
+4. 查看 [API 设计](./api/api-design.md) 和 [数据库设计](./database/database-design.md)
+5. 参考 [编码规范](./development/coding-standards.md) 开始编码
+6. 使用 [代码审查清单](./development/CODE-REVIEW-CHECKLIST.md) 自查
+7. 编写测试，参考 [测试策略](./testing/test-strategy.md)
+```
+
+#### 场景3: 我遇到了Bug
+```
+1. 查看 [故障排查手册](./operations/troubleshooting.md)
+2. 检查 [监控方案](./operations/monitoring.md) 中的日志和指标
+3. 查阅 [FAQ](./FAQ.md) 是否有类似问题
+4. 查看相关模块的 [架构文档](./architecture/system-architecture.md)
+```
+
+#### 场景4: 我要准备部署
+```
+1. 查看 [CI/CD 流程图](./architecture/diagrams/cicd-flow.md)
+2. 阅读 [Docker 部署指南](./deployment/docker-guide.md)
+3. 了解 [GitOps 最佳实践](./deployment/gitops-best-practices.md)
+4. 配置监控，参考 [监控方案](./operations/monitoring.md)
+5. 准备应急预案，参考 [故障排查手册](./operations/troubleshooting.md)
+```
+
+#### 场景5: 我要编写测试
+```
+1. 了解 [测试策略](./testing/test-strategy.md)
+2. 查看 [验收测试清单](./testing/ACCEPTANCE-CHECKLIST.md)
+3. 准备测试数据，参考 [测试数据管理](./testing/test-data-management.md)
+4. 对于安全关键功能，参考 [高风险访问测试](./testing/high-risk-access-testing.md)
+5. 集成到 CI/CD，参考 [CI/CD 测试集成](./testing/ci-cd-integration.md)
+```
 
 ---
 
-**文档维护者**: HermesFlow Documentation Team  
-**最后更新**: 2024-12-20  
-**文档版本**: v2.0.0
+### 常见问题快速入口
 
+- ❓ **如何搭建开发环境?** → [开发指南](./development/dev-guide.md#环境搭建)
+- ❓ **编码规范是什么?** → [编码规范](./development/coding-standards.md)
+- ❓ **如何提交代码?** → [开发指南](./development/dev-guide.md#开发工作流)
+- ❓ **API 文档在哪?** → [API 设计文档](./api/api-design.md)
+- ❓ **数据库 Schema?** → [数据库设计文档](./database/database-design.md)
+- ❓ **测试覆盖率要求?** → [测试策略](./testing/test-strategy.md#覆盖率要求)
+- ❓ **如何部署?** → [Docker 部署指南](./deployment/docker-guide.md)
+- ❓ **系统出问题了?** → [故障排查手册](./operations/troubleshooting.md)
+- ❓ **更多问题?** → [FAQ 文档](./FAQ.md)
+
+---
+
+## 📊 文档统计
+
+| 类型 | 数量 | 总行数 | 平均行数 |
+|------|------|--------|---------|
+| PRD 文档 | 9 | ~15,000 | ~1,667 |
+| 架构文档 | 10 | ~10,000 | ~1,000 |
+| 技术规范 | 5 | ~4,000 | ~800 |
+| 测试文档 | 6 | ~5,500 | ~917 |
+| 运维文档 | 2 | ~2,200 | ~1,100 |
+| 部署文档 | 2 | ~2,000 | ~1,000 |
+| 设计文档 | 3 | ~2,000 | ~667 |
+| 其他文档 | 8 | ~1,550 | ~194 |
+| **总计** | **45** | **~42,250** | **~939** |
+
+---
+
+## 🔄 文档更新流程
+
+### 文档维护责任
+
+| 文档类型 | 主要维护者 | 审查者 | 更新频率 |
+|---------|-----------|--------|---------|
+| PRD 文档 | Product Manager | Product Team | 每月/按需 |
+| 架构文档 | Architect | Architecture Team | 每Sprint/按需 |
+| 开发指南 | Tech Lead | Dev Team | 每Sprint |
+| 测试文档 | QA Lead | QA Team | 每Sprint |
+| 运维文档 | DevOps Lead | DevOps Team | 每月 |
+| Scrum 文档 | Scrum Master | Scrum Master | 每Sprint |
+
+### 文档审查流程
+
+#### 每 Sprint 开始
+- [ ] SM 审查 Sprint Planning 文档
+- [ ] 团队审查相关模块文档
+- [ ] 更新 `progress.md`
+
+#### 每 Sprint 结束
+- [ ] 更新完成的文档
+- [ ] 标记过时内容
+- [ ] 补充新的最佳实践
+
+#### 每月
+- [ ] 运行文档主检查清单
+- [ ] 修复不一致问题
+- [ ] 更新 FAQ
+
+---
+
+## 🔗 相关资源
+
+### 项目资源
+- **主 README**: [/README.md](../README.md)
+- **项目进度**: [progress.md](./progress.md)
+- **架构文档**: [architecture.md](./architecture/system-architecture.md)
+
+### 代码仓库
+- **主仓库**: HermesFlow (本地)
+- **GitOps 仓库**: HermesFlow-GitOps (本地)
+
+### 外部工具
+- **监控**: Prometheus + Grafana
+- **日志**: ELK Stack
+- **CI/CD**: GitHub Actions + ArgoCD
+- **容器**: Docker + Kubernetes (AKS)
+
+---
+
+## 📝 文档反馈
+
+如果您发现文档有误或需要改进，请：
+
+1. **技术文档问题**: 联系对应的文档维护者
+2. **流程问题**: 联系 Scrum Master
+3. **紧急问题**: 直接更新并通知团队
+
+---
+
+## 📌 文档使用技巧
+
+### 提示 1: 使用 Ctrl+F / Cmd+F 搜索
+在本页使用浏览器搜索功能，快速定位关键词。
+
+### 提示 2: 收藏常用文档
+根据您的角色，收藏以下文档：
+- **开发者**: 开发指南 + 编码规范 + API 文档
+- **QA**: 测试策略 + 验收清单
+- **DevOps**: 部署指南 + 故障排查手册
+
+### 提示 3: 使用文档流程图
+不确定从哪开始？查看 [文档流程图](./DOCUMENT-FLOW.md)，它会根据您的场景推荐阅读顺序。
+
+### 提示 4: 定期查看 progress.md
+[项目进度](./progress.md) 每周更新，了解最新进展和待办事项。
+
+---
+
+**最后更新**: 2025-01-13  
+**维护者**: @pm.mdc  
+**版本**: v2.1.0
