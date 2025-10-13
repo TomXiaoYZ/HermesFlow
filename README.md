@@ -184,8 +184,14 @@ GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
 - [开发指南](docs/development/dev-guide.md) - 开发环境搭建与工作流
 - [编码规范](docs/development/coding-standards.md) - Rust/Java/Python编码标准
 - [Docker部署指南](docs/deployment/docker-guide.md) - 容器化部署
+- [GitOps最佳实践](docs/deployment/gitops-best-practices.md) - CI/CD与GitOps工作流
 - [测试策略](docs/testing/test-strategy.md) - 测试方法和覆盖率要求
 - [监控方案](docs/operations/monitoring.md) - Prometheus+Grafana监控
+
+### CI/CD与部署
+- [CI/CD架构](docs/architecture/system-architecture.md#11-持续集成与持续部署cicd架构) - 完整的CI/CD流程设计
+- [CI/CD流程图](docs/architecture/diagrams/cicd-flow.md) - 可视化流程与时序图
+- [GitOps最佳实践](docs/deployment/gitops-best-practices.md) - 故障排查与运维指南
 
 完整文档导航请查看 [docs/README.md](docs/README.md)
 

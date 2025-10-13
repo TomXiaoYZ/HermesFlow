@@ -4425,5 +4425,1291 @@ groups:
 
 ---
 
+## 11. 持续集成与持续部署（CI/CD）架构
+
+### 11.1 CI/CD 整体流程
+
+#### 11.1.1 完整流水线
+
+```
+开发者提交代码
+    ↓
+GitHub Actions 触发
+    ↓
+解析模块标签 [module:xxx]
+    ↓
+构建源代码 (Maven/Cargo/npm)
+    ↓
+构建 Docker 镜像
+    ↓
+推送到 Azure Container Registry
+    ↓
+触发 GitOps 仓库更新
+    ↓
+更新 Helm values.yaml
+    ↓
+ArgoCD 自动同步
+    ↓
+部署到 Kubernetes 集群
+```
+
+#### 11.1.2 时序图
+
+```mermaid
+sequenceDiagram
+    participant Dev as 开发者
+    participant GitHub as GitHub Actions
+    participant ACR as Azure Container Registry
+    participant GitOps as HermesFlow-GitOps
+    participant ArgoCD as ArgoCD
+    participant K8s as Kubernetes Cluster
+    
+    Dev->>GitHub: git push (commit: [module:xxx] feat: ...)
+    GitHub->>GitHub: 解析模块标签
+    GitHub->>GitHub: 构建源代码
+    GitHub->>GitHub: 构建 Docker 镜像
+    GitHub->>ACR: 推送镜像 (tag: commit-sha)
+    GitHub->>GitOps: 触发 workflow dispatch
+    GitOps->>GitOps: 更新 values.yaml
+    GitOps->>GitOps: git commit & push
+    ArgoCD->>GitOps: 监听仓库变化
+    ArgoCD->>ArgoCD: 检测到新版本
+    ArgoCD->>K8s: 应用 Helm Charts
+    K8s->>K8s: 滚动更新 Pod
+```
+
+### 11.2 GitHub Actions 工作流详解
+
+#### 11.2.1 工作流配置
+
+**文件**: `.github/workflows/module-cicd.yml`
+
+**触发条件**：
+
+```yaml
+on:
+  push:
+    branches: [dev, main]  # dev环境和main环境
+```
+
+#### 11.2.2 核心步骤解析
+
+**步骤1：解析模块标签**
+
+```yaml
+- name: Parse Module from Commit
+  id: parse-module
+  run: |
+    COMMIT_MSG="${{ github.event.head_commit.message }}"
+    
+    # 正则匹配 [module:xxx]
+    if [[ "$COMMIT_MSG" =~ \[module:([^\]]+)\] ]]; then
+      MODULE="${BASH_REMATCH[1]}"
+      echo "✅ Found module: $MODULE"
+      echo "module=$MODULE" >> $GITHUB_OUTPUT
+      echo "has_module=true" >> $GITHUB_OUTPUT
+    else
+      echo "ℹ️ No module tag found, skipping build"
+      echo "has_module=false" >> $GITHUB_OUTPUT
+    fi
+```
+
+**支持的模块标签**：
+
+| 模块标签 | 技术栈 | 说明 |
+|---------|--------|------|
+| `[module:data-engine]` | Rust | 高性能数据采集服务 |
+| `[module:strategy-engine]` | Python | 策略开发与回测引擎 |
+| `[module:trading-engine]` | Java | 订单管理与交易执行 |
+| `[module:user-management]` | Java | 用户认证与管理 |
+| `[module:risk-engine]` | Java | 风险控制与监控 |
+| `[module:gateway]` | Java | API网关 |
+| `[module:frontend]` | React | 用户界面 |
+
+**步骤2：环境变量配置**
+
+```yaml
+- name: Set Environment Variables
+  if: steps.parse-module.outputs.has_module == 'true'
+  run: |
+    ENVIRONMENT=${{ github.ref_name }}
+    
+    # dev分支 → dev环境
+    if [[ "$ENVIRONMENT" == "dev" ]]; then
+      echo "AZURE_REGISTRY=${{ secrets.DEV_AZURE_REGISTRY }}" >> $GITHUB_ENV
+      echo "AZURE_CLIENT_ID=${{ secrets.DEV_AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+      echo "AZURE_CLIENT_SECRET=${{ secrets.DEV_AZURE_CLIENT_SECRET }}" >> $GITHUB_ENV
+    
+    # main分支 → main环境
+    elif [[ "$ENVIRONMENT" == "main" ]]; then
+      echo "AZURE_REGISTRY=${{ secrets.MAIN_AZURE_REGISTRY }}" >> $GITHUB_ENV
+      echo "AZURE_CLIENT_ID=${{ secrets.MAIN_AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+      echo "AZURE_CLIENT_SECRET=${{ secrets.MAIN_AZURE_CLIENT_SECRET }}" >> $GITHUB_ENV
+    else
+      echo "❌ Unsupported environment: $ENVIRONMENT"
+      exit 1
+    fi
+    
+    echo "ENVIRONMENT=$ENVIRONMENT" >> $GITHUB_ENV
+    echo "MODULE=${{ steps.parse-module.outputs.module }}" >> $GITHUB_ENV
+```
+
+**环境隔离策略**：
+
+| 环境 | 分支 | Container Registry | 部署目标 |
+|------|------|-------------------|---------|
+| **dev** | `dev` | `hermesflow-dev-acr.azurecr.io` | AKS dev namespace |
+| **main** | `main` | `hermesflow-prod-acr.azurecr.io` | AKS prod namespace |
+
+**步骤3：调用统一构建脚本**
+
+```yaml
+- name: Build and Push Module
+  if: steps.parse-module.outputs.has_module == 'true'
+  run: |
+    chmod +x ./scripts/build-module.sh
+    ./scripts/build-module.sh
+```
+
+**步骤4：触发GitOps更新**
+
+```yaml
+- name: Update GitOps Repository
+  if: steps.parse-module.outputs.has_module == 'true'
+  run: |
+    curl -X POST \
+      -H "Authorization: token ${{ secrets.GITOPS_TOKEN }}" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "ref": "main",
+        "inputs": {
+          "module": "${{ env.MODULE }}",
+          "tag": "${{ github.sha }}",
+          "environment": "${{ env.ENVIRONMENT }}",
+          "registry": "${{ env.AZURE_REGISTRY }}"
+        }
+      }' \
+      https://api.github.com/repos/tomxiao/HermesFlow-GitOps/actions/workflows/update-values.yml/dispatches
+```
+
+### 11.3 统一构建脚本详解
+
+#### 11.3.1 脚本概览
+
+**文件**: `scripts/build-module.sh`
+
+**核心职责**：
+1. 验证环境变量
+2. 根据模块类型构建源代码
+3. 构建Docker镜像（多标签）
+4. 推送到Azure Container Registry
+
+#### 11.3.2 详细实现
+
+```bash
+#!/bin/bash
+# HermesFlow 统一模块构建脚本
+
+# 从环境变量获取配置
+MODULE="$MODULE"
+TAG="${GITHUB_SHA:-latest}"
+ENVIRONMENT="$ENVIRONMENT"
+REGISTRY="$AZURE_REGISTRY"
+
+echo "🏗️ HermesFlow Module Build Configuration:"
+echo "  Module: $MODULE"
+echo "  Tag: $TAG"
+echo "  Environment: $ENVIRONMENT"
+echo "  Registry: $REGISTRY"
+
+# 1. 验证必要的环境变量
+if [[ -z "$MODULE" || -z "$REGISTRY" || -z "$AZURE_CLIENT_ID" || -z "$AZURE_CLIENT_SECRET" ]]; then
+    echo "❌ Missing required environment variables"
+    exit 1
+fi
+
+# 2. 根据模块类型构建源代码
+cd "modules/$MODULE"
+
+case "$MODULE" in
+    strategy-engine|risk-engine|user-management|api-gateway|trading-engine)
+        echo "☕ Building Java module..."
+        mvn clean package -DskipTests -B
+        ;;
+    data-engine)
+        echo "🦀 Building Rust module..."
+        cargo build --release
+        ;;
+    frontend)
+        echo "📦 Building Node.js module..."
+        npm ci && npm run build
+        ;;
+    *)
+        echo "⚠️ Unknown module type: $MODULE"
+        ;;
+esac
+
+cd ../../
+
+# 3. 构建Docker镜像（多标签）
+IMAGE_TAG="$REGISTRY/$MODULE:$TAG"
+LATEST_TAG="$REGISTRY/$MODULE:$ENVIRONMENT-latest"
+
+echo "🐳 Building Docker image..."
+docker build \
+    -t "$IMAGE_TAG" \
+    -t "$LATEST_TAG" \
+    -f "scripts/$MODULE/Dockerfile" \
+    "modules/$MODULE"
+
+# 4. 登录Azure Container Registry
+echo "🔐 Logging into Azure Container Registry..."
+echo "$AZURE_CLIENT_SECRET" | docker login "$REGISTRY" \
+    -u "$AZURE_CLIENT_ID" --password-stdin
+
+# 5. 推送镜像
+echo "📤 Pushing images to registry..."
+docker push "$IMAGE_TAG"
+docker push "$LATEST_TAG"
+
+echo "✅ Successfully built and pushed $MODULE"
+```
+
+#### 11.3.3 镜像标签策略
+
+**多标签设计**：
+
+```
+hermesflow-dev-acr.azurecr.io/data-engine:abc123def456  ← Commit SHA（精确版本）
+hermesflow-dev-acr.azurecr.io/data-engine:dev-latest    ← 环境Latest（滚动更新）
+```
+
+**优点**：
+- **Commit SHA标签**：精确追踪，支持回滚
+- **Latest标签**：快速引用最新版本
+- **环境隔离**：dev-latest vs prod-latest
+
+### 11.4 GitOps 仓库结构
+
+#### 11.4.1 目录结构
+
+**仓库**: `HermesFlow-GitOps`
+
+```
+HermesFlow-GitOps/
+├── base-charts/                 # 基础Helm Chart模板
+│   └── microservice/
+│       ├── Chart.yaml           # Chart元数据
+│       ├── values.yaml          # 默认配置
+│       └── templates/
+│           ├── _helpers.tpl     # 模板辅助函数
+│           ├── deployment.yaml  # Deployment资源
+│           ├── service.yaml     # Service资源
+│           ├── hpa.yaml         # 自动扩缩容
+│           └── ingress.yaml     # Ingress路由
+│
+├── apps/                        # 环境特定配置
+│   ├── dev/                     # 开发环境
+│   │   ├── data-engine/
+│   │   │   ├── Chart.yaml       # 继承base-charts
+│   │   │   └── values.yaml      # 覆盖配置
+│   │   ├── strategy-engine/
+│   │   ├── trading-engine/
+│   │   ├── user-management/
+│   │   ├── risk-engine/
+│   │   ├── gateway/
+│   │   └── frontend/
+│   │
+│   └── main/                    # 生产环境
+│       ├── data-engine/
+│       ├── strategy-engine/
+│       └── ...
+│
+└── .github/workflows/
+    └── update-values.yml        # 自动更新values.yaml
+```
+
+#### 11.4.2 Base Chart配置
+
+**base-charts/microservice/values.yaml**：
+
+```yaml
+# 默认配置（可被环境特定配置覆盖）
+replicaCount: 1
+
+image:
+  repository: ""
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+probes:
+  liveness:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  readiness:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 5
+
+env: []
+
+configMap:
+  enabled: false
+  data: {}
+
+secret:
+  enabled: false
+  data: {}
+```
+
+#### 11.4.3 环境特定配置
+
+**apps/dev/data-engine/values.yaml**：
+
+```yaml
+# 继承base-charts，覆盖特定值
+image:
+  repository: hermesflow-dev-acr.azurecr.io/data-engine
+  tag: "abc123def456"  # 自动更新为最新commit SHA
+
+replicaCount: 1
+
+service:
+  port: 8081
+  targetPort: 8081
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 1000m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+env:
+  - name: RUST_LOG
+    value: "info"
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: postgres-secret
+        key: connection-string
+  - name: REDIS_URL
+    value: "redis://redis-service:6379"
+  - name: KAFKA_BROKERS
+    value: "kafka-service:9092"
+  - name: CLICKHOUSE_URL
+    value: "http://clickhouse-service:8123"
+```
+
+**apps/main/data-engine/values.yaml**（生产环境）：
+
+```yaml
+# 生产环境配置（更严格的资源限制和高可用）
+image:
+  repository: hermesflow-prod-acr.azurecr.io/data-engine
+  tag: "xyz789prod"
+
+replicaCount: 3  # 生产环境3副本
+
+resources:
+  limits:
+    cpu: 4000m
+    memory: 4Gi
+  requests:
+    cpu: 2000m
+    memory: 2Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60  # 更保守的阈值
+```
+
+### 11.5 GitOps 自动更新流程
+
+#### 11.5.1 更新工作流
+
+**文件**: `HermesFlow-GitOps/.github/workflows/update-values.yml`
+
+```yaml
+name: Update Helm Values
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: 'Module name'
+        required: true
+      tag:
+        description: 'Image tag (commit SHA)'
+        required: true
+      environment:
+        description: 'Environment (dev/main)'
+        required: true
+      registry:
+        description: 'Container registry'
+        required: true
+
+jobs:
+  update-values:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitOps Repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      
+      - name: Update values.yaml
+        run: |
+          VALUES_FILE="apps/${{ github.event.inputs.environment }}/${{ github.event.inputs.module }}/values.yaml"
+          
+          echo "📝 Updating $VALUES_FILE"
+          echo "  Image Tag: ${{ github.event.inputs.tag }}"
+          echo "  Registry: ${{ github.event.inputs.registry }}"
+          
+          # 使用yq更新image.tag和image.repository
+          yq eval ".image.tag = \"${{ github.event.inputs.tag }}\"" -i "$VALUES_FILE"
+          yq eval ".image.repository = \"${{ github.event.inputs.registry }}/${{ github.event.inputs.module }}\"" -i "$VALUES_FILE"
+          
+          echo "✅ Updated successfully"
+          cat "$VALUES_FILE"
+      
+      - name: Commit and Push
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -m "🚀 Update ${{ github.event.inputs.module }} to ${{ github.event.inputs.tag }} in ${{ github.event.inputs.environment }}"
+          git push
+      
+      - name: Summary
+        run: |
+          echo "## 🎉 GitOps Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Module**: ${{ github.event.inputs.module }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **New Tag**: \`${{ github.event.inputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: ${{ github.event.inputs.registry }}" >> $GITHUB_STEP_SUMMARY
+```
+
+#### 11.5.2 更新示例
+
+**更新前**（apps/dev/data-engine/values.yaml）：
+
+```yaml
+image:
+  repository: hermesflow-dev-acr.azurecr.io/data-engine
+  tag: "xyz789old"
+```
+
+**更新后**（自动）：
+
+```yaml
+image:
+  repository: hermesflow-dev-acr.azurecr.io/data-engine
+  tag: "abc123def456"  # 新的commit SHA
+```
+
+### 11.6 ArgoCD 配置与同步
+
+#### 11.6.1 Application定义
+
+**文件**: `argocd/applications/hermesflow-dev.yaml`
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hermesflow-dev
+  namespace: argocd
+spec:
+  project: default
+  
+  # 源：GitOps仓库
+  source:
+    repoURL: https://github.com/tomxiao/HermesFlow-GitOps.git
+    targetRevision: HEAD
+    path: apps/dev
+  
+  # 目标：Kubernetes集群
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hermesflow-dev
+  
+  # 自动同步策略
+  syncPolicy:
+    automated:
+      prune: true        # 自动删除不再需要的资源
+      selfHeal: true     # 自动修复配置漂移
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+```
+
+#### 11.6.2 同步流程
+
+```
+1. ArgoCD轮询GitOps仓库（每3分钟，可配置）
+   ↓
+2. 检测到values.yaml变化
+   ↓
+3. 渲染Helm Chart，生成Kubernetes资源清单
+   ↓
+4. 计算当前集群状态与期望状态的差异
+   ↓
+5. 应用差异（kubectl apply）
+   ↓
+6. Kubernetes执行滚动更新
+   ↓
+7. 等待新Pod就绪
+   ↓
+8. 终止旧Pod
+   ↓
+9. 同步完成，更新ArgoCD状态
+```
+
+#### 11.6.3 滚动更新策略
+
+**base-charts/microservice/templates/deployment.yaml**：
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "microservice.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  
+  # 滚动更新策略
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # 最多额外创建1个Pod
+      maxUnavailable: 0  # 保持所有旧Pod可用（零停机）
+  
+  selector:
+    matchLabels:
+      {{- include "microservice.selectorLabels" . | nindent 6 }}
+  
+  template:
+    metadata:
+      labels:
+        {{- include "microservice.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.targetPort }}
+        
+        # 健康检查
+        {{- if .Values.probes.liveness.enabled }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.probes.liveness.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+        {{- end }}
+        
+        {{- if .Values.probes.readiness.enabled }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.probes.readiness.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+        {{- end }}
+        
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+        
+        env:
+          {{- range .Values.env }}
+          - name: {{ .name }}
+            {{- if .value }}
+            value: {{ .value | quote }}
+            {{- else if .valueFrom }}
+            valueFrom:
+              {{- toYaml .valueFrom | nindent 14 }}
+            {{- end }}
+          {{- end }}
+```
+
+### 11.7 完整部署示例
+
+#### 11.7.1 场景描述
+
+开发者修复了数据服务的WebSocket连接泄漏问题。
+
+#### 11.7.2 详细步骤
+
+**步骤1：开发者提交代码**
+
+```bash
+# 本地开发
+cd modules/data-engine
+vim src/websocket/connection_pool.rs  # 修复Bug
+
+# 本地测试
+cargo test
+
+# 提交代码
+git add src/websocket/connection_pool.rs
+git commit -m "[module:data-engine] fix: 修复WebSocket连接泄漏问题
+
+- 在连接池中添加超时清理机制
+- 修复连接未正确关闭的Bug
+- 添加连接泄漏检测日志"
+
+git push origin dev
+```
+
+**步骤2：GitHub Actions自动执行**（约5分钟）
+
+```
+[GitHub Actions - HermesFlow Repo]
+
+🔄 Triggered by: push to dev branch
+📋 Commit: abc123def456
+📝 Message: [module:data-engine] fix: 修复WebSocket连接泄漏问题
+
+Step 1/5: Parse Module from Commit
+✅ Found module: data-engine
+
+Step 2/5: Set Environment Variables
+✅ Environment: dev
+✅ Registry: hermesflow-dev-acr.azurecr.io
+
+Step 3/5: Build and Push Module
+🦀 Building Rust module...
+   Compiling data-engine v0.1.0
+   Finished release [optimized] target(s) in 3m 45s
+🐳 Building Docker image...
+   => [stage-1 1/3] FROM rust:1.75-slim
+   => [stage-2 1/2] COPY --from=stage-1 /app/target/release/data-engine
+   => naming to hermesflow-dev-acr.azurecr.io/data-engine:abc123def456
+✅ Built successfully
+
+📤 Pushing images to registry...
+   abc123def456: Pushed
+   dev-latest: Pushed
+✅ Push complete
+
+Step 4/5: Update GitOps Repository
+🔗 Triggering GitOps workflow...
+✅ Workflow dispatched
+
+Step 5/5: Build Summary
+✅ Build completed successfully
+   Duration: 4m 52s
+```
+
+**步骤3：GitOps仓库自动更新**（约1分钟）
+
+```
+[GitHub Actions - HermesFlow-GitOps Repo]
+
+🔄 Triggered by: workflow_dispatch
+📦 Module: data-engine
+🏷️ Tag: abc123def456
+🌍 Environment: dev
+
+Step 1/4: Checkout GitOps Repo
+✅ Checked out main branch
+
+Step 2/4: Install yq
+✅ yq installed
+
+Step 3/4: Update values.yaml
+📝 Updating apps/dev/data-engine/values.yaml
+   Image Tag: abc123def456
+   Registry: hermesflow-dev-acr.azurecr.io
+✅ Updated successfully
+
+Step 4/4: Commit and Push
+✅ Committed: 🚀 Update data-engine to abc123def456 in dev
+✅ Pushed to main branch
+```
+
+**步骤4：ArgoCD自动同步**（约3分钟）
+
+```
+[ArgoCD Dashboard]
+
+Application: hermesflow-dev
+Status: Syncing...
+
+🔍 Detected Changes:
+   apps/dev/data-engine/values.yaml
+   - image.tag: xyz789old → abc123def456
+
+🎯 Sync Operation:
+   Phase 1: PreSync
+   ✅ Running pre-sync hooks
+
+   Phase 2: Sync
+   📦 Applying Deployment/data-engine
+      - Updating image to abc123def456
+   ✅ Deployment updated
+
+   Phase 3: SyncWait
+   ⏳ Waiting for new Pod to be ready...
+   🆕 Pod data-engine-abc123def-xxxxx: Creating
+   🆕 Pod data-engine-abc123def-xxxxx: Running
+   🆕 Pod data-engine-abc123def-xxxxx: Ready ✅
+   
+   🗑️ Terminating old Pod data-engine-xyz789old-yyyyy
+   ✅ Old Pod terminated
+
+   Phase 4: PostSync
+   ✅ Running post-sync hooks
+
+✅ Sync Completed
+   Duration: 2m 38s
+   Status: Healthy
+```
+
+**步骤5：验证部署**
+
+```bash
+# 查看Pod状态
+$ kubectl get pods -n hermesflow-dev -l app=data-engine
+NAME                            READY   STATUS    RESTARTS   AGE
+data-engine-abc123def-xxxxx     1/1     Running   0          3m
+
+# 查看Pod日志
+$ kubectl logs -n hermesflow-dev data-engine-abc123def-xxxxx --tail=50
+2024-12-20T10:30:00Z INFO  data_engine::websocket] WebSocket server started on 0.0.0.0:8081
+2024-12-20T10:30:01Z INFO  data_engine::connection_pool] Connection pool initialized (max: 10000)
+2024-12-20T10:30:02Z INFO  data_engine::health] Health check endpoint ready
+
+# 查看部署历史
+$ kubectl rollout history deployment/data-engine -n hermesflow-dev
+REVISION  CHANGE-CAUSE
+1         Initial deployment
+2         Update data-engine to xyz789old
+3         Update data-engine to abc123def456
+
+# 测试服务
+$ curl http://data-engine.hermesflow-dev.svc.cluster.local:8081/health
+{"status":"healthy","version":"abc123def456"}
+```
+
+#### 11.7.3 总耗时
+
+| 阶段 | 耗时 | 说明 |
+|------|------|------|
+| GitHub Actions构建 | ~5分钟 | Rust编译 + Docker构建 + ACR推送 |
+| GitOps仓库更新 | ~1分钟 | yq更新values.yaml + git push |
+| ArgoCD同步 | ~3分钟 | Helm渲染 + Kubernetes滚动更新 |
+| **总计** | **~9分钟** | **全自动，零人工干预** |
+
+### 11.8 监控与回滚
+
+#### 11.8.1 部署监控
+
+**ArgoCD Dashboard**：
+
+```bash
+# Web UI访问
+https://argocd.hermesflow.com/applications/hermesflow-dev
+
+# CLI查看同步状态
+argocd app get hermesflow-dev
+
+# 查看同步历史
+argocd app history hermesflow-dev
+```
+
+**Kubernetes监控**：
+
+```bash
+# 查看Pod滚动更新状态
+kubectl rollout status deployment/data-engine -n hermesflow-dev
+
+# 实时监控Pod事件
+kubectl get events -n hermesflow-dev --sort-by='.lastTimestamp' -w
+
+# 查看部署详情
+kubectl describe deployment data-engine -n hermesflow-dev
+
+# 查看Pod日志（实时）
+kubectl logs -n hermesflow-dev -l app=data-engine -f
+```
+
+**Prometheus监控指标**：
+
+```promql
+# Pod重启次数
+kube_pod_container_status_restarts_total{namespace="hermesflow-dev", pod=~"data-engine.*"}
+
+# CPU使用率
+rate(container_cpu_usage_seconds_total{namespace="hermesflow-dev", pod=~"data-engine.*"}[5m])
+
+# 内存使用率
+container_memory_usage_bytes{namespace="hermesflow-dev", pod=~"data-engine.*"}
+
+# 部署状态
+kube_deployment_status_replicas_available{namespace="hermesflow-dev", deployment="data-engine"}
+```
+
+#### 11.8.2 快速回滚
+
+**方法1：Kubernetes原生回滚**（最快，~30秒）
+
+```bash
+# 回滚到上一个版本
+kubectl rollout undo deployment/data-engine -n hermesflow-dev
+
+# 查看回滚状态
+kubectl rollout status deployment/data-engine -n hermesflow-dev
+
+# 回滚到特定版本
+kubectl rollout undo deployment/data-engine --to-revision=2 -n hermesflow-dev
+```
+
+**方法2：ArgoCD回滚**（推荐，约2分钟）
+
+```bash
+# CLI回滚
+argocd app rollback hermesflow-dev 2  # 回滚到revision 2
+
+# Web UI回滚
+# ArgoCD Dashboard → hermesflow-dev → History → Select Revision → Rollback
+```
+
+**方法3：GitOps回滚**（最安全，约3分钟）
+
+```bash
+# 进入GitOps仓库
+cd HermesFlow-GitOps
+
+# 查看commit历史
+git log --oneline apps/dev/data-engine/values.yaml
+
+# 方式A：回滚到之前的commit
+git revert HEAD
+git push
+
+# 方式B：直接修改values.yaml
+vim apps/dev/data-engine/values.yaml
+# 修改 image.tag 为旧版本
+git add apps/dev/data-engine/values.yaml
+git commit -m "⏪ Rollback data-engine to xyz789old"
+git push
+
+# ArgoCD自动检测并同步
+```
+
+**回滚决策矩阵**：
+
+| 情况 | 推荐方法 | 理由 |
+|------|---------|------|
+| 紧急故障 | Kubernetes原生回滚 | 最快（30秒） |
+| 常规回滚 | ArgoCD回滚 | 保留GitOps审计记录 |
+| 长期回滚 | GitOps回滚 | Git历史完整，可追溯 |
+
+### 11.9 安全与权限管理
+
+#### 11.9.1 GitHub Secrets配置
+
+**必需的Secrets**：
+
+```yaml
+# Dev环境（hermesflow-dev-acr.azurecr.io）
+DEV_AZURE_REGISTRY: hermesflow-dev-acr.azurecr.io
+DEV_AZURE_CLIENT_ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+DEV_AZURE_CLIENT_SECRET: ********************************
+
+# Main环境（hermesflow-prod-acr.azurecr.io）
+MAIN_AZURE_REGISTRY: hermesflow-prod-acr.azurecr.io
+MAIN_AZURE_CLIENT_ID: yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+MAIN_AZURE_CLIENT_SECRET: ********************************
+
+# GitOps（细粒度访问令牌）
+GITOPS_TOKEN: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# 权限范围：
+#   - repo: HermesFlow-GitOps (Full control)
+#   - workflow (Trigger workflow)
+```
+
+**配置步骤**：
+
+```bash
+# 1. 创建Azure Service Principal
+az ad sp create-for-rbac --name hermesflow-dev-acr-sp \
+  --role acrpush \
+  --scopes /subscriptions/{sub-id}/resourceGroups/{rg}/providers/Microsoft.ContainerRegistry/registries/hermesflow-dev-acr
+
+# 2. 将输出的appId和password配置到GitHub Secrets
+# DEV_AZURE_CLIENT_ID = appId
+# DEV_AZURE_CLIENT_SECRET = password
+
+# 3. 创建GitHub Personal Access Token
+# Settings → Developer settings → Personal access tokens → Fine-grained tokens
+# Repository access: Only select HermesFlow-GitOps
+# Permissions: Contents (Read and write), Workflows (Read and write)
+```
+
+#### 11.9.2 权限最小化原则
+
+| 组件 | 权限范围 | 说明 |
+|------|---------|------|
+| **GitHub Actions** | - 推送镜像到ACR<br>- 触发GitOps workflow | 无代码写入权限 |
+| **GitOps Token** | - 触发workflow<br>- 写入values.yaml | 仅限GitOps仓库 |
+| **ArgoCD** | - 读取GitOps仓库<br>- 写入K8s namespace | 仅限特定namespace |
+| **AKS Service Principal** | - 拉取ACR镜像 | 仅AcrPull权限 |
+
+#### 11.9.3 审计日志
+
+**Git审计**：
+
+```bash
+# 查看GitOps仓库所有部署变更
+cd HermesFlow-GitOps
+git log --oneline --all --graph
+
+# 查看特定模块的变更历史
+git log --oneline -- apps/dev/data-engine/values.yaml
+
+# 查看谁修改了配置
+git blame apps/dev/data-engine/values.yaml
+```
+
+**Kubernetes审计**：
+
+```bash
+# 查看部署事件
+kubectl get events -n hermesflow-dev --field-selector involvedObject.name=data-engine
+
+# 查看ArgoCD同步日志
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller
+```
+
+### 11.10 CI/CD 最佳实践
+
+#### 11.10.1 Commit Message规范
+
+**规范格式**：
+
+```
+[module:<模块名>] <类型>: <简短描述>
+
+<详细描述>
+
+<可选的Footer>
+```
+
+**类型标签**：
+
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| `feat` | 新功能 | `[module:data-engine] feat: 添加Polygon数据源` |
+| `fix` | Bug修复 | `[module:strategy-engine] fix: 修复RSI因子计算错误` |
+| `perf` | 性能优化 | `[module:data-engine] perf: 优化WebSocket连接池` |
+| `refactor` | 代码重构 | `[module:trading-engine] refactor: 重构订单管理模块` |
+| `test` | 测试相关 | `[module:risk-engine] test: 添加风控规则单元测试` |
+| `docs` | 文档更新 | `docs: 更新API文档` (无需模块标签) |
+| `chore` | 构建/工具 | `chore: 升级依赖版本` (无需模块标签) |
+
+**示例**：
+
+```bash
+# ✅ 好的Commit Message
+git commit -m "[module:data-engine] feat: 添加Binance WebSocket自动重连机制
+
+- 实现指数退避重连策略
+- 添加连接健康检查
+- 记录重连事件日志
+- 测试覆盖率：95%
+
+Closes #123"
+
+# ❌ 不好的Commit Message
+git commit -m "修复Bug"  # 缺少模块标签，不会触发部署
+```
+
+#### 11.10.2 环境分支策略
+
+```
+feature/* ──┐
+            ├──→ dev ──→ dev环境（自动部署）
+hotfix/*  ──┘            │
+                         │
+                    (Pull Request)
+                         │
+                         ↓
+                       main ──→ main环境（自动部署）
+```
+
+**分支规则**：
+
+| 分支 | 目的 | 部署 | 保护规则 |
+|------|------|------|---------|
+| `feature/*` | 功能开发 | ❌ 不部署 | 无 |
+| `hotfix/*` | 紧急修复 | ❌ 不部署 | 无 |
+| `dev` | 开发环境 | ✅ 自动部署到dev | - 需要PR审核 |
+| `main` | 生产环境 | ✅ 自动部署到main | - 需要2人审核<br>- 必须通过CI<br>- 禁止force push |
+
+#### 11.10.3 镜像标签策略
+
+**推荐**：
+
+```bash
+# ✅ 使用Commit SHA（精确版本控制）
+hermesflow-dev-acr.azurecr.io/data-engine:abc123def456
+
+# ✅ 保留环境Latest（快速引用）
+hermesflow-dev-acr.azurecr.io/data-engine:dev-latest
+```
+
+**不推荐**：
+
+```bash
+# ❌ 不要仅使用latest（难以追踪版本）
+hermesflow-dev-acr.azurecr.io/data-engine:latest
+
+# ❌ 不要使用v1.0.0这种语义化版本（手动维护困难）
+hermesflow-dev-acr.azurecr.io/data-engine:v1.0.0
+```
+
+#### 11.10.4 金丝雀发布（可选）
+
+**使用Argo Rollouts实现渐进式发布**：
+
+```yaml
+# apps/dev/data-engine/rollout.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: data-engine
+spec:
+  replicas: 5
+  strategy:
+    canary:
+      steps:
+      - setWeight: 20    # 20%流量到新版本
+      - pause: {duration: 5m}
+      - setWeight: 40
+      - pause: {duration: 5m}
+      - setWeight: 60
+      - pause: {duration: 5m}
+      - setWeight: 80
+      - pause: {duration: 5m}
+      - setWeight: 100   # 100%流量，完成发布
+      
+      # 自动回滚（如果错误率>5%）
+      analysis:
+        templates:
+        - templateName: error-rate
+        args:
+        - name: service-name
+          value: data-engine
+      
+      trafficRouting:
+        istio:
+          virtualService:
+            name: data-engine-vsvc
+```
+
+#### 11.10.5 自动化测试集成
+
+**在CI流程中添加测试**：
+
+```yaml
+# .github/workflows/module-cicd.yml中添加
+- name: Run Unit Tests
+  run: |
+    cd modules/${{ env.MODULE }}
+    case "${{ env.MODULE }}" in
+      *-engine|user-management|gateway)
+        mvn test
+        ;;
+      data-engine)
+        cargo test
+        ;;
+      frontend)
+        npm test
+        ;;
+    esac
+
+- name: Run Integration Tests
+  run: |
+    docker-compose -f docker-compose.test.yml up --abort-on-container-exit
+    exit_code=$?
+    docker-compose -f docker-compose.test.yml down
+    exit $exit_code
+
+- name: Security Scan
+  uses: aquasecurity/trivy-action@master
+  with:
+    image-ref: '${{ env.AZURE_REGISTRY }}/${{ env.MODULE }}:${{ github.sha }}'
+    format: 'sarif'
+    output: 'trivy-results.sarif'
+```
+
+### 11.11 故障排查指南
+
+#### 11.11.1 常见问题
+
+**问题1：GitHub Actions构建失败**
+
+```bash
+# 症状
+❌ Docker build failed: Error response from daemon: pull access denied
+
+# 原因
+ACR认证失败
+
+# 解决方案
+# 1. 检查GitHub Secrets配置
+# 2. 验证Service Principal权限
+az role assignment list --assignee $AZURE_CLIENT_ID --scope /subscriptions/{sub-id}/resourceGroups/{rg}/providers/Microsoft.ContainerRegistry/registries/hermesflow-dev-acr
+
+# 3. 重新生成密钥
+az ad sp credential reset --id $AZURE_CLIENT_ID
+```
+
+**问题2：GitOps更新失败**
+
+```bash
+# 症状
+❌ Failed to trigger GitOps workflow: 404 Not Found
+
+# 原因
+GITOPS_TOKEN权限不足或过期
+
+# 解决方案
+# 1. 重新生成GitHub Token
+# 2. 确保Token有workflow权限
+# 3. 更新GitHub Secret
+```
+
+**问题3：ArgoCD同步失败**
+
+```bash
+# 症状
+❌ Sync operation failed: ImagePullBackOff
+
+# 原因
+K8s无法从ACR拉取镜像
+
+# 解决方案
+# 1. 检查AKS与ACR的集成
+az aks check-acr --name hermesflow-aks-dev --resource-group hermesflow-rg --acr hermesflow-dev-acr.azurecr.io
+
+# 2. 重新附加ACR到AKS
+az aks update --name hermesflow-aks-dev --resource-group hermesflow-rg --attach-acr hermesflow-dev-acr
+```
+
+#### 11.11.2 调试技巧
+
+**查看完整日志**：
+
+```bash
+# GitHub Actions日志
+https://github.com/tomxiao/HermesFlow/actions
+
+# ArgoCD日志
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=100
+
+# Pod日志
+kubectl logs -n hermesflow-dev -l app=data-engine --tail=100 --previous  # 查看之前的Pod日志
+```
+
+**手动触发部署**：
+
+```bash
+# 手动触发GitOps更新
+curl -X POST \
+  -H "Authorization: token $GITOPS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ref": "main",
+    "inputs": {
+      "module": "data-engine",
+      "tag": "abc123def",
+      "environment": "dev",
+      "registry": "hermesflow-dev-acr.azurecr.io"
+    }
+  }' \
+  https://api.github.com/repos/tomxiao/HermesFlow-GitOps/actions/workflows/update-values.yml/dispatches
+
+# 手动触发ArgoCD同步
+argocd app sync hermesflow-dev --force
+```
+
+---
+
+## 附录D：CI/CD相关资源
+
+### GitHub Repositories
+
+- **HermesFlow**: https://github.com/tomxiao/HermesFlow (源代码)
+- **HermesFlow-GitOps**: https://github.com/tomxiao/HermesFlow-GitOps (声明式配置)
+
+### 参考文档
+
+1. [GitHub Actions官方文档](https://docs.github.com/en/actions)
+2. [Helm官方文档](https://helm.sh/docs/)
+3. [ArgoCD官方文档](https://argo-cd.readthedocs.io/)
+4. [GitOps最佳实践](https://opengitops.dev/)
+5. [Azure Container Registry文档](https://docs.microsoft.com/en-us/azure/container-registry/)
+
+### 工具链
+
+| 工具 | 版本 | 用途 |
+|------|------|------|
+| GitHub Actions | - | CI/CD流水线 |
+| Helm | 3.x | Kubernetes包管理 |
+| ArgoCD | 2.x | GitOps持续部署 |
+| yq | 4.x | YAML处理工具 |
+| kubectl | 1.28+ | Kubernetes CLI |
+
+---
+
 **文档结束**
 
