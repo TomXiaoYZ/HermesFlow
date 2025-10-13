@@ -27,6 +27,13 @@
 - ✅ [Sprint Planning 清单](./scrum/sprint-planning-checklist.md)
 - 🔄 [Retrospective 模板](./scrum/retrospective-template.md)
 - 📈 [项目进度仪表盘](./progress.md)
+- 📑 [Sprint 阶段文档索引](./scrum/sprint-document-index.md) - 按阶段查找文档
+- 📋 [每日工作参考](./scrum/daily-work-reference.md) - 每日清单
+- 🗺️ [角色文档地图](./scrum/role-document-map.md) - 按角色学习路径
+- ✔️ [文档就绪检查清单](./scrum/documentation-ready-checklist.md) - Sprint 文档准备
+- 📚 [文档最佳实践](./scrum/documentation-best-practices.md) - 文档维护指南
+- 🎴 [快速参考卡片](./scrum/quick-reference-cards.md) - 一页纸快速参考
+- 📊 [文档度量仪表板](./scrum/documentation-metrics.md) - 文档使用和质量度量
 
 ### 开发者 (Developer)
 
