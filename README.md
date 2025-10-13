@@ -36,13 +36,13 @@ HermesFlow/
 
 | 模块 | 技术栈 | 端口 | 说明 |
 |------|--------|------|------|
-| **data-engine** ⭐ | **Rust + Tokio + Actix-web** | **18001-18002** | **高性能数据采集与处理** |
-| strategy-engine | Python 3.12 + FastAPI | 18020-18021 | 策略开发、回测与执行 |
-| trading-engine | Java 21 + Spring Boot + WebFlux | 18030 | 订单管理与交易执行 |
-| risk-engine | Java 21 + Spring Boot | 18040 | 风险控制与监控 |
-| user-management | Java 21 + Spring Boot | 18010 | 用户认证与管理 |
-| gateway | Java 21 + Spring Cloud Gateway | 18000 | 统一API网关 |
-| frontend | React 18 + TypeScript | 3000 | 用户界面 |
+| **data-engine** ⭐ | **Rust 1.75 + Tokio 1.35 + Actix-web 4.4** | **18001-18002** | **高性能数据采集与处理** |
+| strategy-engine | Python 3.12 + FastAPI 0.104 | 18020-18021 | 策略开发、回测与执行 |
+| trading-engine | Java 21 + Spring Boot 3.2 + WebFlux | 18030 | 订单管理与交易执行 |
+| risk-engine | Java 21 + Spring Boot 3.2 | 18040 | 风险控制与监控 |
+| user-management | Java 21 + Spring Boot 3.2 | 18010 | 用户认证与管理 |
+| gateway | Java 21 + Spring Cloud Gateway 4.1 | 18000 | 统一API网关 |
+| frontend | React 18.2 + TypeScript 5.3 + Vite 5.0 | 3000 | 用户界面 |
 
 #### 核心优势
 
@@ -145,7 +145,7 @@ GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
 ## 📚 文档
 
 ### 核心文档
-- [系统架构文档](docs/architecture.md) - 系统整体架构设计
+- [系统架构文档](docs/architecture/system-architecture.md) - 系统整体架构设计
 - [开发进度跟踪](docs/progress.md) - 开发状态和里程碑
 - [快速参考指南](docs/QUICK-REFERENCE.md) - 常用命令和配置
 
@@ -209,5 +209,5 @@ GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
 
 ---
 
-**最后更新**: 2024年12月 | **版本**: v2.0.0
+**最后更新**: 2024年12月20日 | **版本**: v2.1.0
 
