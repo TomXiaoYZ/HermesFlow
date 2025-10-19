@@ -125,10 +125,10 @@ jobs:
   notify:
     needs: build-frontend
     runs-on: ubuntu-latest
-    if: always() && github.ref == 'refs/heads/main'
+    if: false  # Disabled: Slack notification not configured
     steps:
       - name: Send Slack notification
-        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        if: false
         run: |
           STATUS="${{ needs.build-frontend.result }}"
           if [ "$STATUS" = "success" ]; then

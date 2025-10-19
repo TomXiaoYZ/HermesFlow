@@ -179,10 +179,10 @@ jobs:
   notify:
     needs: build-java
     runs-on: ubuntu-latest
-    if: always() && github.ref == 'refs/heads/main'
+    if: false  # Disabled: Slack notification not configured
     steps:
       - name: Send Slack notification
-        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        if: false
         run: |
           STATUS="${{ needs.build-java.result }}"
           if [ "$STATUS" = "success" ]; then

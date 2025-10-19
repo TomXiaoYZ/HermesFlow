@@ -137,7 +137,7 @@ jobs:
           git push
 
       - name: Notify Slack
-        if: always() && secrets.SLACK_WEBHOOK_URL != ''
+        if: false  # Disabled: Slack notification not configured
         run: |
           if [ "${{ job.status }}" = "success" ]; then
             COLOR="good"
