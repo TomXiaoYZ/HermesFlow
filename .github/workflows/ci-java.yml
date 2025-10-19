@@ -1,0 +1,208 @@
+name: CI - Java Services
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+    paths:
+      - 'modules/user-management/**'
+      - 'modules/api-gateway/**'
+      - 'modules/trading-engine/**'
+      - '.github/workflows/ci-java.yml'
+  pull_request:
+    paths:
+      - 'modules/user-management/**'
+      - 'modules/api-gateway/**'
+      - 'modules/trading-engine/**'
+      - '.github/workflows/ci-java.yml'
+  workflow_dispatch:
+
+env:
+  JAVA_VERSION: '21'
+  MAVEN_OPTS: -Xmx3g
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      user-management: ${{ steps.filter.outputs.user-management }}
+      api-gateway: ${{ steps.filter.outputs.api-gateway }}
+      trading-engine: ${{ steps.filter.outputs.trading-engine }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            user-management:
+              - 'modules/user-management/**'
+            api-gateway:
+              - 'modules/api-gateway/**'
+            trading-engine:
+              - 'modules/trading-engine/**'
+
+  build-java:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    environment: development
+    outputs:
+      image_tag: ${{ steps.docker_meta.outputs.tags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - name: user-management
+            build: ${{ needs.detect-changes.outputs.user-management }}
+          - name: api-gateway
+            build: ${{ needs.detect-changes.outputs.api-gateway }}
+          - name: trading-engine
+            build: ${{ needs.detect-changes.outputs.trading-engine }}
+    
+    if: |
+      needs.detect-changes.outputs.user-management == 'true' || 
+      needs.detect-changes.outputs.api-gateway == 'true' ||
+      needs.detect-changes.outputs.trading-engine == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        if: matrix.module.build == 'true'
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        if: matrix.module.build == 'true'
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        if: matrix.module.build == 'true'
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Build with Maven
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: mvn clean compile -B -V
+
+      - name: Run Checkstyle
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: mvn checkstyle:check
+
+      - name: Run SpotBugs
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: mvn spotbugs:check
+
+      - name: Run tests
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: mvn test -B
+
+      - name: Generate JaCoCo coverage report
+        if: matrix.module.build == 'true' && github.event_name != 'pull_request'
+        working-directory: modules/${{ matrix.module.name }}
+        run: mvn jacoco:report
+
+      - name: Check coverage threshold
+        if: matrix.module.build == 'true' && github.event_name != 'pull_request'
+        working-directory: modules/${{ matrix.module.name }}
+        run: mvn jacoco:check -Djacoco.minimum-coverage=0.80
+
+      - name: Upload coverage to Codecov
+        if: matrix.module.build == 'true' && github.event_name != 'pull_request'
+        uses: codecov/codecov-action@v4
+        with:
+          file: modules/${{ matrix.module.name }}/target/site/jacoco/jacoco.xml
+          flags: java-${{ matrix.module.name }}
+          name: ${{ matrix.module.name }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Package application
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: mvn package -DskipTests -B
+
+      - name: Extract branch name and generate image tag
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        id: docker_meta
+        run: |
+          BRANCH_NAME=$(echo ${{ github.ref }} | sed 's/refs\/heads\///' | sed 's/\//-/g')
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          IMAGE_TAG="${BRANCH_NAME}-${SHORT_SHA}"
+          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Login to Azure Container Registry
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build and push Docker image
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        working-directory: modules/${{ matrix.module.name }}
+        run: |
+          IMAGE_TAG=${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.module.name }}:${{ steps.docker_meta.outputs.tag }}
+          IMAGE_LATEST=${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.module.name }}:latest
+          
+          docker build -t $IMAGE_TAG -t $IMAGE_LATEST .
+          docker push $IMAGE_TAG
+          docker push $IMAGE_LATEST
+          
+          echo "Pushed image: $IMAGE_TAG"
+
+      - name: Run Trivy security scan
+        if: matrix.module.build == 'true' && github.ref == 'refs/heads/main'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.module.name }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        if: matrix.module.build == 'true' && github.ref == 'refs/heads/main'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: java-${{ matrix.module.name }}
+
+  notify:
+    needs: build-java
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+      - name: Send Slack notification
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        run: |
+          STATUS="${{ needs.build-java.result }}"
+          if [ "$STATUS" = "success" ]; then
+            COLOR="good"
+            MESSAGE="✅ Java CI passed for commit ${{ github.sha }}"
+          else
+            COLOR="danger"
+            MESSAGE="❌ Java CI failed for commit ${{ github.sha }}"
+          fi
+          
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"$COLOR\",
+                \"text\": \"$MESSAGE\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true}
+                ]
+              }]
+            }"
+

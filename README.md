@@ -1,5 +1,12 @@
 # HermesFlow 量化交易平台
 
+[![CI - Rust](https://github.com/hermesflow/HermesFlow/workflows/CI%20-%20Rust%20Services/badge.svg)](https://github.com/hermesflow/HermesFlow/actions/workflows/ci-rust.yml)
+[![CI - Java](https://github.com/hermesflow/HermesFlow/workflows/CI%20-%20Java%20Services/badge.svg)](https://github.com/hermesflow/HermesFlow/actions/workflows/ci-java.yml)
+[![CI - Python](https://github.com/hermesflow/HermesFlow/workflows/CI%20-%20Python%20Services/badge.svg)](https://github.com/hermesflow/HermesFlow/actions/workflows/ci-python.yml)
+[![CI - Frontend](https://github.com/hermesflow/HermesFlow/workflows/CI%20-%20Frontend/badge.svg)](https://github.com/hermesflow/HermesFlow/actions/workflows/ci-frontend.yml)
+[![Terraform](https://github.com/hermesflow/HermesFlow/workflows/Terraform%20-%20Azure%20Infrastructure/badge.svg)](https://github.com/hermesflow/HermesFlow/actions/workflows/terraform.yml)
+[![Security Scan](https://github.com/hermesflow/HermesFlow/workflows/Security%20Scan/badge.svg)](https://github.com/hermesflow/HermesFlow/actions/workflows/security-scan.yml)
+
 ## 📋 项目简介
 
 HermesFlow 是一个面向个人使用的多租户量化交易平台，采用微服务架构，支持多交易所数据采集、策略开发、风险控制和自动化执行。
@@ -53,33 +60,48 @@ HermesFlow/
 
 ## 🚀 CI/CD 流程
 
+### 自动化流水线
+
+HermesFlow 使用 GitHub Actions 实现完全自动化的 CI/CD 流水线：
+
+- **多语言 CI**: Rust, Java, Python, React 独立并行构建
+- **智能检测**: 自动检测代码变更，只构建受影响的模块
+- **安全扫描**: Trivy 镜像扫描, 依赖审计, Secrets 检测
+- **基础设施**: Terraform 自动化 Azure 资源管理
+- **GitOps**: 自动更新 Helm Charts，ArgoCD 持续部署
+
 ### 环境配置
 
-- **dev环境**: 开发测试环境，对应`dev`分支
-- **main环境**: 生产环境，对应`main`分支
-- **镜像仓库**: 不同环境使用独立的Azure Container Registry
+- **dev环境**: 开发测试环境 (Azure East US)
+- **main环境**: 生产环境 (待配置)
+- **镜像仓库**: Azure Container Registry
+- **K8s集群**: Azure Kubernetes Service (AKS)
 
 ### 部署流程
 
-1. **开发者提交代码**:
-   ```bash
-   git commit -m "[module:strategy-engine] feat: 新增策略功能"
-   git push origin dev
-   ```
+1. **开发者推送代码** → GitHub Actions 触发
+2. **路径检测** → 识别变更的模块
+3. **并行构建** → Rust/Java/Python/React 独立构建
+4. **质量检查** → 
+   - 代码格式检查 (fmt, checkstyle, pylint)
+   - 单元测试 (覆盖率: Rust ≥85%, Java ≥80%, Python ≥75%)
+   - 安全扫描 (Trivy)
+5. **镜像构建** → Docker 多阶段构建
+6. **推送 ACR** → 标签: `${sha}`, `latest`
+7. **GitOps 更新** → 自动更新 values.yaml
+8. **ArgoCD 同步** → 自动部署到 K8s
 
-2. **自动构建部署**:
-   - GitHub Actions解析commit中的模块标签
-   - 调用统一构建脚本 `./scripts/build-module.sh`
-   - 构建Docker镜像并推送到对应环境的ACR
-   - 触发HermesFlow-GitOps仓库更新Helm Charts
+### 支持的工作流
 
-3. **支持的模块标签**:
-   - `[module:strategy-engine]` - 策略引擎
-   - `[module:risk-engine]` - 风控引擎  
-   - `[module:data-engine]` - 数据引擎
-   - `[module:user-management]` - 用户管理
-   - `[module:api-gateway]` - API网关
-   - `[module:frontend]` - 前端界面
+| Workflow | 触发条件 | 说明 |
+|----------|---------|------|
+| `ci-rust.yml` | Rust 代码变更 | 构建 data-engine, gateway |
+| `ci-java.yml` | Java 代码变更 | 构建 user-management, api-gateway, trading-engine |
+| `ci-python.yml` | Python 代码变更 | 构建 strategy-engine, backtest-engine, risk-engine |
+| `ci-frontend.yml` | React 代码变更 | 构建 frontend |
+| `terraform.yml` | Terraform 变更 | 基础设施部署 |
+| `security-scan.yml` | 定时/手动 | 每日安全扫描 |
+| `update-gitops.yml` | CI 成功后 | 自动更新 GitOps |
 
 ## 🛠️ 开发指南
 
@@ -118,23 +140,53 @@ HermesFlow/
 
 ## 📦 部署配置
 
+### 基础设施即代码 (IaC)
+
+使用 Terraform 管理 Azure 基础设施：
+
+```bash
+cd infrastructure/terraform/environments/dev
+terraform init
+terraform plan
+terraform apply
+```
+
+**创建的资源**:
+- Azure Kubernetes Service (AKS) - 3 nodes
+- Azure Container Registry (ACR)
+- PostgreSQL Flexible Server
+- Azure Key Vault
+- Log Analytics Workspace
+- Virtual Network + Subnets
+
+详见 [Terraform README](infrastructure/terraform/README.md) 和 [Setup Guide](infrastructure/terraform/environments/dev/SETUP.md)
+
 ### GitHub Secrets 配置
 
-在GitHub仓库Settings → Secrets中配置以下密钥：
+完整的 Secrets 配置指南: **[GitHub Secrets Setup](docs/deployment/github-secrets-setup.md)**
 
-```yaml
-# Dev环境
-DEV_AZURE_REGISTRY: hermesflow-dev-acr.azurecr.io
-DEV_AZURE_CLIENT_ID: <dev环境客户端ID>
-DEV_AZURE_CLIENT_SECRET: <dev环境客户端密钥>
+必需的 Secrets:
+```
+AZURE_CLIENT_ID           # Service Principal ID
+AZURE_CLIENT_SECRET       # Service Principal Secret
+AZURE_SUBSCRIPTION_ID     # Azure 订阅 ID
+AZURE_TENANT_ID          # Azure Tenant ID
+ACR_LOGIN_SERVER         # ACR 地址
+ACR_USERNAME             # ACR 用户名
+ACR_PASSWORD             # ACR 密码
+GITOPS_PAT               # GitOps 仓库访问令牌
+POSTGRES_ADMIN_PASSWORD  # 数据库密码
+SLACK_WEBHOOK_URL        # Slack 通知
+ALERT_EMAIL              # 告警邮箱
+```
 
-# Main环境  
-MAIN_AZURE_REGISTRY: hermesflow-main-acr.azurecr.io
-MAIN_AZURE_CLIENT_ID: <main环境客户端ID>
-MAIN_AZURE_CLIENT_SECRET: <main环境客户端密钥>
+快速配置:
+```bash
+# 使用 GitHub CLI
+gh secret set AZURE_CLIENT_ID --body "your-value"
 
-# GitOps
-GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
+# 或使用自动化脚本
+./scripts/setup-github-secrets.sh
 ```
 
 ## 🔗 相关项目
@@ -147,6 +199,7 @@ GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
 ### 核心文档
 - [系统架构文档](docs/architecture/system-architecture.md) - 系统整体架构设计
 - [开发进度跟踪](docs/progress.md) - 开发状态和里程碑
+- **[Sprint Stories](docs/stories/README.md)** ⭐ - 用户故事和Sprint计划
 - [快速参考指南](docs/QUICK-REFERENCE.md) - 常用命令和配置
 
 ### 架构设计文档 ⭐
@@ -183,10 +236,14 @@ GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
 - [数据库设计文档](docs/database/database-design.md) - PostgreSQL/ClickHouse/Redis设计
 - [开发指南](docs/development/dev-guide.md) - 开发环境搭建与工作流
 - [编码规范](docs/development/coding-standards.md) - Rust/Java/Python编码标准
-- [Docker部署指南](docs/deployment/docker-guide.md) - 容器化部署
-- [GitOps最佳实践](docs/deployment/gitops-best-practices.md) - CI/CD与GitOps工作流
 - [测试策略](docs/testing/test-strategy.md) - 测试方法和覆盖率要求
 - [监控方案](docs/operations/monitoring.md) - Prometheus+Grafana监控
+
+### DevOps 与部署
+- **[Terraform Infrastructure](infrastructure/terraform/README.md)** ⭐ - 基础设施即代码
+- **[GitHub Secrets Setup](docs/deployment/github-secrets-setup.md)** 🔐 - CI/CD 密钥配置
+- [Docker部署指南](docs/deployment/docker-guide.md) - 容器化部署
+- [GitOps最佳实践](docs/deployment/gitops-best-practices.md) - CI/CD与GitOps工作流
 
 ### CI/CD与部署
 - [CI/CD架构](docs/architecture/system-architecture.md#11-持续集成与持续部署cicd架构) - 完整的CI/CD流程设计
@@ -209,5 +266,5 @@ GITOPS_TOKEN: <HermesFlow-GitOps仓库访问令牌>
 
 ---
 
-**最后更新**: 2024年12月20日 | **版本**: v2.1.0
+**最后更新**: 2025年1月13日 | **版本**: v2.1.0 | **当前Sprint**: [Sprint 1 - DevOps Foundation](docs/stories/sprint-01/sprint-01-summary.md)
 

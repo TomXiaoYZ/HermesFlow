@@ -1,0 +1,212 @@
+name: CI - Rust Services
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+    paths:
+      - 'modules/data-engine/**'
+      - 'modules/gateway/**'
+      - '.github/workflows/ci-rust.yml'
+  pull_request:
+    paths:
+      - 'modules/data-engine/**'
+      - 'modules/gateway/**'
+      - '.github/workflows/ci-rust.yml'
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: '1.75'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      data-engine: ${{ steps.filter.outputs.data-engine }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            data-engine:
+              - 'modules/data-engine/**'
+            gateway:
+              - 'modules/gateway/**'
+
+  build-rust:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    environment: development
+    outputs:
+      image_tag: ${{ steps.docker_meta.outputs.tags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - name: data-engine
+            build: ${{ needs.detect-changes.outputs.data-engine }}
+          - name: gateway
+            build: ${{ needs.detect-changes.outputs.gateway }}
+    
+    if: |
+      needs.detect-changes.outputs.data-engine == 'true' || 
+      needs.detect-changes.outputs.gateway == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        if: matrix.module.build == 'true'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        if: matrix.module.build == 'true'
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        if: matrix.module.build == 'true'
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        if: matrix.module.build == 'true'
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        if: matrix.module.build == 'true'
+        with:
+          path: modules/${{ matrix.module.name }}/target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles(format('modules/{0}/**/Cargo.lock', matrix.module.name)) }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Run cargo fmt check
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: cargo fmt -- --check
+
+      - name: Run cargo clippy
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: cargo test --verbose --all-features
+
+      - name: Install cargo-tarpaulin
+        if: matrix.module.build == 'true' && github.event_name != 'pull_request'
+        run: cargo install cargo-tarpaulin
+
+      - name: Generate coverage report
+        if: matrix.module.build == 'true' && github.event_name != 'pull_request'
+        working-directory: modules/${{ matrix.module.name }}
+        run: |
+          cargo tarpaulin --out Xml --output-dir coverage --engine llvm
+
+      - name: Upload coverage to Codecov
+        if: matrix.module.build == 'true' && github.event_name != 'pull_request'
+        uses: codecov/codecov-action@v4
+        with:
+          file: modules/${{ matrix.module.name }}/coverage/cobertura.xml
+          flags: rust-${{ matrix.module.name }}
+          name: ${{ matrix.module.name }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Build release binary
+        if: matrix.module.build == 'true'
+        working-directory: modules/${{ matrix.module.name }}
+        run: cargo build --release
+
+      - name: Extract branch name and generate image tag
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        id: docker_meta
+        run: |
+          BRANCH_NAME=$(echo ${{ github.ref }} | sed 's/refs\/heads\///' | sed 's/\//-/g')
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          IMAGE_TAG="${BRANCH_NAME}-${SHORT_SHA}"
+          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Login to Azure Container Registry
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build and push Docker image
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        working-directory: modules/${{ matrix.module.name }}
+        run: |
+          IMAGE_TAG=${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.module.name }}:${{ steps.docker_meta.outputs.tag }}
+          IMAGE_LATEST=${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.module.name }}:latest
+          
+          docker build -t $IMAGE_TAG -t $IMAGE_LATEST .
+          docker push $IMAGE_TAG
+          docker push $IMAGE_LATEST
+          
+          echo "Pushed image: $IMAGE_TAG"
+
+      - name: Run Trivy security scan
+        if: matrix.module.build == 'true' && github.ref == 'refs/heads/main'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.module.name }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        if: matrix.module.build == 'true' && github.ref == 'refs/heads/main'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: rust-${{ matrix.module.name }}
+
+  notify:
+    needs: build-rust
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+      - name: Send Slack notification
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        run: |
+          STATUS="${{ needs.build-rust.result }}"
+          if [ "$STATUS" = "success" ]; then
+            COLOR="good"
+            MESSAGE="✅ Rust CI passed for commit ${{ github.sha }}"
+          else
+            COLOR="danger"
+            MESSAGE="❌ Rust CI failed for commit ${{ github.sha }}"
+          fi
+          
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"$COLOR\",
+                \"text\": \"$MESSAGE\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true}
+                ]
+              }]
+            }"
+
