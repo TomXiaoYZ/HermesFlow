@@ -33,7 +33,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: modules/frontend
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Run ESLint
         working-directory: modules/frontend
