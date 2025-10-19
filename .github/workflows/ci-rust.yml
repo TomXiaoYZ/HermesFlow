@@ -2,7 +2,7 @@ name: CI - Rust Services
 
 on:
   push:
-    branches: [main, develop, 'feature/**']
+    branches: [main, develop, 'feature/**', 'test/**']
     paths:
       - 'modules/data-engine/**'
       - 'modules/gateway/**'

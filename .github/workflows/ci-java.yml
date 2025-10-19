@@ -2,7 +2,7 @@ name: CI - Java Services
 
 on:
   push:
-    branches: [main, develop, 'feature/**']
+    branches: [main, develop, 'feature/**', 'test/**']
     paths:
       - 'modules/user-management/**'
       - 'modules/api-gateway/**'

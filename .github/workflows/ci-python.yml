@@ -2,7 +2,7 @@ name: CI - Python Services
 
 on:
   push:
-    branches: [main, develop, 'feature/**']
+    branches: [main, develop, 'feature/**', 'test/**']
     paths:
       - 'modules/strategy-engine/**'
       - 'modules/backtest-engine/**'
