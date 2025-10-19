@@ -2,7 +2,7 @@ name: CI - Rust Services
 
 on:
   push:
-    branches: [main, develop, 'feature/**', 'test/**']
+    branches: [main, develop]
     paths:
       - 'modules/data-engine/**'
       - 'modules/gateway/**'
@@ -134,7 +134,7 @@ jobs:
         run: cargo build --release
 
       - name: Extract branch name and generate image tag
-        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
         id: docker_meta
         run: |
           BRANCH_NAME=$(echo ${{ github.ref }} | sed 's/refs\/heads\///' | sed 's/\//-/g')
@@ -144,15 +144,15 @@ jobs:
           echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
 
       - name: Login to Azure Container Registry
-        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
         uses: azure/docker-login@v1
         with:
           login-server: ${{ secrets.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-
+      
       - name: Build and push Docker image
-        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
         working-directory: modules/${{ matrix.module.name }}
         run: |
           IMAGE_TAG=${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.module.name }}:${{ steps.docker_meta.outputs.tag }}

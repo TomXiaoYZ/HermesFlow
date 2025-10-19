@@ -8,7 +8,7 @@ on:
       - "CI - Python Services"
       - "CI - Frontend"
     types: [completed]
-    branches: [main, develop, 'feature/**', 'test/**']
+    branches: [main, develop]
 
 jobs:
   update-gitops:
