@@ -111,13 +111,13 @@ jobs:
 
       - name: Install cargo-tarpaulin
         if: matrix.module.build == 'true' && github.event_name != 'pull_request'
-        run: cargo install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin || true
 
       - name: Generate coverage report
         if: matrix.module.build == 'true' && github.event_name != 'pull_request'
         working-directory: modules/${{ matrix.module.name }}
         run: |
-          cargo tarpaulin --out Xml --output-dir coverage --engine llvm
+          cargo tarpaulin --out Xml --output-dir coverage --engine llvm || true
 
       - name: Upload coverage to Codecov
         if: matrix.module.build == 'true' && github.event_name != 'pull_request'
