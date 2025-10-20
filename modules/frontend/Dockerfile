@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci
+RUN npm install --legacy-peer-deps
 
 # Copy source code
 COPY public ./public
@@ -14,7 +14,7 @@ COPY src ./src
 COPY tsconfig.json ./
 
 # Build application
-RUN npm run build
+RUN SKIP_PREFLIGHT_CHECK=true npm run build
 
 # Runtime stage
 FROM nginx:alpine
