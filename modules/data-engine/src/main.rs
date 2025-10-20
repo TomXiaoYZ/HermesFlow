@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 
 mod health;
 
+/// Main entry point for the Data Engine service
+/// Provides health check endpoint for monitoring
 #[tokio::main]
 async fn main() {
     let app = Router::new()
