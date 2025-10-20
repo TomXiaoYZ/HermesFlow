@@ -3,17 +3,8 @@ name: CI - Java Services
 on:
   push:
     branches: [main, develop]
-    paths:
-      - 'modules/user-management/**'
-      - 'modules/api-gateway/**'
-      - 'modules/trading-engine/**'
-      - '.github/workflows/ci-java.yml'
   pull_request:
-    paths:
-      - 'modules/user-management/**'
-      - 'modules/api-gateway/**'
-      - 'modules/trading-engine/**'
-      - '.github/workflows/ci-java.yml'
+    branches: [main, develop]
   workflow_dispatch:
 
 env:
@@ -21,47 +12,81 @@ env:
   MAVEN_OPTS: -Xmx3g
 
 jobs:
-  detect-changes:
+  parse-commit:
     runs-on: ubuntu-latest
     outputs:
-      user-management: ${{ steps.filter.outputs.user-management }}
-      api-gateway: ${{ steps.filter.outputs.api-gateway }}
-      trading-engine: ${{ steps.filter.outputs.trading-engine }}
+      module: ${{ steps.parse.outputs.module }}
+      user-management: ${{ steps.set-flags.outputs.user-management }}
+      api-gateway: ${{ steps.set-flags.outputs.api-gateway }}
+      trading-engine: ${{ steps.set-flags.outputs.trading-engine }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            user-management:
-              - 'modules/user-management/**'
-            api-gateway:
-              - 'modules/api-gateway/**'
-            trading-engine:
-              - 'modules/trading-engine/**'
+      - name: Parse commit message
+        id: parse
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "Commit message: $COMMIT_MSG"
+          
+          if [[ "$COMMIT_MSG" =~ \[module:\ *([a-z-]+)\] ]]; then
+            MODULE="${BASH_REMATCH[1]}"
+            echo "module=${MODULE}" >> $GITHUB_OUTPUT
+            echo "Found module: ${MODULE}"
+          else
+            echo "module=all" >> $GITHUB_OUTPUT
+            echo "No specific module found, will build all modules"
+          fi
+      
+      - name: Set module build flags
+        id: set-flags
+        run: |
+          MODULE="${{ steps.parse.outputs.module }}"
+          
+          if [[ "$MODULE" == "all" ]]; then
+            echo "user-management=true" >> $GITHUB_OUTPUT
+            echo "api-gateway=true" >> $GITHUB_OUTPUT
+            echo "trading-engine=true" >> $GITHUB_OUTPUT
+          elif [[ "$MODULE" == "user-management" ]]; then
+            echo "user-management=true" >> $GITHUB_OUTPUT
+            echo "api-gateway=false" >> $GITHUB_OUTPUT
+            echo "trading-engine=false" >> $GITHUB_OUTPUT
+          elif [[ "$MODULE" == "api-gateway" ]]; then
+            echo "user-management=false" >> $GITHUB_OUTPUT
+            echo "api-gateway=true" >> $GITHUB_OUTPUT
+            echo "trading-engine=false" >> $GITHUB_OUTPUT
+          elif [[ "$MODULE" == "trading-engine" ]]; then
+            echo "user-management=false" >> $GITHUB_OUTPUT
+            echo "api-gateway=false" >> $GITHUB_OUTPUT
+            echo "trading-engine=true" >> $GITHUB_OUTPUT
+          else
+            echo "user-management=false" >> $GITHUB_OUTPUT
+            echo "api-gateway=false" >> $GITHUB_OUTPUT
+            echo "trading-engine=false" >> $GITHUB_OUTPUT
+          fi
 
   build-java:
-    needs: detect-changes
+    needs: parse-commit
     runs-on: ubuntu-latest
     environment: development
     outputs:
       image_tag: ${{ steps.docker_meta.outputs.tags }}
+      module: ${{ needs.parse-commit.outputs.module }}
     strategy:
       fail-fast: false
       matrix:
         module:
           - name: user-management
-            build: ${{ needs.detect-changes.outputs.user-management }}
+            build: ${{ needs.parse-commit.outputs.user-management }}
           - name: api-gateway
-            build: ${{ needs.detect-changes.outputs.api-gateway }}
+            build: ${{ needs.parse-commit.outputs.api-gateway }}
           - name: trading-engine
-            build: ${{ needs.detect-changes.outputs.trading-engine }}
+            build: ${{ needs.parse-commit.outputs.trading-engine }}
     
     if: |
-      needs.detect-changes.outputs.user-management == 'true' || 
-      needs.detect-changes.outputs.api-gateway == 'true' ||
-      needs.detect-changes.outputs.trading-engine == 'true'
+      needs.parse-commit.outputs.user-management == 'true' || 
+      needs.parse-commit.outputs.api-gateway == 'true' ||
+      needs.parse-commit.outputs.trading-engine == 'true'
     
     steps:
       - name: Checkout code

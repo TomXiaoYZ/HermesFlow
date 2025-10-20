@@ -3,15 +3,8 @@ name: CI - Rust Services
 on:
   push:
     branches: [main, develop]
-    paths:
-      - 'modules/data-engine/**'
-      - 'modules/gateway/**'
-      - '.github/workflows/ci-rust.yml'
   pull_request:
-    paths:
-      - 'modules/data-engine/**'
-      - 'modules/gateway/**'
-      - '.github/workflows/ci-rust.yml'
+    branches: [main, develop]
   workflow_dispatch:
 
 env:
@@ -19,41 +12,69 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  detect-changes:
+  parse-commit:
     runs-on: ubuntu-latest
     outputs:
-      data-engine: ${{ steps.filter.outputs.data-engine }}
-      gateway: ${{ steps.filter.outputs.gateway }}
+      module: ${{ steps.parse.outputs.module }}
+      data-engine: ${{ steps.set-flags.outputs.data-engine }}
+      gateway: ${{ steps.set-flags.outputs.gateway }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            data-engine:
-              - 'modules/data-engine/**'
-            gateway:
-              - 'modules/gateway/**'
+      - name: Parse commit message
+        id: parse
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "Commit message: $COMMIT_MSG"
+          
+          if [[ "$COMMIT_MSG" =~ \[module:\ *([a-z-]+)\] ]]; then
+            MODULE="${BASH_REMATCH[1]}"
+            echo "module=${MODULE}" >> $GITHUB_OUTPUT
+            echo "Found module: ${MODULE}"
+          else
+            echo "module=all" >> $GITHUB_OUTPUT
+            echo "No specific module found, will build all modules"
+          fi
+      
+      - name: Set module build flags
+        id: set-flags
+        run: |
+          MODULE="${{ steps.parse.outputs.module }}"
+          
+          if [[ "$MODULE" == "all" ]]; then
+            echo "data-engine=true" >> $GITHUB_OUTPUT
+            echo "gateway=true" >> $GITHUB_OUTPUT
+          elif [[ "$MODULE" == "data-engine" ]]; then
+            echo "data-engine=true" >> $GITHUB_OUTPUT
+            echo "gateway=false" >> $GITHUB_OUTPUT
+          elif [[ "$MODULE" == "gateway" ]]; then
+            echo "data-engine=false" >> $GITHUB_OUTPUT
+            echo "gateway=true" >> $GITHUB_OUTPUT
+          else
+            echo "data-engine=false" >> $GITHUB_OUTPUT
+            echo "gateway=false" >> $GITHUB_OUTPUT
+          fi
 
   build-rust:
-    needs: detect-changes
+    needs: parse-commit
     runs-on: ubuntu-latest
     environment: development
     outputs:
       image_tag: ${{ steps.docker_meta.outputs.tags }}
+      module: ${{ needs.parse-commit.outputs.module }}
     strategy:
       fail-fast: false
       matrix:
         module:
           - name: data-engine
-            build: ${{ needs.detect-changes.outputs.data-engine }}
+            build: ${{ needs.parse-commit.outputs.data-engine }}
           - name: gateway
-            build: ${{ needs.detect-changes.outputs.gateway }}
+            build: ${{ needs.parse-commit.outputs.gateway }}
     
     if: |
-      needs.detect-changes.outputs.data-engine == 'true' || 
-      needs.detect-changes.outputs.gateway == 'true'
+      needs.parse-commit.outputs.data-engine == 'true' || 
+      needs.parse-commit.outputs.gateway == 'true'
     
     steps:
       - name: Checkout code

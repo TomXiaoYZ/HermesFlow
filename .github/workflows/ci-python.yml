@@ -3,64 +3,89 @@ name: CI - Python Services
 on:
   push:
     branches: [main, develop]
-    paths:
-      - 'modules/strategy-engine/**'
-      - 'modules/backtest-engine/**'
-      - 'modules/risk-engine/**'
-      - '.github/workflows/ci-python.yml'
   pull_request:
-    paths:
-      - 'modules/strategy-engine/**'
-      - 'modules/backtest-engine/**'
-      - 'modules/risk-engine/**'
-      - '.github/workflows/ci-python.yml'
+    branches: [main, develop]
   workflow_dispatch:
 
 env:
   PYTHON_VERSION: '3.12'
 
 jobs:
-  detect-changes:
+  parse-commit:
     runs-on: ubuntu-latest
     outputs:
-      strategy-engine: ${{ steps.filter.outputs.strategy-engine }}
-      backtest-engine: ${{ steps.filter.outputs.backtest-engine }}
-      risk-engine: ${{ steps.filter.outputs.risk-engine }}
+      module: ${{ steps.parse.outputs.module }}
+      strategy-engine: ${{ steps.set-flags.outputs.strategy-engine }}
+      backtest-engine: ${{ steps.set-flags.outputs.backtest-engine }}
+      risk-engine: ${{ steps.set-flags.outputs.risk-engine }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            strategy-engine:
-              - 'modules/strategy-engine/**'
-            backtest-engine:
-              - 'modules/backtest-engine/**'
-            risk-engine:
-              - 'modules/risk-engine/**'
+      - name: Parse commit message
+        id: parse
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "Commit message: $COMMIT_MSG"
+          
+          if [[ "$COMMIT_MSG" =~ \[module:\ *([a-z-]+)\] ]]; then
+            MODULE="${BASH_REMATCH[1]}"
+            echo "module=${MODULE}" >> $GITHUB_OUTPUT
+            echo "Found module: ${MODULE}"
+          else
+            echo "module=all" >> $GITHUB_OUTPUT
+            echo "No specific module found, will build all modules"
+          fi
+      
+      - name: Set module build flags
+        id: set-flags
+        run: |
+          MODULE="${{ steps.parse.outputs.module }}"
+          
+          if [[ "$MODULE" == "all" ]]; then
+            echo "strategy-engine=true" >> $GITHUB_OUTPUT
+            echo "backtest-engine=true" >> $GITHUB_OUTPUT
+            echo "risk-engine=true" >> $GITHUB_OUTPUT
+          elif [[ "$MODULE" == "strategy-engine" ]]; then
+            echo "strategy-engine=true" >> $GITHUB_OUTPUT
+            echo "backtest-engine=false" >> $GITHUB_OUTPUT
+            echo "risk-engine=false" >> $GITHUB_OUTPUT
+          elif [[ "$MODULE" == "backtest-engine" ]]; then
+            echo "strategy-engine=false" >> $GITHUB_OUTPUT
+            echo "backtest-engine=true" >> $GITHUB_OUTPUT
+            echo "risk-engine=false" >> $GITHUB_OUTPUT
+          elif [[ "$MODULE" == "risk-engine" ]]; then
+            echo "strategy-engine=false" >> $GITHUB_OUTPUT
+            echo "backtest-engine=false" >> $GITHUB_OUTPUT
+            echo "risk-engine=true" >> $GITHUB_OUTPUT
+          else
+            echo "strategy-engine=false" >> $GITHUB_OUTPUT
+            echo "backtest-engine=false" >> $GITHUB_OUTPUT
+            echo "risk-engine=false" >> $GITHUB_OUTPUT
+          fi
 
   build-python:
-    needs: detect-changes
+    needs: parse-commit
     runs-on: ubuntu-latest
     environment: development
     outputs:
       image_tag: ${{ steps.docker_meta.outputs.tags }}
+      module: ${{ needs.parse-commit.outputs.module }}
     strategy:
       fail-fast: false
       matrix:
         module:
           - name: strategy-engine
-            build: ${{ needs.detect-changes.outputs.strategy-engine }}
+            build: ${{ needs.parse-commit.outputs.strategy-engine }}
           - name: backtest-engine
-            build: ${{ needs.detect-changes.outputs.backtest-engine }}
+            build: ${{ needs.parse-commit.outputs.backtest-engine }}
           - name: risk-engine
-            build: ${{ needs.detect-changes.outputs.risk-engine }}
+            build: ${{ needs.parse-commit.outputs.risk-engine }}
     
     if: |
-      needs.detect-changes.outputs.strategy-engine == 'true' || 
-      needs.detect-changes.outputs.backtest-engine == 'true' ||
-      needs.detect-changes.outputs.risk-engine == 'true'
+      needs.parse-commit.outputs.strategy-engine == 'true' || 
+      needs.parse-commit.outputs.backtest-engine == 'true' ||
+      needs.parse-commit.outputs.risk-engine == 'true'
     
     steps:
       - name: Checkout code

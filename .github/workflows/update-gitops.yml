@@ -37,23 +37,55 @@ jobs:
           fi
           echo "environment=$TARGET_ENV" >> $GITHUB_OUTPUT
           
-          # Determine which module was built based on the workflow name
+          # Parse commit message to get specific module
+          COMMIT_MSG="${{ github.event.workflow_run.head_commit.message }}"
+          echo "Commit message: $COMMIT_MSG"
+          
           WORKFLOW_NAME="${{ github.event.workflow_run.name }}"
           echo "Workflow: $WORKFLOW_NAME"
           
-          # Map workflow to module directories
-          if [[ "$WORKFLOW_NAME" == *"Rust"* ]]; then
-            MODULES="data-engine gateway"
-          elif [[ "$WORKFLOW_NAME" == *"Java"* ]]; then
-            MODULES="user-management api-gateway trading-engine"
-          elif [[ "$WORKFLOW_NAME" == *"Python"* ]]; then
-            MODULES="strategy-engine backtest-engine risk-engine"
-          elif [[ "$WORKFLOW_NAME" == *"Frontend"* ]]; then
-            MODULES="frontend"
+          # Extract module from commit message if present
+          if [[ "$COMMIT_MSG" =~ \[module:\ *([a-z-]+)\] ]]; then
+            SPECIFIC_MODULE="${BASH_REMATCH[1]}"
+            echo "Found specific module in commit: $SPECIFIC_MODULE"
+            
+            # Validate module belongs to this workflow
+            if [[ "$WORKFLOW_NAME" == *"Rust"* ]] && [[ "$SPECIFIC_MODULE" =~ ^(data-engine|gateway)$ ]]; then
+              MODULES="$SPECIFIC_MODULE"
+            elif [[ "$WORKFLOW_NAME" == *"Java"* ]] && [[ "$SPECIFIC_MODULE" =~ ^(user-management|api-gateway|trading-engine)$ ]]; then
+              MODULES="$SPECIFIC_MODULE"
+            elif [[ "$WORKFLOW_NAME" == *"Python"* ]] && [[ "$SPECIFIC_MODULE" =~ ^(strategy-engine|backtest-engine|risk-engine)$ ]]; then
+              MODULES="$SPECIFIC_MODULE"
+            elif [[ "$WORKFLOW_NAME" == *"Frontend"* ]] && [[ "$SPECIFIC_MODULE" == "frontend" ]]; then
+              MODULES="$SPECIFIC_MODULE"
+            else
+              # Module doesn't match workflow, use all modules for this workflow
+              if [[ "$WORKFLOW_NAME" == *"Rust"* ]]; then
+                MODULES="data-engine gateway"
+              elif [[ "$WORKFLOW_NAME" == *"Java"* ]]; then
+                MODULES="user-management api-gateway trading-engine"
+              elif [[ "$WORKFLOW_NAME" == *"Python"* ]]; then
+                MODULES="strategy-engine backtest-engine risk-engine"
+              elif [[ "$WORKFLOW_NAME" == *"Frontend"* ]]; then
+                MODULES="frontend"
+              fi
+            fi
           else
-            MODULES=""
+            # No specific module, update all modules for this workflow
+            if [[ "$WORKFLOW_NAME" == *"Rust"* ]]; then
+              MODULES="data-engine gateway"
+            elif [[ "$WORKFLOW_NAME" == *"Java"* ]]; then
+              MODULES="user-management api-gateway trading-engine"
+            elif [[ "$WORKFLOW_NAME" == *"Python"* ]]; then
+              MODULES="strategy-engine backtest-engine risk-engine"
+            elif [[ "$WORKFLOW_NAME" == *"Frontend"* ]]; then
+              MODULES="frontend"
+            else
+              MODULES=""
+            fi
           fi
           
+          echo "Modules to update: $MODULES"
           echo "modules=$MODULES" >> $GITHUB_OUTPUT
 
       - name: Checkout GitOps repository
@@ -95,8 +127,8 @@ jobs:
             if [ -f "$VALUES_FILE" ]; then
               echo "Updating $VALUES_FILE with tag $NEW_TAG"
               
-              # Update image tag
-              yq eval ".image.tag = \"$NEW_TAG\"" -i "$VALUES_FILE"
+              # Update image tag in hermesflow-microservice section
+              yq eval ".hermesflow-microservice.image.tag = \"$NEW_TAG\"" -i "$VALUES_FILE"
               
               echo "✅ Updated $MODULE to $NEW_TAG in $TARGET_ENV environment"
             else
@@ -104,7 +136,7 @@ jobs:
             fi
           done
 
-      - name: Commit and push changes
+      - name: Commit and push changes with retry
         if: steps.changes.outputs.modules != ''
         run: |
           cd gitops
@@ -134,7 +166,19 @@ jobs:
           Commit: ${{ github.event.workflow_run.head_sha }}
           Author: ${{ github.actor }}"
           
-          git push
+          # Push with retry mechanism for network issues
+          echo "Pushing changes to GitOps repository..."
+          for i in {1..5}; do
+            if git push origin main; then
+              echo "✅ Push successful"
+              exit 0
+            fi
+            echo "⚠️ Push failed, retry $i/5..."
+            sleep 10
+          done
+          
+          echo "❌ Push failed after 5 attempts"
+          exit 1
 
       - name: Notify Slack
         if: false  # Disabled: Slack notification not configured

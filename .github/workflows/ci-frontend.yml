@@ -3,24 +3,57 @@ name: CI - Frontend
 on:
   push:
     branches: [main, develop]
-    paths:
-      - 'modules/frontend/**'
-      - '.github/workflows/ci-frontend.yml'
   pull_request:
-    paths:
-      - 'modules/frontend/**'
-      - '.github/workflows/ci-frontend.yml'
+    branches: [main, develop]
   workflow_dispatch:
 
 env:
   NODE_VERSION: '20'
 
 jobs:
+  parse-commit:
+    runs-on: ubuntu-latest
+    outputs:
+      module: ${{ steps.parse.outputs.module }}
+      should_build: ${{ steps.set-flags.outputs.should_build }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Parse commit message
+        id: parse
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          echo "Commit message: $COMMIT_MSG"
+          
+          if [[ "$COMMIT_MSG" =~ \[module:\ *([a-z-]+)\] ]]; then
+            MODULE="${BASH_REMATCH[1]}"
+            echo "module=${MODULE}" >> $GITHUB_OUTPUT
+            echo "Found module: ${MODULE}"
+          else
+            echo "module=all" >> $GITHUB_OUTPUT
+            echo "No specific module found, will build all modules"
+          fi
+      
+      - name: Set build flag
+        id: set-flags
+        run: |
+          MODULE="${{ steps.parse.outputs.module }}"
+          
+          if [[ "$MODULE" == "all" ]] || [[ "$MODULE" == "frontend" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+
   build-frontend:
+    needs: parse-commit
     runs-on: ubuntu-latest
     environment: development
+    if: needs.parse-commit.outputs.should_build == 'true'
     outputs:
       image_tag: ${{ steps.docker_meta.outputs.tags }}
+      module: ${{ needs.parse-commit.outputs.module }}
     
     steps:
       - name: Checkout code
