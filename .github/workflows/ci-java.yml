@@ -26,7 +26,8 @@ jobs:
       - name: Parse commit message
         id: parse
         run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          # Get only the first line of commit message to avoid multiline issues
+          COMMIT_MSG=$(git log -1 --pretty=%s)
           echo "Commit message: $COMMIT_MSG"
           
           if [[ "$COMMIT_MSG" =~ \[module:\ *([a-z-]+)\] ]]; then
