@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       module: ${{ steps.parse.outputs.module }}
-      user-management: ${{ steps.set-flags.outputs.user-management }}
-      api-gateway: ${{ steps.set-flags.outputs.api-gateway }}
-      trading-engine: ${{ steps.set-flags.outputs.trading-engine }}
+      user-management-build: ${{ steps.set-flags.outputs.user-management-build }}
+      api-gateway-build: ${{ steps.set-flags.outputs.api-gateway-build }}
+      trading-engine-build: ${{ steps.set-flags.outputs.trading-engine-build }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,7 +26,6 @@ jobs:
       - name: Parse commit message
         id: parse
         run: |
-          # Get only the first line of commit message to avoid multiline issues
           COMMIT_MSG=$(git log -1 --pretty=%s)
           echo "Commit message: $COMMIT_MSG"
           
@@ -39,31 +38,30 @@ jobs:
             echo "No specific module found, will build all modules"
           fi
       
-      - name: Set module build flags
+      - name: Set build flags
         id: set-flags
         run: |
           MODULE="${{ steps.parse.outputs.module }}"
           
-          if [[ "$MODULE" == "all" ]]; then
-            echo "user-management=true" >> $GITHUB_OUTPUT
-            echo "api-gateway=true" >> $GITHUB_OUTPUT
-            echo "trading-engine=true" >> $GITHUB_OUTPUT
-          elif [[ "$MODULE" == "user-management" ]]; then
-            echo "user-management=true" >> $GITHUB_OUTPUT
-            echo "api-gateway=false" >> $GITHUB_OUTPUT
-            echo "trading-engine=false" >> $GITHUB_OUTPUT
-          elif [[ "$MODULE" == "api-gateway" ]]; then
-            echo "user-management=false" >> $GITHUB_OUTPUT
-            echo "api-gateway=true" >> $GITHUB_OUTPUT
-            echo "trading-engine=false" >> $GITHUB_OUTPUT
-          elif [[ "$MODULE" == "trading-engine" ]]; then
-            echo "user-management=false" >> $GITHUB_OUTPUT
-            echo "api-gateway=false" >> $GITHUB_OUTPUT
-            echo "trading-engine=true" >> $GITHUB_OUTPUT
+          # user-management
+          if [[ "$MODULE" == "all" ]] || [[ "$MODULE" == "user-management" ]]; then
+            echo "user-management-build=true" >> $GITHUB_OUTPUT
           else
-            echo "user-management=false" >> $GITHUB_OUTPUT
-            echo "api-gateway=false" >> $GITHUB_OUTPUT
-            echo "trading-engine=false" >> $GITHUB_OUTPUT
+            echo "user-management-build=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # api-gateway
+          if [[ "$MODULE" == "all" ]] || [[ "$MODULE" == "api-gateway" ]]; then
+            echo "api-gateway-build=true" >> $GITHUB_OUTPUT
+          else
+            echo "api-gateway-build=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # trading-engine
+          if [[ "$MODULE" == "all" ]] || [[ "$MODULE" == "trading-engine" ]]; then
+            echo "trading-engine-build=true" >> $GITHUB_OUTPUT
+          else
+            echo "trading-engine-build=false" >> $GITHUB_OUTPUT
           fi
 
   build-java:
@@ -72,22 +70,21 @@ jobs:
     environment: development
     outputs:
       image_tag: ${{ steps.docker_meta.outputs.tags }}
-      module: ${{ needs.parse-commit.outputs.module }}
     strategy:
       fail-fast: false
       matrix:
         module:
           - name: user-management
-            build: ${{ needs.parse-commit.outputs.user-management }}
+            build: ${{ needs.parse-commit.outputs.user-management-build }}
           - name: api-gateway
-            build: ${{ needs.parse-commit.outputs.api-gateway }}
+            build: ${{ needs.parse-commit.outputs.api-gateway-build }}
           - name: trading-engine
-            build: ${{ needs.parse-commit.outputs.trading-engine }}
+            build: ${{ needs.parse-commit.outputs.trading-engine-build }}
     
     if: |
-      needs.parse-commit.outputs.user-management == 'true' || 
-      needs.parse-commit.outputs.api-gateway == 'true' ||
-      needs.parse-commit.outputs.trading-engine == 'true'
+      needs.parse-commit.outputs.user-management-build == 'true' || 
+      needs.parse-commit.outputs.api-gateway-build == 'true' ||
+      needs.parse-commit.outputs.trading-engine-build == 'true'
     
     steps:
       - name: Checkout code
@@ -185,6 +182,20 @@ jobs:
           docker push $IMAGE_LATEST
           
           echo "Pushed image: $IMAGE_TAG"
+      
+      - name: Save built module info
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        run: |
+          mkdir -p build-info
+          echo "${{ matrix.module.name }}" >> build-info/modules.txt
+      
+      - name: Upload built modules artifact
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-built-modules-${{ matrix.module.name }}
+          path: build-info/modules.txt
+          retention-days: 1
 
       - name: Run Trivy security scan
         if: matrix.module.build == 'true' && github.ref == 'refs/heads/main'

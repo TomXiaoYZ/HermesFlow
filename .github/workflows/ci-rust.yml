@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       module: ${{ steps.parse.outputs.module }}
-      data-engine: ${{ steps.set-flags.outputs.data-engine }}
-      gateway: ${{ steps.set-flags.outputs.gateway }}
+      data-engine-build: ${{ steps.set-flags.outputs.data-engine-build }}
+      gateway-build: ${{ steps.set-flags.outputs.gateway-build }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,7 +25,6 @@ jobs:
       - name: Parse commit message
         id: parse
         run: |
-          # Get only the first line of commit message to avoid multiline issues
           COMMIT_MSG=$(git log -1 --pretty=%s)
           echo "Commit message: $COMMIT_MSG"
           
@@ -38,23 +37,23 @@ jobs:
             echo "No specific module found, will build all modules"
           fi
       
-      - name: Set module build flags
+      - name: Set build flags
         id: set-flags
         run: |
           MODULE="${{ steps.parse.outputs.module }}"
           
-          if [[ "$MODULE" == "all" ]]; then
-            echo "data-engine=true" >> $GITHUB_OUTPUT
-            echo "gateway=true" >> $GITHUB_OUTPUT
-          elif [[ "$MODULE" == "data-engine" ]]; then
-            echo "data-engine=true" >> $GITHUB_OUTPUT
-            echo "gateway=false" >> $GITHUB_OUTPUT
-          elif [[ "$MODULE" == "gateway" ]]; then
-            echo "data-engine=false" >> $GITHUB_OUTPUT
-            echo "gateway=true" >> $GITHUB_OUTPUT
+          # data-engine
+          if [[ "$MODULE" == "all" ]] || [[ "$MODULE" == "data-engine" ]]; then
+            echo "data-engine-build=true" >> $GITHUB_OUTPUT
           else
-            echo "data-engine=false" >> $GITHUB_OUTPUT
-            echo "gateway=false" >> $GITHUB_OUTPUT
+            echo "data-engine-build=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # gateway
+          if [[ "$MODULE" == "all" ]] || [[ "$MODULE" == "gateway" ]]; then
+            echo "gateway-build=true" >> $GITHUB_OUTPUT
+          else
+            echo "gateway-build=false" >> $GITHUB_OUTPUT
           fi
 
   build-rust:
@@ -63,19 +62,18 @@ jobs:
     environment: development
     outputs:
       image_tag: ${{ steps.docker_meta.outputs.tags }}
-      module: ${{ needs.parse-commit.outputs.module }}
     strategy:
       fail-fast: false
       matrix:
         module:
           - name: data-engine
-            build: ${{ needs.parse-commit.outputs.data-engine }}
+            build: ${{ needs.parse-commit.outputs.data-engine-build }}
           - name: gateway
-            build: ${{ needs.parse-commit.outputs.gateway }}
+            build: ${{ needs.parse-commit.outputs.gateway-build }}
     
     if: |
-      needs.parse-commit.outputs.data-engine == 'true' || 
-      needs.parse-commit.outputs.gateway == 'true'
+      needs.parse-commit.outputs.data-engine-build == 'true' || 
+      needs.parse-commit.outputs.gateway-build == 'true'
     
     steps:
       - name: Checkout code
@@ -185,6 +183,20 @@ jobs:
           docker push $IMAGE_LATEST
           
           echo "Pushed image: $IMAGE_TAG"
+      
+      - name: Save built module info
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        run: |
+          mkdir -p build-info
+          echo "${{ matrix.module.name }}" >> build-info/modules.txt
+      
+      - name: Upload built modules artifact
+        if: matrix.module.build == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-built-modules-${{ matrix.module.name }}
+          path: build-info/modules.txt
+          retention-days: 1
 
       - name: Run Trivy security scan
         if: matrix.module.build == 'true' && github.ref == 'refs/heads/main'

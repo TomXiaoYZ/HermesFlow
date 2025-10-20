@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       module: ${{ steps.parse.outputs.module }}
-      should_build: ${{ steps.set-flags.outputs.should_build }}
+      frontend-build: ${{ steps.set-flags.outputs.frontend-build }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,7 +23,6 @@ jobs:
       - name: Parse commit message
         id: parse
         run: |
-          # Get only the first line of commit message to avoid multiline issues
           COMMIT_MSG=$(git log -1 --pretty=%s)
           echo "Commit message: $COMMIT_MSG"
           
@@ -36,25 +35,25 @@ jobs:
             echo "No specific module found, will build all modules"
           fi
       
-      - name: Set build flag
+      - name: Set build flags
         id: set-flags
         run: |
           MODULE="${{ steps.parse.outputs.module }}"
           
+          # frontend
           if [[ "$MODULE" == "all" ]] || [[ "$MODULE" == "frontend" ]]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "frontend-build=true" >> $GITHUB_OUTPUT
           else
-            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "frontend-build=false" >> $GITHUB_OUTPUT
           fi
 
   build-frontend:
     needs: parse-commit
+    if: needs.parse-commit.outputs.frontend-build == 'true'
     runs-on: ubuntu-latest
     environment: development
-    if: needs.parse-commit.outputs.should_build == 'true'
     outputs:
       image_tag: ${{ steps.docker_meta.outputs.tags }}
-      module: ${{ needs.parse-commit.outputs.module }}
     
     steps:
       - name: Checkout code
@@ -109,7 +108,7 @@ jobs:
           echo "Bundle size: $BUNDLE_SIZE"
 
       - name: Extract branch name and generate image tag
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/')
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
         id: docker_meta
         run: |
           BRANCH_NAME=$(echo ${{ github.ref }} | sed 's/refs\/heads\///' | sed 's/\//-/g')
@@ -119,7 +118,7 @@ jobs:
           echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
           
       - name: Login to Azure Container Registry
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/')
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
         uses: azure/docker-login@v1
         with:
           login-server: ${{ secrets.ACR_LOGIN_SERVER }}
@@ -127,7 +126,7 @@ jobs:
           password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Build and push Docker image
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/')
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
         working-directory: modules/frontend
         run: |
           IMAGE_TAG=${{ secrets.ACR_LOGIN_SERVER }}/frontend:${{ steps.docker_meta.outputs.tag }}
@@ -138,6 +137,20 @@ jobs:
           docker push $IMAGE_LATEST
           
           echo "Pushed image: $IMAGE_TAG"
+      
+      - name: Save built module info
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+        run: |
+          mkdir -p build-info
+          echo "frontend" >> build-info/modules.txt
+      
+      - name: Upload built modules artifact
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-built-modules
+          path: build-info/modules.txt
+          retention-days: 1
 
       - name: Run Trivy security scan
         if: github.ref == 'refs/heads/main'
