@@ -14,6 +14,9 @@ jobs:
   update-gitops:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     
     steps:
       - name: Checkout main repository
