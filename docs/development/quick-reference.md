@@ -1,9 +1,141 @@
 # HermesFlow 快速参考指南
 
-**版本**: v2.0.0  
-**最后更新**: 2024-12-20
+**版本**: v2.1.0  
+**最后更新**: 2025-10-21
 
 本文档提供HermesFlow开发和运维过程中的常用信息快速查询。
+
+---
+
+## 🚀 CI/CD 快速命令
+
+### 触发 CI/CD 部署
+
+```bash
+# 触发单个模块部署到 Dev 环境
+git checkout develop
+git commit -m "[module: data-engine] 你的改动说明"
+git push origin develop
+
+# 触发部署到 Prod 环境
+git checkout main
+git merge develop
+git push origin main
+```
+
+### 查看部署状态
+
+```bash
+# 查看 ArgoCD 应用状态
+kubectl get applications -n argocd
+
+# 查看特定应用详情
+kubectl get application data-engine-dev -n argocd -o yaml
+
+# 查看 Pod 状态
+kubectl get pods -n hermesflow-dev
+
+# 查看最新部署的镜像标签
+kubectl get deployment data-engine-dev-hermesflow-microservice -n hermesflow-dev \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+### ArgoCD UI 访问
+
+```bash
+# 启动端口转发（在单独的终端运行）
+kubectl port-forward svc/argocd-server -n argocd 8443:443
+
+# 浏览器访问 https://localhost:8443
+# Username: admin
+# Password: 使用以下命令获取
+kubectl get secret argocd-initial-admin-secret -n argocd \
+  -o jsonpath="{.data.password}" | base64 -D && echo
+```
+
+### 手动触发 ArgoCD 同步
+
+```bash
+# 触发同步（如果 auto-sync 未启用）
+kubectl patch application data-engine-dev -n argocd \
+  --type merge \
+  -p '{"operation":{"sync":{"revision":"HEAD"}}}'
+
+# 强制刷新（忽略缓存）
+kubectl patch application data-engine-dev -n argocd \
+  --type merge \
+  -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
+```
+
+### 查看 CI/CD 日志
+
+```bash
+# 查看 GitHub Actions 运行状态（浏览器）
+# https://github.com/TomXiaoYZ/HermesFlow/actions
+
+# 查看 ArgoCD 应用事件
+kubectl describe application data-engine-dev -n argocd
+
+# 查看 Pod 日志
+kubectl logs -n hermesflow-dev -l app.kubernetes.io/instance=data-engine-dev --tail=100
+
+# 实时跟踪日志
+kubectl logs -n hermesflow-dev -l app.kubernetes.io/instance=data-engine-dev -f
+```
+
+### 回滚部署
+
+```bash
+# 方法1: 通过 GitOps 仓库回滚
+cd /path/to/HermesFlow-GitOps
+git log --oneline apps/dev/data-engine/values.yaml
+git revert <commit-sha>
+git push origin main
+
+# 方法2: 手动修改镜像标签
+cd /path/to/HermesFlow-GitOps
+# 编辑 apps/dev/data-engine/values.yaml
+# 修改 tag 为之前的版本
+git commit -m "chore(dev): rollback data-engine to previous version"
+git push origin main
+
+# ArgoCD 会在 3 分钟内自动同步回滚
+```
+
+### Kubernetes 上下文切换
+
+```bash
+# 查看可用的 contexts
+kubectl config get-contexts
+
+# 切换到 Dev AKS
+kubectl config use-context hermesflow-dev-aks-admin
+
+# 切换到 Prod AKS（如果存在）
+kubectl config use-context hermesflow-prod-aks-admin
+
+# 查看当前 context
+kubectl config current-context
+```
+
+### 常见故障排查
+
+```bash
+# 检查 ArgoCD 应用健康状态
+kubectl get application -n argocd
+
+# 查看同步失败原因
+kubectl get application data-engine-dev -n argocd -o yaml | grep -A 10 "message:"
+
+# 查看 Pod 失败原因
+kubectl describe pod <pod-name> -n hermesflow-dev | tail -30
+
+# 查看 ReplicaSet 事件
+kubectl describe replicaset -n hermesflow-dev | grep -A 5 "Events:"
+
+# 检查镜像拉取状态
+kubectl get events -n hermesflow-dev --sort-by='.lastTimestamp' | grep -i image
+```
 
 ---
 
