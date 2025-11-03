@@ -1,0 +1,43 @@
+# Default configuration for data-engine
+
+[server]
+host = "0.0.0.0"
+port = 8080
+shutdown_timeout_secs = 30
+
+[redis]
+url = "redis://localhost:6379"
+pool_size = 10
+ttl_secs = 86400  # 24 hours
+
+[clickhouse]
+url = "tcp://localhost:9000"
+database = "hermesflow"
+username = "default"
+password = ""
+batch_size = 1000
+flush_interval_ms = 5000  # 5 seconds
+
+# Example data source configuration
+[[data_sources]]
+name = "binance_spot"
+source_type = "BinanceSpot"
+enabled = false  # Disabled by default in framework-only mode
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+[performance]
+channel_buffer_size = 10000
+max_reconnect_attempts = 5
+reconnect_delay_secs = 5
+health_check_interval_secs = 10
+
+[logging]
+level = "info"
+format = "json"
+output = "stdout"
+
+
+
+
+
+

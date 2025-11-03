@@ -1,0 +1,22 @@
+# Development environment overrides
+
+[server]
+port = 8080
+
+[redis]
+url = "redis://localhost:6379"
+
+[clickhouse]
+url = "tcp://localhost:9000"
+database = "hermesflow_dev"
+
+[logging]
+level = "debug"
+format = "pretty"
+output = "stdout"
+
+
+
+
+
+
