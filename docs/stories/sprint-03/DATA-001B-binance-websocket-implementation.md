@@ -1,8 +1,8 @@
 # DATA-001B: Binance WebSocket Implementation
 
-**Status**: 📋 **PLANNED** - Ready for Sprint 3  
-**Version**: 1.0 (Draft)  
-**Date**: 2025-10-22  
+**Status**: ✅ **READY** - Ready for Sprint 3  
+**Version**: 2.0 (Updated for Sprint 3)  
+**Date**: 2025-11-02  
 **Epic**: Epic 1 - Cryptocurrency Data Collection  
 **Story Points**: 5 SP  
 **Priority**: P0 🔴 Critical  
@@ -32,8 +32,8 @@
 
 | Dependency | Status | Notes |
 |------------|--------|-------|
-| **DATA-001A Complete** | ⏳ Sprint 2 | Framework must be fully operational |
-| **Framework Validated** | ⏳ Sprint 2 | Mock OKX test passed |
+| **DATA-001A Complete** | ✅ **完成** | Framework fully operational (2025-11-02) |
+| **Framework Validated** | ✅ **完成** | Mock OKX test passed (3/3 integration tests) |
 | **Redis Production** | 🟡 Needed | Azure Redis Cache or self-hosted |
 | **ClickHouse Production** | 🟡 Needed | Azure VM or managed service |
 | **Binance API Access** | ✅ Ready | Public WebSocket API (no auth for market data) |
@@ -933,8 +933,167 @@ spec:
 
 ---
 
-**Version**: 1.0 (Draft)  
-**Status**: 📋 **PLANNED** - Pending DATA-001A completion
+## 🔧 实施说明（基于 DATA-001A 完成情况）
+
+### 框架就绪状态
+
+**DATA-001A 已完成（2025-11-02）**，以下组件已就绪，可直接使用：
+
+#### 1. DataSourceConnector Trait
+```rust
+// 位置: modules/data-engine/src/traits/connector.rs
+// 状态: ✅ 完成，已通过 6 个单元测试
+use data_engine::traits::DataSourceConnector;
+use data_engine::models::{DataSourceType, AssetType, StandardMarketData};
+use tokio::sync::mpsc;
+
+#[async_trait]
+impl DataSourceConnector for BinanceConnector {
+    fn source_type(&self) -> DataSourceType {
+        DataSourceType::BinanceSpot  // 或 BinancePerp, BinanceFutures
+    }
+    
+    fn supported_assets(&self) -> Vec<AssetType> {
+        vec![AssetType::Spot]  // 根据实际支持的类型
+    }
+    
+    async fn connect(&mut self) -> Result<mpsc::Receiver<StandardMarketData>> {
+        // 实现 WebSocket 连接和订阅逻辑
+        // 返回 Receiver channel
+    }
+    
+    async fn disconnect(&mut self) -> Result<()> {
+        // 实现断开连接逻辑
+    }
+    
+    async fn is_healthy(&self) -> bool {
+        // 检查连接状态
+    }
+    
+    fn stats(&self) -> ConnectorStats {
+        // 返回连接统计信息
+    }
+}
+```
+
+#### 2. MessageParser Trait + ParserRegistry
+```rust
+// 位置: modules/data-engine/src/traits/parser.rs
+// 位置: modules/data-engine/src/registry/parser_registry.rs
+// 状态: ✅ 完成，已通过 11 个单元测试
+
+use data_engine::traits::MessageParser;
+use data_engine::registry::ParserRegistry;
+use std::sync::Arc;
+
+// 实现 BinanceParser
+#[async_trait]
+impl MessageParser for BinanceParser {
+    fn source_type(&self) -> DataSourceType {
+        DataSourceType::BinanceSpot
+    }
+    
+    async fn parse(&self, raw: &str) -> Result<Option<StandardMarketData>> {
+        // 解析 Binance WebSocket 消息
+        // 返回 Ok(None) 如果消息应被忽略（心跳等）
+    }
+    
+    fn validate(&self, raw: &str) -> bool {
+        // 验证消息格式
+    }
+}
+
+// 注册到 ParserRegistry
+let mut registry = ParserRegistry::new();
+let parser = Arc::new(BinanceParser::new(DataSourceType::BinanceSpot));
+registry.register(parser);
+```
+
+#### 3. Redis 缓存集成
+```rust
+// 位置: modules/data-engine/src/storage/redis.rs
+// 状态: ✅ 完成，已通过 2 个单元测试
+
+use data_engine::storage::RedisCache;
+
+let mut redis = RedisCache::new(&config.redis.url, config.redis.ttl_secs).await?;
+
+// 存储最新价格
+redis.store_latest(&market_data).await?;
+
+// 获取最新价格
+let latest = redis.get_latest("BinanceSpot", "BTCUSDT").await?;
+```
+
+#### 4. ClickHouse 存储集成
+```rust
+// 位置: modules/data-engine/src/storage/clickhouse.rs
+// 状态: ✅ 完成框架，批量写入逻辑待完善（Sprint 3）
+
+use data_engine::storage::ClickHouseWriter;
+
+let mut clickhouse = ClickHouseWriter::new(
+    &config.clickhouse.url,
+    &config.clickhouse.database,
+    config.clickhouse.batch_size,
+    config.clickhouse.flush_interval_ms,
+)?;
+
+// 写入数据（批量）
+clickhouse.write(market_data).await?;
+
+// 手动刷新（或等待自动刷新）
+clickhouse.flush().await?;
+```
+
+### 实施注意事项
+
+1. **ClickHouse 插入逻辑**：
+   - 当前 `ClickHouseWriter::flush()` 为占位符实现（仅日志输出）
+   - Sprint 3 需要实现实际的 `Row` trait 序列化
+   - 参考：`modules/data-engine/src/storage/clickhouse.rs:85-95`
+
+2. **标准数据模型**：
+   - 使用 `StandardMarketData` 结构体
+   - 确保所有字段正确映射（symbol, price, timestamp 等）
+   - 使用 `Decimal` 类型处理价格（不是 `f64`）
+
+3. **错误处理**：
+   - 使用 `DataError` 枚举
+   - 利用 `retry_with_backoff()` 函数进行重试
+   - 参考：`modules/data-engine/src/error.rs`
+
+4. **监控和日志**：
+   - 使用 `tracing` 宏进行结构化日志
+   - Prometheus 指标已集成，直接使用即可
+   - 参考：`modules/data-engine/src/monitoring/`
+
+### 快速开始检查清单
+
+- [ ] 创建 `src/connectors/binance.rs` 模块
+- [ ] 实现 `BinanceConnector`（实现 `DataSourceConnector` trait）
+- [ ] 创建 `src/parsers/binance_parser.rs` 模块
+- [ ] 实现 `BinanceParser`（实现 `MessageParser` trait）
+- [ ] 在 `main.rs` 中注册 parser 到 `ParserRegistry`
+- [ ] 实现 WebSocket 连接和订阅逻辑
+- [ ] 实现消息解析（trade, ticker, kline, depth）
+- [ ] 集成 Redis 缓存（存储最新价格）
+- [ ] 完善 ClickHouse 批量写入逻辑
+- [ ] 实现自动重连机制（指数退避）
+- [ ] 编写单元测试和集成测试
+- [ ] 执行性能测试（10k msg/s）
+- [ ] 24 小时稳定性测试
+
+### 参考文档
+
+- **框架架构**: `docs/architecture/data-engine-architecture.md`
+- **集成指南**: `docs/guides/adding-new-data-source.md`
+- **Mock OKX 示例**: `modules/data-engine/tests/extensibility_test.rs`
+
+---
+
+**Version**: 2.0 (Updated for Sprint 3)  
+**Status**: ✅ **READY** - DATA-001A 已完成，可立即开始开发
 
 
 
