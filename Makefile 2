@@ -35,8 +35,6 @@ setup:
 	@echo ">>> 🦀 Verifying Rust Toolchain..."
 	cd services/data-engine && cargo check
 	cd services/gateway && cargo check
-	@echo ">>> ⚛️ Setting up Frontend..."
-	cd services/web && npm install
 	@echo "✅ Setup Complete. Activate with: source $(VENV)/bin/activate"
 
 lint:
@@ -46,9 +44,6 @@ lint:
 	@echo ">>> 🦀 Linting Rust..."
 	cd services/data-engine && cargo clippy -- -D warnings
 	cd services/gateway && cargo clippy -- -D warnings
-	@echo ">>> ⚛️ Linting Frontend..."
-	# Assuming 'npm run lint' exists or default to tsc
-	cd services/web && npm run build -- --emptyOutDir # Basic check
 
 test:
 	@echo ">>> 🐍 Testing Python..."
@@ -56,8 +51,6 @@ test:
 	@echo ">>> 🦀 Testing Rust..."
 	cd services/data-engine && cargo test
 	cd services/gateway && cargo test
-	@echo ">>> ⚛️ Testing Frontend..."
-	# cd services/web && npm test
 
 build:
 	docker compose build

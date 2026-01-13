@@ -1,6 +1,22 @@
 version: '3.8'
 
 services:
+  # Web Frontend (React + Vite)
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+      args:
+        - VITE_API_URL=/api
+    container_name: web
+    ports:
+      - "80:80"
+    networks:
+      - hermesflow
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
   # Gateway (Rust Entry Point)
   gateway:
     build:
@@ -8,7 +24,7 @@ services:
       dockerfile: services/gateway/Dockerfile
     container_name: gateway
     ports:
-      - "3000:8080"
+      - "8080:8080" # Exposed directly as backup/API access
     environment:
       - RUST_LOG=info
     networks:
