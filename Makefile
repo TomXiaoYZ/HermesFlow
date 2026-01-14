@@ -12,17 +12,21 @@ help:
 	@echo "HermesFlow Development Commands"
 	@echo "==============================="
 	@echo "Dev Environment (Isolated in $(VENV)):"
-	@echo "  make setup    - Create .venv and install all dependencies"
-	@echo "  make lint     - Run linters via .venv"
-	@echo "  make test     - Run tests via .venv"
+	@echo "  make setup      - Create .venv and install all dependencies"
+	@echo "  make lint       - Run linters via .venv"
+	@echo "  make test       - Run tests via .venv"
+	@echo "Web (Frontend):"
+	@echo "  make web-setup  - Install frontend dependencies"
+	@echo "  make web-dev    - Start frontend dev server"
+	@echo "  make web-build  - Build frontend for production"
 	@echo "Docker:"
-	@echo "  make build    - Build all docker images"
-	@echo "  make up       - Start services locally"
-	@echo "  make down     - Stop services"
-	@echo "  make logs     - View logs"
+	@echo "  make build      - Build all docker images"
+	@echo "  make up         - Start services locally"
+	@echo "  make down       - Stop services"
+	@echo "  make logs       - View logs"
 
 setup:
-	@echo ">>> � Setting up Virtual Environment ($(VENV))..."
+	@echo ">>> 🐍 Setting up Virtual Environment ($(VENV))..."
 	test -d $(VENV) || python3 -m venv $(VENV)
 	@echo ">>> 📦 Installing Dependencies..."
 	$(PIP) install --upgrade pip setuptools wheel
@@ -35,9 +39,20 @@ setup:
 	@echo ">>> 🦀 Verifying Rust Toolchain..."
 	cd services/data-engine && cargo check
 	cd services/gateway && cargo check
+	@$(MAKE) web-setup
+	@echo "✅ Setup Complete. Activate with: source $(VENV)/bin/activate"
+
+web-setup:
 	@echo ">>> ⚛️ Setting up Frontend..."
 	cd services/web && npm install
-	@echo "✅ Setup Complete. Activate with: source $(VENV)/bin/activate"
+
+web-dev:
+	@echo ">>> ⚛️ Starting Frontend Dev Server..."
+	cd services/web && npm run dev
+
+web-build:
+	@echo ">>> ⚛️ Building Frontend..."
+	cd services/web && npm run build
 
 lint:
 	@echo ">>> 🐍 Linting Python..."
@@ -47,7 +62,6 @@ lint:
 	cd services/data-engine && cargo clippy -- -D warnings
 	cd services/gateway && cargo clippy -- -D warnings
 	@echo ">>> ⚛️ Linting Frontend..."
-	# Assuming 'npm run lint' exists or default to tsc
 	cd services/web && npm run build -- --emptyOutDir # Basic check
 
 test:
@@ -75,6 +89,7 @@ clean:
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 	find . -type d -name ".ruff_cache" -exec rm -rf {} +
 	find . -type d -name "target" -exec rm -rf {} +
+	rm -rf services/web/node_modules services/web/dist
 
 logs:
 	docker compose logs -f
