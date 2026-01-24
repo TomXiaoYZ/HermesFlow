@@ -111,7 +111,9 @@ impl ClickHouseWriter {
     pub async fn create_schema(&self) -> Result<()> {
         tracing::info!("Creating ClickHouse schema");
 
-        let schema_sql = include_str!("../../../../infrastructure/database/clickhouse/migrations/002_clickhouse_ticks.sql");
+        let schema_sql = include_str!(
+            "../../../../infrastructure/database/clickhouse/migrations/002_clickhouse_ticks.sql"
+        );
 
         self.client
             .query(schema_sql)

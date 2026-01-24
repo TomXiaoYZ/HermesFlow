@@ -1,0 +1,25 @@
+target/
+**/target/
+node_modules/
+**/node_modules/
+.git/
+.venv/
+__pycache__/
+**/__pycache__/
+*.log
+.env
+.DS_Store
+.idea/
+.vscode/
+.next/
+**/.next/
+services/data-engine/target/
+services/strategy-engine/target/
+services/execution-engine/target/
+services/backtest-engine/target/
+
+# Terraform state files
+*.tfstate
+*.tfstate.backup
+.terraform/
+infrastructure/terraform/

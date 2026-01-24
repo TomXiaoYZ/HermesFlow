@@ -1,11 +1,12 @@
 use async_trait::async_trait;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 // use tracing::error; // Removed unused import
 use crate::error::DataEngineError;
-use crate::models::{StandardMarketData, Candle};
+use crate::models::{Candle, StandardMarketData};
 use crate::repository::MarketDataRepository;
+use chrono::{TimeZone, Utc};
 
 pub struct PostgresMarketDataRepository {
     pool: PgPool,
@@ -20,6 +21,18 @@ impl PostgresMarketDataRepository {
 #[async_trait]
 impl MarketDataRepository for PostgresMarketDataRepository {
     async fn insert_snapshot(&self, data: &StandardMarketData) -> Result<(), DataEngineError> {
+        let ts = chrono::DateTime::from_timestamp(
+            data.timestamp / 1000,
+            ((data.timestamp % 1000) * 1_000_000) as u32,
+        )
+        .unwrap_or(chrono::Utc::now());
+        tracing::info!(
+            "Inserting snapshot for {}: price={}, ts={:?}",
+            data.symbol,
+            data.price,
+            ts
+        );
+
         sqlx::query(
             r#"
             INSERT INTO mkt_equity_snapshots (
@@ -69,15 +82,11 @@ impl MarketDataRepository for PostgresMarketDataRepository {
         .bind(data.price)
         .bind(data.bid)
         .bind(data.ask)
-        .bind(None::<i32>) // bid_size
-        .bind(None::<i32>) // ask_size
-        .bind(data.quantity.to_i64().unwrap_or(0)) // volume
-        .bind(None::<Decimal>) // vwap
-        .bind(data.high_24h)
-        .bind(data.low_24h)
-        .bind(None::<Decimal>) // open
-        .bind(None::<Decimal>) // prev_close
-        .bind(chrono::DateTime::from_timestamp(data.timestamp / 1000, ((data.timestamp % 1000) * 1_000_000) as u32).unwrap_or(chrono::Utc::now()))
+        .bind(data.quantity.to_i64().unwrap_or(0)) // volume ($5)
+        .bind(None::<Decimal>) // vwap ($6)
+        .bind(data.high_24h) // high ($7)
+        .bind(data.low_24h) // low ($8)
+        .bind(ts) // timestamp ($9)
         .execute(&self.pool)
         .await
         .map_err(|e| DataEngineError::DatabaseError(format!("Failed to insert equity snapshot: {}", e)))?;
@@ -88,17 +97,21 @@ impl MarketDataRepository for PostgresMarketDataRepository {
         sqlx::query(
             r#"
             INSERT INTO mkt_equity_candles (
-                symbol, resolution, open, high, low, close, volume, timestamp
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (symbol, resolution, timestamp) DO UPDATE SET
+                exchange, symbol, resolution, open, high, low, close, volume, amount, liquidity, fdv, metadata, time
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ON CONFLICT (exchange, symbol, resolution, time) DO UPDATE SET
                 open = EXCLUDED.open,
                 high = EXCLUDED.high,
                 low = EXCLUDED.low,
                 close = EXCLUDED.close,
                 volume = EXCLUDED.volume,
-                received_at = NOW()
+                amount = EXCLUDED.amount,
+                liquidity = EXCLUDED.liquidity,
+                fdv = EXCLUDED.fdv,
+                metadata = EXCLUDED.metadata
             "#
         )
+        .bind(&data.exchange)
         .bind(&data.symbol)
         .bind(&data.resolution)
         .bind(data.open)
@@ -106,10 +119,37 @@ impl MarketDataRepository for PostgresMarketDataRepository {
         .bind(data.low)
         .bind(data.close)
         .bind(data.volume)
-        .bind(data.timestamp)
+        .bind(data.amount)
+        .bind(data.liquidity)
+        .bind(data.fdv)
+        .bind(&data.metadata)
+        .bind(data.time)
         .execute(&self.pool)
         .await
         .map_err(|e| DataEngineError::DatabaseError(format!("Failed to insert candle: {}", e)))?;
         Ok(())
+    }
+
+    async fn get_active_symbols(&self) -> Result<Vec<String>, DataEngineError> {
+        let rows = sqlx::query(r#"SELECT DISTINCT symbol FROM mkt_equity_snapshots"#)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| {
+                DataEngineError::DatabaseError(format!("Failed to fetch active symbols: {}", e))
+            })?;
+
+        // Row is unlikely to be typed automatically with query(). Need to get by column name or index.
+        // Or use query_scalar if expecting 1 column.
+        // sqlx::query_scalar("SELECT DISTINCT symbol FROM mkt_equity_snapshots").fetch_all(...)
+        // returns Vec<String> directly if mapped.
+        // Let's use query_scalar for simplicity.
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                use sqlx::Row;
+                row.get::<String, _>("symbol")
+            })
+            .collect())
     }
 }

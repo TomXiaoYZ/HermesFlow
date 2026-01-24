@@ -7,6 +7,7 @@ use crate::models::StandardMarketData;
 ///
 /// This cache provides fast access to the most recent market data
 /// for each symbol, enabling low-latency queries.
+#[derive(Clone)]
 pub struct RedisCache {
     connection: ConnectionManager,
     ttl_secs: u64,
@@ -92,6 +93,15 @@ impl RedisCache {
         Ok(pong == "PONG")
     }
 
+    /// Publishes a message to a Redis channel
+    pub async fn publish(&self, channel: &str, message: &str) -> crate::error::Result<()> {
+        let mut conn = self.connection.clone();
+        redis::AsyncCommands::publish::<_, _, ()>(&mut conn, channel, message)
+            .await
+            .map_err(crate::error::DataError::RedisError)?;
+        Ok(())
+    }
+
     /// Deletes a cached entry
     pub async fn delete(&mut self, source: &str, symbol: &str) -> Result<()> {
         let key = format!("market:{}:{}:latest", source, symbol);
@@ -110,6 +120,11 @@ impl RedisCache {
     /// Gets the current TTL setting
     pub fn get_ttl(&self) -> u64 {
         self.ttl_secs
+    }
+
+    /// Returns a clone of the connection manager for executing arbitrary commands
+    pub fn get_connection(&self) -> ConnectionManager {
+        self.connection.clone()
     }
 }
 

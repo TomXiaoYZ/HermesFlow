@@ -9,6 +9,7 @@ use crate::config::AppConfig;
 use crate::monitoring::HealthMonitor;
 use crate::repository::postgres::PostgresRepositories;
 use crate::storage::{ClickHouseWriter, RedisCache};
+use crate::tasks::TaskManager;
 use crate::trading::ibkr_trader::IBKRTrader;
 
 use super::handlers;
@@ -22,6 +23,8 @@ pub struct AppState {
     pub postgres: Arc<PostgresRepositories>,
     pub health_monitor: Arc<HealthMonitor>,
     pub ibkr_trader: Option<Arc<IBKRTrader>>,
+    pub task_manager: Option<Arc<TaskManager>>,
+    pub broadcast_tx: tokio::sync::broadcast::Sender<String>,
     pub start_time: std::time::Instant,
 }
 
@@ -33,6 +36,8 @@ impl AppState {
         postgres: Arc<PostgresRepositories>,
         health_monitor: HealthMonitor,
         ibkr_trader: Option<IBKRTrader>,
+        task_manager: Option<TaskManager>,
+        broadcast_tx: tokio::sync::broadcast::Sender<String>,
     ) -> Self {
         Self {
             config: Arc::new(config),
@@ -41,6 +46,8 @@ impl AppState {
             postgres,
             health_monitor: Arc::new(health_monitor),
             ibkr_trader: ibkr_trader.map(Arc::new),
+            task_manager: task_manager.map(Arc::new),
+            broadcast_tx,
             start_time: std::time::Instant::now(),
         }
     }
@@ -51,18 +58,37 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health_check))
         .route("/metrics", get(handlers::metrics))
+        .route("/ws", get(handlers::ws_handler))
         .route(
             "/api/v1/market/:symbol/latest",
             get(handlers::get_latest_price),
         )
         .route("/api/v1/market/:symbol/history", get(handlers::get_history))
+        .route(
+            "/api/v1/jobs/backfill",
+            post(handlers::jobs::trigger_backfill_job),
+        )
+        .route(
+            "/api/v1/agent/monitoring/start",
+            post(handlers::agent::start_agent_monitoring),
+        )
         .route("/api/v1/orders", post(handlers::trading::place_order))
         .route(
             "/api/v1/orders/:id",
             delete(handlers::trading::cancel_order),
         )
         .route("/api/v1/positions", get(handlers::trading::get_positions))
-        .route("/api/v1/account", get(handlers::trading::get_account_summary))
+        .route(
+            "/api/v1/account",
+            get(handlers::trading::get_account_summary),
+        )
+        // History & Status APIs
+        .route("/api/v1/history/logs", get(handlers::history::get_logs))
+        .route("/api/v1/strategy/status", get(handlers::history::get_strategy_status))
+        .route(
+            "/api/v1/strategy/population",
+            get(handlers::get_strategy_population),
+        )
         .with_state(state)
 }
 
@@ -87,7 +113,17 @@ mod tests {
         };
 
         // For tests, we can skip Redis/ClickHouse connections
-        AppState::new(config, None, None, Arc::new(postgres), health_monitor, None)
+        let (tx, _) = tokio::sync::broadcast::channel(100);
+        AppState::new(
+            config,
+            None,
+            None,
+            Arc::new(postgres),
+            health_monitor,
+            None,
+            None,
+            tx,
+        )
     }
 
     #[tokio::test]

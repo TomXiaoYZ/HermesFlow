@@ -8,13 +8,13 @@ description = "High-performance data collection and distribution engine"
 [dependencies]
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
-tokio-tungstenite = "0.21"
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 async-trait = "0.1"
 futures = "0.3"
 futures-util = "0.3"
 
 # HTTP server
-axum = "0.7"
+axum = { version = "0.7", features = ["ws", "macros"] }
 
 # Database and cache
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager", "aio", "tokio-rustls-comp"] }
@@ -30,6 +30,7 @@ rust_decimal_macros = "1.33"
 # Configuration
 config = "0.14"
 toml = "0.8"
+dotenvy = "0.15"
 
 # Logging and tracing
 tracing = "0.1"
@@ -45,6 +46,7 @@ anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"
 uuid = { version = "1.0", features = ["serde", "v4"] }
+rand = "0.8"
 
 # URL parsing
 url = "2.5"
@@ -54,6 +56,17 @@ reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 
 # IBKR API
 ibapi = "2.5"
+clap = { version = "4.4", features = ["derive"] }
+
+# Crypto Exchange Signing
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.21"
+
+# Task Scheduling
+common = { path = "../common" }
+tokio-cron-scheduler = "0.9"
 
 [dev-dependencies]
 mockall = "0.12"

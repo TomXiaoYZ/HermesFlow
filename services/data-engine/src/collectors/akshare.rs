@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::error::{DataEngineError, Result};
+use crate::error::{DataError, Result};
 use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
 use crate::traits::{ConnectorStats, DataSourceConnector};
 
@@ -54,54 +54,78 @@ impl AkShareCollector {
 
     async fn fetch_snapshot(&self, client: &reqwest::Client) -> Result<Vec<StandardMarketData>> {
         let url = format!("{}/api/public/stock_zh_a_spot_em", self.config.aktools_url);
-        
-        let response = client.get(&url)
+
+        let response = client
+            .get(&url)
             .send()
             .await
-            .map_err(|e| DataEngineError::ConnectionError(format!("Failed to fetch AkShare data: {}", e)))?;
+            .map_err(|e| DataError::ConnectionFailed {
+                data_source: "AkShare".to_string(),
+                reason: format!("Failed to fetch AkShare data: {}", e),
+            })?;
 
         if !response.status().is_success() {
-            return Err(DataEngineError::ConnectionError(format!("AkShare API error: {}", response.status())));
+            return Err(DataError::ConnectionFailed {
+                data_source: "AkShare".to_string(),
+                reason: format!("AkShare API error: {}", response.status()),
+            });
         }
 
-        let raw_data: Vec<AkShareSpotResponse> = response.json().await
-            .map_err(|e| DataEngineError::SerializationError(format!("Failed to parse AkShare data: {}", e)))?;
+        let raw_data: Vec<AkShareSpotResponse> =
+            response.json().await.map_err(|e| DataError::ParseError {
+                data_source: "AkShare".to_string(),
+                message: format!("Failed to parse AkShare data: {}", e),
+                raw_data: String::new(),
+            })?;
 
         let mut market_data = Vec::with_capacity(raw_data.len());
         let now = Utc::now().timestamp_millis();
 
         for item in raw_data {
             if let Some(price) = item.price {
-                 // Skip invalid data
-                 if price <= 0.0 { continue; }
+                // Skip invalid data
+                if price <= 0.0 {
+                    continue;
+                }
 
-                 let price_dec = Decimal::from_f64_retain(price).unwrap_or_default();
-                 let volume_dec = item.volume.map(|v| Decimal::from_f64_retain(v).unwrap_or_default()).unwrap_or_default();
-                 
-                 let high = item.high.map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
-                 let low = item.low.map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
-                 let open = item.open.map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
-                 let prev_close = item.prev_close.map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
+                let price_dec = Decimal::from_f64_retain(price).unwrap_or_default();
+                let volume_dec = item
+                    .volume
+                    .map(|v| Decimal::from_f64_retain(v).unwrap_or_default())
+                    .unwrap_or_default();
 
-                 let mut data = StandardMarketData::new(
-                     DataSourceType::AkShare,
-                     item.symbol, // e.g., "600519"
-                     AssetType::Spot,
-                     MarketDataType::Ticker, // Use Ticker for snapshot
-                     price_dec,
-                     volume_dec,
-                     now,
-                 );
+                let high = item
+                    .high
+                    .map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
+                let low = item
+                    .low
+                    .map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
+                let open = item
+                    .open
+                    .map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
+                let prev_close = item
+                    .prev_close
+                    .map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
 
-                 data.high_24h = high;
-                 data.low_24h = low;
-                 data.raw_data = item.name; // Store Chinese name in raw_data or elsewhere? Using raw_data for now.
-                 
-                 // Enrich with valid metadata if we want
-                 // data.bid/ask are not available in this specific bulk endpoint usually, 
-                 // unless we query individual stocks.
+                let mut data = StandardMarketData::new(
+                    DataSourceType::AkShare,
+                    item.symbol, // e.g., "600519"
+                    AssetType::Spot,
+                    MarketDataType::Ticker, // Use Ticker for snapshot
+                    price_dec,
+                    volume_dec,
+                    now,
+                );
 
-                 market_data.push(data);
+                data.high_24h = high;
+                data.low_24h = low;
+                data.raw_data = item.name; // Store Chinese name in raw_data or elsewhere? Using raw_data for now.
+
+                // Enrich with valid metadata if we want
+                // data.bid/ask are not available in this specific bulk endpoint usually,
+                // unless we query individual stocks.
+
+                market_data.push(data);
             }
         }
 
@@ -123,25 +147,29 @@ impl DataSourceConnector for AkShareCollector {
         self.running = true;
         let (tx, rx) = mpsc::channel(10000); // Large buffer for full market snapshot
         let config = self.config.clone();
-        
+
         tokio::spawn(async move {
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()
                 .unwrap_or_default();
 
-            let mut interval = tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(config.poll_interval_secs));
 
-            info!("AkShare collector started polling every {}s", config.poll_interval_secs);
+            info!(
+                "AkShare collector started polling every {}s",
+                config.poll_interval_secs
+            );
 
             loop {
                 interval.tick().await;
-                
-                // We create a new collector instance just to use the fetch method logic, 
+
+                // We create a new collector instance just to use the fetch method logic,
                 // or refactor fetch_snapshot to be static/associated?
                 // For simplicity, we implement logic here or create a temporary struct.
                 // Let's refactor: fetch_snapshot can be associated function if we pass URL.
-                
+
                 let url = format!("{}/api/public/stock_zh_a_spot_em", config.aktools_url);
                 match client.get(&url).send().await {
                     Ok(resp) => {
@@ -152,14 +180,26 @@ impl DataSourceConnector for AkShareCollector {
                                     let mut count = 0;
                                     for item in data {
                                         if let Some(price) = item.price {
-                                            if price <= 0.0 { continue; }
-                                            
-                                            let price_dec = Decimal::from_f64_retain(price).unwrap_or_default();
-                                            let volume_dec = item.volume.map(|v| Decimal::from_f64_retain(v).unwrap_or_default()).unwrap_or_default();
-                                            
+                                            if price <= 0.0 {
+                                                continue;
+                                            }
+
+                                            let price_dec =
+                                                Decimal::from_f64_retain(price).unwrap_or_default();
+                                            let volume_dec = item
+                                                .volume
+                                                .map(|v| {
+                                                    Decimal::from_f64_retain(v).unwrap_or_default()
+                                                })
+                                                .unwrap_or_default();
+
                                             // Optional fields
-                                            let high = item.high.map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
-                                            let low = item.low.map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
+                                            let high = item.high.map(|v| {
+                                                Decimal::from_f64_retain(v).unwrap_or_default()
+                                            });
+                                            let low = item.low.map(|v| {
+                                                Decimal::from_f64_retain(v).unwrap_or_default()
+                                            });
 
                                             let mut mk_data = StandardMarketData::new(
                                                 DataSourceType::AkShare,

@@ -1,8 +1,8 @@
+use crate::error::DataEngineError;
+use crate::models::{MarketOutcome, PredictionMarket};
+use crate::repository::PredictionRepository;
 use async_trait::async_trait;
 use sqlx::PgPool;
-use crate::error::DataEngineError;
-use crate::models::{PredictionMarket, MarketOutcome};
-use crate::repository::PredictionRepository;
 
 pub struct PostgresPredictionRepository {
     pool: PgPool,
@@ -17,7 +17,8 @@ impl PostgresPredictionRepository {
 #[async_trait]
 impl PredictionRepository for PostgresPredictionRepository {
     async fn upsert_market(&self, market: &PredictionMarket) -> Result<(), DataEngineError> {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             INSERT INTO prediction_markets (
                 id, source, title, description, category, end_date, active, metadata
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -29,7 +30,8 @@ impl PredictionRepository for PostgresPredictionRepository {
                 active = EXCLUDED.active,
                 metadata = EXCLUDED.metadata,
                 updated_at = NOW()
-        "#)
+        "#,
+        )
         .bind(&market.id)
         .bind(&market.source)
         .bind(&market.title)
@@ -44,13 +46,19 @@ impl PredictionRepository for PostgresPredictionRepository {
         Ok(())
     }
 
-    async fn insert_outcome(&self, outcome: &MarketOutcome) -> Result<(), DataEngineError> {
-        sqlx::query(r#"
+    async fn insert_outcome(
+        &self,
+        market_id: &str,
+        outcome: &MarketOutcome,
+    ) -> Result<(), DataEngineError> {
+        sqlx::query(
+            r#"
             INSERT INTO market_outcomes (market_id, outcome, price, volume_24h, timestamp)
             VALUES ($1, $2, $3, $4, NOW())
             ON CONFLICT (market_id, outcome, timestamp) DO NOTHING
-        "#)
-        .bind(&outcome.market_id)
+        "#,
+        )
+        .bind(market_id)
         .bind(&outcome.outcome)
         .bind(outcome.price)
         .bind(outcome.volume_24h)

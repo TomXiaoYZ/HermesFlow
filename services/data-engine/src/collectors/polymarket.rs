@@ -1,6 +1,6 @@
 use crate::config::PolymarketConfig;
-use tokio::sync::broadcast::Receiver;
 use crate::error::Result;
+use tokio::sync::broadcast::Receiver;
 
 pub struct PolymarketCollector {
     config: PolymarketConfig,

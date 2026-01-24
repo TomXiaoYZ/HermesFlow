@@ -44,6 +44,11 @@ pub struct StandardMarketData {
     /// Funding rate (for perpetuals)
     pub funding_rate: Option<Decimal>,
 
+    /// DEX Liquidity (for meme coins)
+    pub liquidity: Option<Decimal>,
+    /// Fully Diluted Valuation
+    pub fdv: Option<Decimal>,
+
     // Metadata
     /// Sequence ID for message ordering
     pub sequence_id: Option<u64>,
@@ -70,6 +75,8 @@ impl Default for StandardMarketData {
             volume_24h: None,
             open_interest: None,
             funding_rate: None,
+            liquidity: None,
+            fdv: None,
             sequence_id: None,
             raw_data: String::new(),
         }

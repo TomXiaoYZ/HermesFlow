@@ -14,36 +14,31 @@ pub struct SocialData {
     pub created_at: DateTime<Utc>,
     /// When we received the data
     pub received_at: DateTime<Utc>,
-    
+
     // User metadata
     pub user_id: Option<i64>,
-    pub followers_count: Option<i32>,  // Match DB field name
-    pub verified: bool,                 // Match DB field name
-    
+    pub followers_count: Option<i32>, // Match DB field name
+    pub verified: bool,               // Match DB field name
+
     // Engagement metrics
     pub retweet_count: i32,
     pub favorite_count: i32,
     pub reply_count: i32,
     pub quote_count: i32,
-    
+
     // Tweet characteristics
     pub is_retweet: bool,
     pub is_reply: bool,
     pub hashtags: Vec<String>,
     pub media_urls: Vec<String>,
-    
+
     // Raw JSON for debugging
     pub raw_data: serde_json::Value,
 }
 
 impl SocialData {
     /// Creates a new SocialData instance
-    pub fn new(
-        id: i64,
-        username: String,
-        text: String,
-        created_at: DateTime<Utc>,
-    ) -> Self {
+    pub fn new(id: i64, username: String, text: String, created_at: DateTime<Utc>) -> Self {
         Self {
             id,
             username,
@@ -75,8 +70,7 @@ impl SocialData {
 
     /// Checks if this is a high-engagement tweet
     pub fn is_high_engagement(&self, threshold: i32) -> bool {
-        (self.retweet_count + self.favorite_count + 
-         self.reply_count + self.quote_count) > threshold
+        (self.retweet_count + self.favorite_count + self.reply_count + self.quote_count) > threshold
     }
 }
 
@@ -132,4 +126,3 @@ mod tests {
         assert!(!data.is_high_engagement(1000));
     }
 }
-

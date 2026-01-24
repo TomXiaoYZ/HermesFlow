@@ -1,186 +1,98 @@
 version: '3.8'
 
 services:
-  # Web Frontend (React + Vite)
-  web:
-    build:
-      context: .
-      dockerfile: services/web/Dockerfile
-      args:
-        - VITE_API_URL=/api
-    container_name: web
+  redis:
+    image: redis:alpine
     ports:
-      - "80:80"
-    networks:
-      - hermesflow
-    depends_on:
-      - gateway
+      - "6379:6379"
     restart: unless-stopped
-
-  # Gateway (Rust Entry Point)
-  gateway:
-    build:
-      context: .
-      dockerfile: services/gateway/Dockerfile
-    container_name: gateway
-    ports:
-      - "8080:8080" # Exposed directly as backup/API access
-    environment:
-      - RUST_LOG=info
-    networks:
-      - hermesflow
-    depends_on:
-      - data-engine
-    restart: unless-stopped
-
-  # Risk Engine (Python + Shared Lib)
-  risk-engine:
-    build:
-      context: .
-      dockerfile: services/risk-engine/Dockerfile
-    container_name: risk-engine
-    ports:
-      - "8030:8030"
-    environment:
-      - APP_ENV=dev
-    networks:
-      - hermesflow
-    restart: unless-stopped
-
-  # Strategy Engine (Python + Shared Lib)
-  strategy-engine:
-    build:
-      context: .
-      dockerfile: services/strategy-engine/Dockerfile
-    container_name: strategy-engine
-    ports:
-      - "8040:8040"
-    environment:
-      - APP_ENV=dev
-    networks:
-      - hermesflow
-    restart: unless-stopped
-
-  # Twitter scraper microservice (Python + Playwright)
-  twitter-scraper:
-    build:
-      context: ./services/twitter-scraper
-      dockerfile: Dockerfile
-    container_name: twitter-scraper
-    ports:
-      - "8000:8000"
-    environment:
-      - TWITTER_USERNAME=${TWITTER_USERNAME:-tomxiaoyzz}
-      - TWITTER_EMAIL=${TWITTER_EMAIL:-tom.xiao@hotmail.com}
-      - TWITTER_PASSWORD=${TWITTER_PASSWORD}
     volumes:
-      - twitter-data:/app/data
-    networks:
-      - hermesflow
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - redis_data:/data
 
-  # Data engine (Rust)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - hermesflow_postgres-data:/var/lib/postgresql/data
+    restart: always
+
   data-engine:
     build:
       context: .
       dockerfile: services/data-engine/Dockerfile
-    container_name: data-engine
     ports:
       - "8080:8080"
     environment:
-      - RUST_LOG=info
-      - APP_ENV=dev
-      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-hermes}
-      - REDIS_URL=redis://redis:6379
-      # Config Overrides
-      - DATA_ENGINE__POSTGRES__HOST=timescaledb
-      - DATA_ENGINE__POSTGRES__USERNAME=${POSTGRES_USER:-postgres}
-      - DATA_ENGINE__POSTGRES__PASSWORD=${POSTGRES_PASSWORD}
-      - DATA_ENGINE__POSTGRES__DATABASE=${POSTGRES_DB:-hermes}
+      - RUST_ENV=prod
       - DATA_ENGINE__REDIS__URL=redis://redis:6379
-      - DATA_ENGINE__CLICKHOUSE__URL=tcp://clickhouse:9000
-      - DATA_ENGINE__AKSHARE__AKTOOLS_URL=http://aktools:8080
+      - DATA_ENGINE__POSTGRES__HOST=timescaledb
+      - DATA_ENGINE__POSTGRES__PASSWORD=password
+      - DATA_ENGINE__SERVER__HOST=0.0.0.0
+      - DATA_ENGINE__BIRDEYE__API_KEY=${DATA_ENGINE__BIRDEYE__API_KEY}
+      - DATA_ENGINE__HELIUS__API_KEY=${DATA_ENGINE__HELIUS__API_KEY}
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL}
+      # Add API keys here or in .env
     depends_on:
-      - twitter-scraper
-      - timescaledb
       - redis
-      - ib-gateway
-      - aktools
-    networks:
-      - hermesflow
-    restart: unless-stopped
+      - timescaledb
+    restart: always
 
-  # TimescaleDB (Postgres optimized for time-series)
-  timescaledb:
-    image: timescaledb/timescaledb:latest-pg16
-    container_name: timescaledb
+  strategy-engine:
+    build:
+      context: .
+      dockerfile: services/strategy-engine/Dockerfile
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB:-hermes}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - hermesflow
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - RUST_LOG=info
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - data-engine
+    restart: always
 
-  # Redis (Cache)
-  redis:
-    image: redis:alpine
-    container_name: redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    networks:
-      - hermesflow
-    restart: unless-stopped
-
-  # IB Gateway (US Stocks/Options)
-  ib-gateway:
-    image: ghcr.io/gnzsnz/ib-gateway:latest
-    container_name: ib-gateway
+  execution-engine:
+    build:
+      context: .
+      dockerfile: services/execution-engine/Dockerfile
     environment:
-      - TWS_USERID=${TWS_USERID}
-      - TWS_PASSWORD=${TWS_PASSWORD}
-      - TRADING_MODE=${TRADING_MODE:-paper}
-      - VNC_SERVER_PASSWORD=${VNC_PASSWORD}
-      - IBC_EXISTING_SESSION_DETECTED_ACTION=primary
-      - IBC_OrphanedSessionDetected=yes
-    ports:
-      - "4001:4001" # API port
-      - "5900:5900" # VNC port
-    networks:
-      - hermesflow
-    restart: unless-stopped
+      - RUST_LOG=info
+      - REDIS_URL=redis://redis:6379
+      - HTTPS_PROXY=http://host.docker.internal:7897
+      - ALL_PROXY=socks5://host.docker.internal:7897
+      - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY}
+    depends_on:
+      - redis
+    restart: always
 
-  # AkTools (AkShare HTTP API for A-Shares)
-  aktools:
-    image: akfamily/aktools:latest
-    container_name: aktools
+  strategy-generator:
+    build:
+      context: .
+      dockerfile: services/strategy-generator/Dockerfile
+    environment:
+      - RUST_LOG=info
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
+    depends_on:
+      - redis
+      - timescaledb
+    restart: always
+
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
     ports:
-      - "8081:8080" # Map to 8081 host to avoid conflict
-    networks:
-      - hermesflow
-    restart: unless-stopped
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws
+      # Note: Browser connects to localhost:8080, not internal docker name
+    depends_on:
+      - data-engine
+    restart: always
 
 volumes:
-  twitter-data:
-  postgres-data:
-  redis-data:
-
-networks:
-  hermesflow:
-    driver: bridge
+  redis_data:
+  hermesflow_postgres-data:
+    external: true

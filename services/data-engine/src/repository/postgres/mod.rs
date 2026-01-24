@@ -1,21 +1,23 @@
 pub mod market_data;
-pub mod social;
-pub mod trading;
-pub mod prediction;
 pub mod migration;
+pub mod prediction;
+pub mod social;
+pub mod token;
+pub mod trading;
 
 pub use market_data::PostgresMarketDataRepository;
-pub use social::PostgresSocialRepository;
-pub use trading::PostgresTradingRepository;
-pub use prediction::PostgresPredictionRepository;
 pub use migration::MigrationManager;
+pub use prediction::PostgresPredictionRepository;
+pub use social::PostgresSocialRepository;
+pub use token::PostgresTokenRepository;
+pub use trading::PostgresTradingRepository;
 
-use sqlx::postgres::{PgPool, PgPoolOptions};
-use std::sync::Arc;
 use crate::config::PostgresConfig;
 use crate::error::DataEngineError;
+use sqlx::postgres::{PgPool, PgPoolOptions};
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, error};
+use tracing::{error, info};
 
 pub struct PostgresRepositories {
     pub pool: PgPool,
@@ -24,6 +26,7 @@ pub struct PostgresRepositories {
     pub trading: Arc<PostgresTradingRepository>,
     pub prediction: Arc<PostgresPredictionRepository>,
     pub migration: Arc<MigrationManager>,
+    pub token: Arc<PostgresTokenRepository>,
 }
 
 impl PostgresRepositories {
@@ -54,6 +57,7 @@ impl PostgresRepositories {
             trading: Arc::new(PostgresTradingRepository::new(pool.clone())),
             prediction: Arc::new(PostgresPredictionRepository::new(pool.clone())),
             migration: Arc::new(MigrationManager::new(pool.clone())),
+            token: Arc::new(PostgresTokenRepository::new(pool.clone())),
             pool,
         })
     }

@@ -1,8 +1,8 @@
-use async_trait::async_trait;
-use sqlx::PgPool;
 use crate::error::DataEngineError;
 use crate::models::SocialData;
 use crate::repository::SocialRepository;
+use async_trait::async_trait;
+use sqlx::PgPool;
 
 pub struct PostgresSocialRepository {
     pool: PgPool,
@@ -17,7 +17,8 @@ impl PostgresSocialRepository {
 #[async_trait]
 impl SocialRepository for PostgresSocialRepository {
     async fn insert_tweet(&self, data: &SocialData) -> Result<(), DataEngineError> {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             INSERT INTO tweets (
                 id, username, text, created_at, user_id, followers_count, verified,
                 retweet_count, favorite_count, reply_count, quote_count,
@@ -28,7 +29,8 @@ impl SocialRepository for PostgresSocialRepository {
                 favorite_count = EXCLUDED.favorite_count,
                 reply_count = EXCLUDED.reply_count,
                 quote_count = EXCLUDED.quote_count
-        "#)
+        "#,
+        )
         .bind(data.id)
         .bind(&data.username)
         .bind(&data.text)
@@ -51,18 +53,26 @@ impl SocialRepository for PostgresSocialRepository {
         Ok(())
     }
 
-    async fn insert_collection_run(&self, target: &str, scraped: i32, upserted: i32, error: Option<&str>) -> Result<(), DataEngineError> {
-         sqlx::query(r#"
+    async fn insert_collection_run(
+        &self,
+        target: &str,
+        scraped: i32,
+        upserted: i32,
+        error: Option<&str>,
+    ) -> Result<(), DataEngineError> {
+        sqlx::query(
+            r#"
             INSERT INTO twitter_collection_runs (target, scraped_count, upserted_count, error)
             VALUES ($1, $2, $3, $4)
-         "#)
-         .bind(target)
-         .bind(scraped)
-         .bind(upserted)
-         .bind(error)
-         .execute(&self.pool)
-         .await
-         .map_err(|e| DataEngineError::DatabaseError(format!("Failed to insert run: {}", e)))?;
-         Ok(())
+         "#,
+        )
+        .bind(target)
+        .bind(scraped)
+        .bind(upserted)
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DataEngineError::DatabaseError(format!("Failed to insert run: {}", e)))?;
+        Ok(())
     }
 }

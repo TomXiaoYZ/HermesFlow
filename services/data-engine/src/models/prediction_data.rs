@@ -186,4 +186,3 @@ mod tests {
         assert_eq!(outcome.price_percentage(), dec!(75));
     }
 }
-

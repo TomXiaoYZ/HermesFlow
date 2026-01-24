@@ -1,0 +1,77 @@
+{
+    "family": "data-engine-task",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "1024",
+    "memory": "2048",
+    "executionRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
+    "taskRoleArn": "${ECS_TASK_ROLE_ARN}",
+    "containerDefinitions": [
+        {
+            "name": "data-engine",
+            "image": "${ECR_URI}/data-engine:latest",
+            "portMappings": [
+                {
+                    "containerPort": 8080,
+                    "protocol": "tcp"
+                }
+            ],
+            "environment": [
+                {
+                    "name": "DATA_ENGINE__SERVER__HOST",
+                    "value": "0.0.0.0"
+                },
+                {
+                    "name": "RUST_ENV",
+                    "value": "prod"
+                },
+                {
+                    "name": "DATA_ENGINE__IBKR__ENABLED",
+                    "value": "true"
+                },
+                {
+                    "name": "DATA_ENGINE__IBKR__HOST",
+                    "value": "ib-gateway.hermesflow.local"
+                },
+                {
+                    "name": "DATA_ENGINE__IBKR__PORT",
+                    "value": "4001"
+                },
+                {
+                    "name": "DATA_ENGINE__IBKR__CLIENT_ID",
+                    "value": "1"
+                },
+                {
+                    "name": "DATA_ENGINE__POSTGRES__HOST",
+                    "value": "difyonawsstack-postgrescluster53e5bdab-5tvprzpxb3h6.cluster-c7q2668ayvaj.us-west-2.rds.amazonaws.com"
+                },
+                {
+                    "name": "DATA_ENGINE__POSTGRES__PORT",
+                    "value": "5432"
+                },
+                {
+                    "name": "DATA_ENGINE__POSTGRES__DATABASE",
+                    "value": "main"
+                },
+                {
+                    "name": "DATA_ENGINE__POSTGRES__USERNAME",
+                    "value": "postgres"
+                },
+                {
+                    "name": "DATA_ENGINE__POSTGRES__PASSWORD",
+                    "value": "u,d^MEMhVUo84xWhMC9,-GaJt=Bafw"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/data-engine",
+                    "awslogs-region": "us-west-2",
+                    "awslogs-stream-prefix": "data-engine"
+                }
+            }
+        }
+    ]
+}

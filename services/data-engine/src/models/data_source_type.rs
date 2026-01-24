@@ -13,6 +13,14 @@ pub enum DataSourceType {
     OkxFutures,
     OkxPerp,
 
+    // Bybit
+    BybitSpot,
+    BybitFutures,
+    BybitPerp,
+
+    // Futu
+    FutuStock,
+
     // Bitget
     BitgetSpot,
     BitgetFutures,
@@ -20,6 +28,8 @@ pub enum DataSourceType {
     // DEX
     GmgnDex,
     UniswapV3,
+    Birdeye,
+    Helius, // Added
 
     // Traditional Finance
     IbkrStock,
@@ -51,10 +61,16 @@ impl DataSourceType {
             DataSourceType::OkxSpot => "OkxSpot",
             DataSourceType::OkxFutures => "OkxFutures",
             DataSourceType::OkxPerp => "OkxPerp",
+            DataSourceType::BybitSpot => "BybitSpot",
+            DataSourceType::BybitFutures => "BybitFutures",
+            DataSourceType::BybitPerp => "BybitPerp",
+            DataSourceType::FutuStock => "FutuStock",
             DataSourceType::BitgetSpot => "BitgetSpot",
             DataSourceType::BitgetFutures => "BitgetFutures",
             DataSourceType::GmgnDex => "GmgnDex",
             DataSourceType::UniswapV3 => "UniswapV3",
+            DataSourceType::Birdeye => "Birdeye",
+            DataSourceType::Helius => "Helius", // Added
             DataSourceType::IbkrStock => "IbkrStock",
             DataSourceType::IbkrOption => "IbkrOption",
             DataSourceType::PolygonStock => "PolygonStock",
@@ -74,9 +90,15 @@ impl DataSourceType {
             | DataSourceType::BinanceFutures
             | DataSourceType::BinancePerp => "Binance",
             DataSourceType::OkxSpot | DataSourceType::OkxFutures | DataSourceType::OkxPerp => "OKX",
+            DataSourceType::BybitSpot
+            | DataSourceType::BybitFutures
+            | DataSourceType::BybitPerp => "Bybit",
+            DataSourceType::FutuStock => "Futu",
             DataSourceType::BitgetSpot | DataSourceType::BitgetFutures => "Bitget",
             DataSourceType::GmgnDex => "GMGN",
-            DataSourceType::UniswapV3 => "Uniswap",
+    DataSourceType::UniswapV3 => "Uniswap",
+            DataSourceType::Birdeye => "Birdeye",
+            DataSourceType::Helius => "Helius", // Added
             DataSourceType::IbkrStock | DataSourceType::IbkrOption => "IBKR",
             DataSourceType::PolygonStock => "Polygon",
             DataSourceType::AlpacaStock => "Alpaca",
@@ -120,5 +142,6 @@ mod tests {
         assert_eq!(DataSourceType::BinanceSpot.exchange(), "Binance");
         assert_eq!(DataSourceType::OkxSpot.exchange(), "OKX");
         assert_eq!(DataSourceType::IbkrStock.exchange(), "IBKR");
+        assert_eq!(DataSourceType::FutuStock.exchange(), "Futu");
     }
 }

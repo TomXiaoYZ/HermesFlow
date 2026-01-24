@@ -1,6 +1,13 @@
+use crate::collectors::binance::BinanceConfig;
+use crate::collectors::birdeye::BirdeyeConfig;
+use crate::collectors::bybit::BybitConfig;
+use crate::collectors::dexscreener::DexScreenerConfig;
+use crate::collectors::futu::FutuConfig;
+use crate::collectors::helius::HeliusConfig;
+use crate::collectors::okx::OkxConfig;
 use config::{Config, ConfigError, Environment, File};
+use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use serde::de::{self, Visitor, SeqAccess};
 use std::fmt;
 
 /// Main application configuration
@@ -16,6 +23,14 @@ pub struct AppConfig {
     pub ibkr: Option<IbkrConfig>,
     pub polymarket: Option<PolymarketConfig>,
     pub akshare: Option<AkShareConfig>,
+    pub massive: Option<MassiveConfig>,
+    pub binance: Option<BinanceConfig>,
+    pub okx: Option<OkxConfig>,
+    pub bybit: Option<BybitConfig>,
+    pub futu: Option<FutuConfig>,
+    pub birdeye: Option<BirdeyeConfig>,
+    pub dexscreener: Option<DexScreenerConfig>,
+    pub helius: Option<HeliusConfig>,
     pub performance: PerformanceConfig,
     pub logging: LoggingConfig,
 }
@@ -113,6 +128,7 @@ pub struct TwitterConfig {
 
 /// IBKR configuration
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct IbkrConfig {
     /// IB Gateway host (default: "127.0.0.1")
     pub host: String,
@@ -133,6 +149,7 @@ fn default_twitter_poll_interval_secs() -> u64 {
 
 /// Polymarket API configuration
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct PolymarketConfig {
     /// Gamma API base URL (default: "https://gamma-api.polymarket.com")
     pub api_base_url: String,
@@ -144,6 +161,7 @@ pub struct PolymarketConfig {
 
 /// AkShare configuration
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct AkShareConfig {
     /// Whether this data source is enabled
     pub enabled: bool,
@@ -159,6 +177,31 @@ impl Default for AkShareConfig {
             enabled: false,
             aktools_url: "http://aktools:8080".to_string(),
             poll_interval_secs: 3,
+        }
+    }
+}
+
+/// Massive (Polygon.io) configuration
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct MassiveConfig {
+    /// Whether this data source is enabled
+    pub enabled: bool,
+    /// API Key for Polygon.io
+    pub api_key: String,
+    /// Rate limit per minute (default: 5 for Free Tier)
+    pub rate_limit_per_min: u64,
+    /// WebSocket URL (default: "wss://socket.polygon.io/stocks")
+    pub ws_url: String,
+}
+
+impl Default for MassiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            rate_limit_per_min: 5,
+            ws_url: "wss://socket.polygon.io/stocks".to_string(),
         }
     }
 }
@@ -256,6 +299,15 @@ impl Default for AppConfig {
             twitter: None,
             ibkr: None,
             polymarket: None,
+            akshare: None,
+            massive: None,
+            binance: None,
+            okx: None,
+            bybit: None,
+            futu: None,
+            birdeye: None,
+            dexscreener: None,
+            helius: None,
             performance: PerformanceConfig::default(),
             logging: LoggingConfig::default(),
         }

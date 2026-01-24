@@ -76,4 +76,6 @@ include_str!("../../../../infrastructure/database/postgres/migrations/001_core.s
 1. [ ] 确保使用 Root Build Context (`docker-compose.yml` 中的 `context: .`)。
 2. [ ] Python 服务必须在 `pyproject.toml` 中引用 `hermes-common`。
 3. [ ] Rust 服务必须在 `Cargo.toml` 中使用 Workspace 依赖 (如果配置了 Workspace)。
-4. [ ] 在 root `Makefile` 的 `setup`, `lint`, `test` 目标中添加该服务的命令。
+### 6. 文档规范
+- **禁止** 随意新增 MD 文件，优先完善现有文档（如 `ARCHITECTURE.md`）。
+- **ADR (Architecture Decision Records)**: 重要决策直接追加到 `ARCHITECTURE.md` 的附录章节。

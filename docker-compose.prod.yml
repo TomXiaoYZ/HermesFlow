@@ -1,0 +1,153 @@
+services:
+  # -------------------------
+  # Infrastructure (Hybrid)
+  # -------------------------
+
+  # Redis: Run locally on EC2 (Cost effective)
+  redis:
+    image: redis:7-alpine
+    container_name: hermesflow-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ClickHouse: Run locally on EC2 (Performance/Cost effective)
+  # Persistent data stored on EBS volume via 'clickhouse_data' volume
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: hermesflow-clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # Native
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./infrastructure/database/clickhouse/users.xml:/etc/clickhouse-server/users.d/users.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # Postgres: Run locally (replacing RDS)
+  postgres:
+    image: postgres:16-alpine
+    container_name: hermesflow-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=hermesflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/database/postgres/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------
+  # Application Services
+  # -------------------------
+
+  strategy-generator:
+    build:
+      context: .
+      dockerfile: services/strategy-generator/Dockerfile
+    image: hermesflow/strategy-generator:latest
+    container_name: hermesflow-strategy-generator
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/hermesflow
+      - RUST_LOG=info
+
+  data-engine:
+    build:
+      context: .
+      dockerfile: services/data-engine/Dockerfile
+    image: hermesflow/data-engine:latest
+    container_name: hermesflow-data-engine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - RUST_ENV=prod
+      - DATA_ENGINE__BIRDEYE__API_KEY=${DATA_ENGINE__BIRDEYE__API_KEY}
+      - DATA_ENGINE__HELIUS__API_KEY=${DATA_ENGINE__HELIUS__API_KEY}
+      - DATA_ENGINE__SERVER__PORT=8080
+      - DATA_ENGINE__REDIS__URL=redis://redis:6379
+      - DATA_ENGINE__CLICKHOUSE__URL=http://clickhouse:8123
+      - DATA_ENGINE__POSTGRES__HOST=postgres
+      - DATA_ENGINE__POSTGRES__PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - DATA_ENGINE__POSTGRES__DATABASE=hermesflow
+      - DATA_ENGINE__POSTGRES__USERNAME=postgres
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  strategy-engine:
+    build:
+      context: .
+      dockerfile: services/strategy-engine/Dockerfile
+    image: hermesflow/strategy-engine:latest
+    container_name: hermesflow-strategy-engine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - RUST_ENV=prod
+      - DATA_ENGINE__BIRDEYE__API_KEY=${DATA_ENGINE__BIRDEYE__API_KEY}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - data-engine
+
+  execution-engine:
+    build:
+      context: .
+      dockerfile: services/execution-engine/Dockerfile
+    image: hermesflow/execution-engine:latest
+    container_name: hermesflow-execution-engine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - RUST_ENV=prod
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    image: hermesflow/web:latest
+    container_name: hermesflow-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NEXT_PUBLIC_API_URL=http://${EC2_PUBLIC_IP:-localhost}:8080
+      - NEXT_PUBLIC_WS_URL=ws://${EC2_PUBLIC_IP:-localhost}:8080
+    ports:
+      - "80:3000" # Expose on port 80 for public access
+    depends_on:
+      - data-engine
+
+volumes:
+  redis_data:
+  clickhouse_data:
+  postgres_data:

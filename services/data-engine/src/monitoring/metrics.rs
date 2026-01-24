@@ -61,6 +61,30 @@ lazy_static! {
         "data_engine_service_up",
         "Service up status (1 = up, 0 = down)"
     ).expect("Failed to create SERVICE_UP gauge");
+
+    /// Number of active symbols
+    pub static ref ACTIVE_SYMBOLS_COUNT: IntGauge = IntGauge::new(
+        "data_engine_active_symbols_count",
+        "Number of active symbols tracked"
+    ).expect("Failed to create ACTIVE_SYMBOLS_COUNT gauge");
+
+    /// Data Quality: Stale Symbols Count
+    pub static ref DQ_STALE_SYMBOLS: IntGauge = IntGauge::new(
+        "data_engine_dq_stale_symbols",
+        "Number of symbols with stale data"
+    ).expect("Failed to create DQ_STALE_SYMBOLS gauge");
+
+    /// Data Quality: Gap Symbols Count
+    pub static ref DQ_GAP_SYMBOLS: IntGauge = IntGauge::new(
+        "data_engine_dq_gap_symbols",
+        "Number of symbols with missing candles"
+    ).expect("Failed to create DQ_GAP_SYMBOLS gauge");
+
+    /// Data Quality: Low Liquidity Symbols Count
+    pub static ref DQ_LOW_LIQ_SYMBOLS: IntGauge = IntGauge::new(
+        "data_engine_dq_low_liq_symbols",
+        "Number of symbols with low liquidity"
+    ).expect("Failed to create DQ_LOW_LIQ_SYMBOLS gauge");
 }
 
 /// Initializes Prometheus metrics by registering them with the registry
@@ -73,6 +97,10 @@ pub fn init_metrics() -> Result<(), prometheus::Error> {
     REGISTRY.register(Box::new(CLICKHOUSE_LATENCY.clone()))?;
     REGISTRY.register(Box::new(CLICKHOUSE_INSERTS.clone()))?;
     REGISTRY.register(Box::new(SERVICE_UP.clone()))?;
+    REGISTRY.register(Box::new(ACTIVE_SYMBOLS_COUNT.clone()))?;
+    REGISTRY.register(Box::new(DQ_STALE_SYMBOLS.clone()))?;
+    REGISTRY.register(Box::new(DQ_GAP_SYMBOLS.clone()))?;
+    REGISTRY.register(Box::new(DQ_LOW_LIQ_SYMBOLS.clone()))?;
 
     // Set service as up initially
     SERVICE_UP.set(1);

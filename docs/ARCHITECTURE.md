@@ -51,12 +51,44 @@ graph TD
 
 ## 3. Data Infrastructure
 
-- **TimescaleDB (PostgreSQL)**: Primary store for relational data and time-series ticks.
-- **ClickHouse**: Analytics store for heavy OLAP queries (Optional).
-- **Redis**: Real-time cache for latest prices and session state.
+## 3. Data Infrastructure
 
-## 4. Deployment
+### 3.1 TimescaleDB (Time-Series Store)
+- **Role**: Primary store for all market data (Ticks, Candles, Snapshots).
+- **Rationale**: Selected for efficient partitioning (Hypertables) and compression. See [ADR-001](ADR/001_timescaledb_selection.md).
+- **Schema**:
+  - `mkt_equity_snapshots` (Hypertable)
+  - `mkt_equity_candles` (Hypertable)
+
+### 3.2 Redis (Real-time Cache)
+- **Role**: Pub/Sub channel for live market stream (`market.stream.*`) and latest price cache.
+
+### 3.3 ClickHouse (Optional)
+- **Role**: Reserved for heavy OLAP analytics if TimescaleDB query performance degrades for large-scale backtesting.
+
+## 4. Supported Data Sources (Phase 3)
+
+| Source | Asset | Type | Protocol |
+| :--- | :--- | :--- | :--- |
+| **Binance** | Crypto | Trade/Candle | WS/REST |
+| **OKX** | Crypto | Trade | WS (V5) |
+| **Bybit** | Crypto | Trade | WS (V5) |
+| **IBKR** | US Stock | Candle | TCP Gateway |
+| **AkShare** | A-Share | Snapshot | HTTP Polling |
+| **Massive** | US Stock | Candle | HTTP REST |
+
+## 5. Deployment
 
 - **Containerization**: All services are Dockerized.
 - **Orchestration**: `docker-compose.yml` for local development.
-- **CI/CD**: GitHub Actions (`.github/workflows/ci.yml`).
+
+## Appendix A: Architecture Decision Records (ADR)
+
+### ADR-001: Adoption of TimescaleDB (2026-01-17)
+
+**Context**: Need high-performance storage for billions of market data rows.
+**Decision**: Selected **TimescaleDB** (Self-Hosted on ECS for Dev/Staging, Managed Cloud for Prod).
+**Rationale**:
+1.  **Write Performance**: Hypertables maintain constant ingest rates vs Vanilla Postgres bloat.
+2.  **Compression**: Columnar compression saves ~90% storage costs.
+3.  **Operations**: Self-hosted on ECS requires attached EBS persistence and automated snapshots (DLM).

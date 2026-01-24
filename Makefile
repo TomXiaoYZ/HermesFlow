@@ -33,7 +33,7 @@ setup:
 	$(PIP) install ruff mypy pytest types-redis
 	$(PIP) install -e infrastructure/python/hermes_common
 	$(PIP) install -e services/risk-engine
-	$(PIP) install -e services/strategy-engine
+
 	@echo ">>> 🐦 Installing Twitter Scraper..."
 	cd services/twitter-scraper && poetry install || $(PIP) install -r requirements.txt
 	@echo ">>> 🦀 Verifying Rust Toolchain..."
@@ -56,8 +56,8 @@ web-build:
 
 lint:
 	@echo ">>> 🐍 Linting Python..."
-	$(RUFF) check infrastructure/python/hermes_common services/risk-engine services/strategy-engine
-	$(MYPY) infrastructure/python/hermes_common services/risk-engine services/strategy-engine
+	$(RUFF) check infrastructure/python/hermes_common services/risk-engine
+	$(MYPY) infrastructure/python/hermes_common services/risk-engine
 	@echo ">>> 🦀 Linting Rust..."
 	cd services/data-engine && cargo clippy -- -D warnings
 	cd services/gateway && cargo clippy -- -D warnings
@@ -66,7 +66,7 @@ lint:
 
 test:
 	@echo ">>> 🐍 Testing Python..."
-	$(PYTEST) services/risk-engine services/strategy-engine infrastructure/python/hermes_common
+	$(PYTEST) services/risk-engine infrastructure/python/hermes_common
 	@echo ">>> 🦀 Testing Rust..."
 	cd services/data-engine && cargo test
 	cd services/gateway && cargo test

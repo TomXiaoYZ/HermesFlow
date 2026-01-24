@@ -4,15 +4,16 @@ use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketDat
 use crate::repository::MarketDataRepository;
 use crate::traits::{ConnectorStats, DataSourceConnector};
 // use testcontainers::core::mounts::AccessMode::ReadWrite; // Removed unused import
-use ibapi::prelude::*;
+use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
 use ibapi::market_data::historical::{BarSize, Duration as IbDuration};
+use ibapi::market_data::MarketDataType as IbMarketDataType;
+use ibapi::prelude::*;
 use rust_decimal::Decimal;
-use time::OffsetDateTime;
 use std::sync::Arc;
+use time::OffsetDateTime;
 use tokio::sync::mpsc::{self, Receiver};
 use tracing::{error, info, warn};
-use chrono::{Utc, TimeZone};
-use async_trait::async_trait;
 
 pub struct IBKRCollector {
     config: IbkrConfig,
@@ -50,18 +51,24 @@ impl DataSourceConnector for IBKRCollector {
         info!("Connecting to IBKR for data collection at {}", addr);
 
         let (tx, rx) = mpsc::channel(100);
-        
+
         // Connect to IB Gateway
-        let client = Client::connect(&addr, self.config.client_id).await
+        let client = Client::connect(&addr, self.config.client_id)
+            .await
             .map_err(|e| DataError::IbkrError(e))?;
-        
+
         info!("IBKR Collector connected successfully");
         let client_arc = Arc::new(client);
         self.client = Some(client_arc.clone());
 
         let symbols = self.config.symbols.clone();
         let repository = self.repository.clone(); // Updated to use repository trait
-        
+
+        // Ensure we get live data
+        // if let Err(e) = client_arc.switch_market_data_type(IbMarketDataType::Realtime).await {
+        //     warn!("Failed to set market data type to Live: {}", e);
+        // }
+
         // Spawn a task to manage subscriptions and potentially historical data
         tokio::spawn(async move {
             // 1. Fetch Historical Data for each symbol and resolution
@@ -75,51 +82,68 @@ impl DataSourceConnector for IBKRCollector {
 
             for symbol in &symbols {
                 let contract = Contract::stock(symbol).build();
-                
+
                 for (resolution, duration, bar_size) in &timeframes {
-                    info!("Fetching {} historical data for {} (Lookback: {})", resolution, symbol, duration);
-                    
+                    info!(
+                        "Fetching {} historical data for {} (Lookback: {})",
+                        resolution, symbol, duration
+                    );
+
                     // Explicit end date is required to avoid ibapi panic
-                    let end_date_time = OffsetDateTime::from_unix_timestamp(Utc::now().timestamp()).unwrap();
-                    
-                    let historical_result = client_arc.historical_data(
-                        &contract,
-                        Some(end_date_time),
-                        *duration,
-                        *bar_size,
-                        Some(HistoricalWhatToShow::Trades),
-                        TradingHours::Extended,
-                    ).await;
+                    let end_date_time =
+                        OffsetDateTime::from_unix_timestamp(Utc::now().timestamp()).unwrap();
+
+                    let historical_result = client_arc
+                        .historical_data(
+                            &contract,
+                            Some(end_date_time),
+                            *duration,
+                            *bar_size,
+                            Some(HistoricalWhatToShow::Trades),
+                            TradingHours::Extended,
+                        )
+                        .await;
 
                     match historical_result {
                         Ok(historical_data) => {
                             let mut count = 0;
                             for bar in historical_data.bars {
                                 // Convert bar.date (OffsetDateTime) to Utc timestamp
-                                let timestamp = Utc.timestamp_opt(bar.date.unix_timestamp(), 0).unwrap();
-                                
-                                // Create Candle DTO
+                                let timestamp =
+                                    Utc.timestamp_opt(bar.date.unix_timestamp(), 0).unwrap();
+
+                                // Create Candle DTO (Force Update)
                                 let candle = crate::models::Candle::new(
+                                    "IBKR".to_string(),
                                     symbol.clone(),
                                     resolution.to_string(),
                                     Decimal::from_f64_retain(bar.open).unwrap_or_default(),
                                     Decimal::from_f64_retain(bar.high).unwrap_or_default(),
                                     Decimal::from_f64_retain(bar.low).unwrap_or_default(),
                                     Decimal::from_f64_retain(bar.close).unwrap_or_default(),
-                                    bar.volume as i64,
-                                    timestamp
+                                    Decimal::from_f64_retain(bar.volume).unwrap_or_default(),
+                                    timestamp,
                                 );
 
                                 if let Err(e) = repository.insert_candle(&candle).await {
-                                    warn!("Failed to insert {} candle for {}: {}", resolution, symbol, e);
+                                    warn!(
+                                        "Failed to insert {} candle for {}: {}",
+                                        resolution, symbol, e
+                                    );
                                 }
                                 count += 1;
                             }
-                            info!("Fetched {} historical {} bars for {}", count, resolution, symbol);
+                            info!(
+                                "Fetched {} historical {} bars for {}",
+                                count, resolution, symbol
+                            );
                         }
-                        Err(e) => error!("Failed to fetch {} historical data for {}: {}", resolution, symbol, e),
+                        Err(e) => error!(
+                            "Failed to fetch {} historical data for {}: {}",
+                            resolution, symbol, e
+                        ),
                     }
-                    
+
                     // Small delay between requests to be polite to the API
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
@@ -129,23 +153,26 @@ impl DataSourceConnector for IBKRCollector {
             for symbol in &symbols {
                 let contract = Contract::stock(symbol).build();
                 info!("Subscribing to realtime bars for {}", symbol);
-                
-                match client_arc.realtime_bars(
-                    &contract,
-                    RealtimeBarSize::Sec5,
-                    RealtimeWhatToShow::Trades,
-                    TradingHours::Extended,
-                ).await {
+
+                match client_arc
+                    .realtime_bars(
+                        &contract,
+                        RealtimeBarSize::Sec5,
+                        RealtimeWhatToShow::Trades,
+                        TradingHours::Extended,
+                    )
+                    .await
+                {
                     Ok(mut stream) => {
                         let tx_clone = tx.clone();
                         let sym = symbol.clone();
-                        
+
                         tokio::spawn(async move {
-                            use futures::StreamExt;
                             while let Some(bar_result) = stream.next().await {
                                 match bar_result {
                                     Ok(bar) => {
-                                        let price = Decimal::from_f64_retain(bar.close).unwrap_or_default();
+                                        let price =
+                                            Decimal::from_f64_retain(bar.close).unwrap_or_default();
                                         let md = StandardMarketData {
                                             symbol: sym.clone(),
                                             data_type: MarketDataType::Ticker,
@@ -155,7 +182,7 @@ impl DataSourceConnector for IBKRCollector {
                                             timestamp: bar.date.unix_timestamp_nanos() as i64 / 1_000_000,
                                             source: DataSourceType::IbkrStock,
                                             exchange: "IBKR".to_string(),
-                                            bid: None, 
+                                            bid: None,
                                             ask: None,
                                             volume_24h: Some(Decimal::from_f64_retain(bar.volume).unwrap_or_default()),
                                             high_24h: Some(Decimal::from_f64_retain(bar.high).unwrap_or_default()),
@@ -168,14 +195,18 @@ impl DataSourceConnector for IBKRCollector {
                                             sequence_id: None,
                                             open_interest: None,
                                             funding_rate: None,
+                                            liquidity: None,
+                                            fdv: None,
                                         };
-                                        
+
                                         if let Err(e) = tx_clone.send(md).await {
                                             warn!("Failed to send market data update: {}", e);
                                             break;
                                         }
                                     }
-                                    Err(e) => error!("Error receiving realtime bar for {}: {}", sym, e),
+                                    Err(e) => {
+                                        error!("Error receiving realtime bar for {}: {}", sym, e)
+                                    }
                                 }
                             }
                         });
@@ -194,7 +225,7 @@ impl DataSourceConnector for IBKRCollector {
         self.client = None;
         Ok(())
     }
-    
+
     async fn is_healthy(&self) -> bool {
         self.running
     }

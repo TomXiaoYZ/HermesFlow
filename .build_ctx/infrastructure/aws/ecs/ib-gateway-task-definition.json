@@ -1,0 +1,83 @@
+{
+    "family": "ib-gateway-task",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "512",
+    "memory": "1024",
+    "executionRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
+    "taskRoleArn": "${ECS_TASK_ROLE_ARN}",
+    "containerDefinitions": [
+        {
+            "name": "ib-gateway",
+            "image": "ghcr.io/gnzsnz/ib-gateway:stable",
+            "portMappings": [
+                {
+                    "containerPort": 4001,
+                    "protocol": "tcp"
+                },
+                {
+                    "containerPort": 4002,
+                    "protocol": "tcp"
+                },
+                {
+                    "containerPort": 5900,
+                    "protocol": "tcp"
+                },
+                {
+                    "containerPort": 5901,
+                    "protocol": "tcp"
+                }
+            ],
+            "environment": [
+                {
+                    "name": "TWS_USERID",
+                    "value": "${IB_USER}"
+                },
+                {
+                    "name": "TWS_PASSWORD",
+                    "value": "${IB_PASS}"
+                },
+                {
+                    "name": "TRADING_MODE",
+                    "value": "paper"
+                },
+                {
+                    "name": "VNC_SERVER_PASSWORD",
+                    "value": "password"
+                },
+                {
+                    "name": "IBC_EXISTING_SESSION_DETECTED",
+                    "value": "Relogin"
+                },
+                {
+                    "name": "TWOFA_EXIT_INTERVAL",
+                    "value": "1200"
+                },
+                {
+                    "name": "DISPLAY",
+                    "value": ":0"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/data-engine",
+                    "awslogs-region": "us-west-2",
+                    "awslogs-stream-prefix": "ib-gateway-service"
+                }
+            },
+            "healthCheck": {
+                "command": [
+                    "CMD-SHELL",
+                    "netstat -an | grep 4001 || exit 1"
+                ],
+                "interval": 120,
+                "timeout": 5,
+                "retries": 10,
+                "startPeriod": 300
+            }
+        }
+    ]
+}
