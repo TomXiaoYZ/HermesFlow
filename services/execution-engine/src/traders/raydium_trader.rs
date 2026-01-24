@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use borsh::{BorshDeserialize, BorshSerialize};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -7,10 +8,78 @@ use solana_sdk::{
 };
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 // Raydium AMM Program ID
 const RAYDIUM_AMM_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+
+/// Raydium AMM V4 Pool State
+/// Based on https://github.com/raydium-io/raydium-amm/blob/master/program/src/state.rs
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct AmmInfo {
+    /// Initialized status
+    pub status: u64,
+    /// Nonce used to generate seeds
+    pub nonce: u64,
+    /// Max order count
+    pub order_num: u64,
+    /// Within this range, 5 fraction_part is 1/10000
+    pub depth: u64,
+    /// Coin mint decimals
+    pub coin_decimals: u64,
+    /// Pc mint decimals
+    pub pc_decimals: u64,
+    /// AMM start state: 0 - not started, 1 - started
+    pub state: u64,
+    /// Reset flag
+    pub reset_flag: u64,
+    /// Min size for order
+    pub min_size: u64,
+    /// Vol max cut ratio
+    pub vol_max_cut_ratio: u64,
+    /// Amm owner
+    pub amm_owner: Pubkey,
+    /// Fee amount for liquidity provider
+    pub fees_to_lp: u64,
+    /// Pool fees (numerator/denominator)
+    pub fees: u64,
+    /// Pool coin token account
+    pub pool_coin_token_account: Pubkey,
+    /// Pool pc token account
+    pub pool_pc_token_account: Pubkey,
+    /// Coin mint address
+    pub coin_mint: Pubkey,
+    /// Pc mint address
+    pub pc_mint: Pubkey,
+    /// Lp mint address
+    pub lp_mint: Pubkey,
+    /// Open orders
+    pub open_orders: Pubkey,
+    /// Serum market
+    pub market: Pubkey,
+    /// Serum program id
+    pub serum_program_id: Pubkey,
+    /// Target orders
+    pub target_orders: Pubkey,
+    /// Withdraw queue
+    pub withdraw_queue: Pubkey,
+    /// Temp lp token account
+    pub temp_lp_token_account: Pubkey,
+    /// Owner lp token account
+    pub amm_owner_lp_token_account: Pubkey,
+    /// Pnl coin offset
+    pub pnl_coin: u64,
+    /// Pnl pc offset
+    pub pnl_pc: u64,
+    /// Pool total deposit coin in liquidity
+    pub pool_coin_total: u64,
+    /// Pool total deposit pc in liquidity  
+    pub pool_pc_total: u64,
+    /// Total issue lp amount
+    pub pool_lp_supply: u64,
+    /// Padding
+    pub padding: [u64; 3],
+}
 
 // Raydium pool information
 #[derive(Debug, Clone)]
@@ -155,19 +224,55 @@ impl RaydiumTrader {
         })
     }
 
-    /// Get pool reserves (simplified - in production, need to deserialize pool state)
+    /// Get pool reserves by deserializing Raydium AMM pool account data
     pub async fn get_pool_reserves(&self, pool_address: &Pubkey) -> Result<(u64, u64)> {
-        // This is a placeholder - real implementation needs to:
-        // 1. Fetch pool account data
-        // 2. Deserialize Raydium pool state
-        // 3. Extract base_reserve and quote_reserve
-        
-        // For now, return placeholder values
-        // TODO: Implement proper pool state deserialization
-        info!("Getting reserves for pool: {} (placeholder)", pool_address);
-        
-        // Placeholder reserves (will be replaced with actual data)
-        Ok((1_000_000_000u64, 5_000_000_000u64))
+        info!("Fetching pool reserves for: {}", pool_address);
+
+        // Fetch the pool account data from Solana RPC
+        let account = self
+            .rpc_client
+            .get_account(pool_address)
+            .map_err(|e| anyhow!("Failed to fetch pool account {}: {}", pool_address, e))?;
+
+        // Verify account owner is Raydium AMM program
+        let raydium_program_id = Pubkey::from_str(RAYDIUM_AMM_PROGRAM_ID)?;
+        if account.owner != raydium_program_id {
+            return Err(anyhow!(
+                "Pool account {} is not owned by Raydium AMM program. Owner: {}",
+                pool_address,
+                account.owner
+            ));
+        }
+
+        // Deserialize the account data using Borsh
+        let amm_info = AmmInfo::try_from_slice(&account.data)
+            .map_err(|e| anyhow!("Failed to deserialize Raydium pool state: {}", e))?;
+
+        // Extract reserves
+        // pool_coin_total = base token reserve
+        // pool_pc_total = quote token reserve (PC = Price Currency, usually USDC/USDT)
+        let base_reserve = amm_info.pool_coin_total;
+        let quote_reserve = amm_info.pool_pc_total;
+
+        info!(
+            "Pool {} reserves: coin={} ({} decimals), pc={} ({} decimals)",
+            pool_address,
+            base_reserve,
+            amm_info.coin_decimals,
+            quote_reserve,
+            amm_info.pc_decimals
+        );
+
+        // Verify pool is active
+        if amm_info.status == 0 {
+            return Err(anyhow!("Pool {} is not initialized", pool_address));
+        }
+
+        if amm_info.state == 0 {
+            warn!("Pool {} AMM state is 0 (not started)", pool_address);
+        }
+
+        Ok((base_reserve, quote_reserve))
     }
 }
 
