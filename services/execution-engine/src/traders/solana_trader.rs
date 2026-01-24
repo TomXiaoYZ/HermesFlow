@@ -3,7 +3,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
-// use solana_sdk::message::Message;
+use solana_sdk::system_instruction;
 use spl_associated_token_account::get_associated_token_address;
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose, Engine as _};
@@ -174,33 +174,60 @@ impl SolanaTrader {
             amount_sol, amount_out, minimum_amount_out, slippage_bps
         );
 
-        // 6. Get or create Associated Token Accounts (ATAs)
+        // 6. Prepare wSOL wrapping and token ATA
         let wallet = self.keypair.pubkey();
-        
-        // Source: user's wSOL account (we'll use wallet for native SOL for now)
-        // Note: For production, we should wrap SOL -> wSOL properly
         let user_wsol_ata = get_associated_token_address(&wallet, &wsol_mint);
         let user_token_ata = get_associated_token_address(&wallet, &token_mint);
         
         info!("[Raydium] User wSOL ATA: {}", user_wsol_ata);
         info!("[Raydium] User token ATA: {}", user_token_ata);
 
-        // Check if token ATA exists, if not we need to create it
         let mut instructions = vec![];
         
+        // 6a. Create wSOL ATA if not exists
+        let wsol_ata_exists = self.rpc_client.get_account(&user_wsol_ata).is_ok();
+        if !wsol_ata_exists {
+            info!("[Raydium] Creating wSOL ATA");
+            let create_wsol_ata_ix = spl_associated_token_account::instruction::create_associated_token_account(
+                &wallet,
+                &wallet,
+                &wsol_mint,
+                &spl_token::id(),
+            );
+            instructions.push(create_wsol_ata_ix);
+        } else {
+            info!("[Raydium] wSOL ATA already exists");
+        }
+
+        // 6b. Transfer native SOL to wSOL ATA for wrapping
+        // We need to transfer the amount we want to swap
+        info!("[Raydium] Wrapping {} lamports of SOL to wSOL", amount_in);
+        let transfer_to_wsol_ix = solana_sdk::system_instruction::transfer(
+            &wallet,
+            &user_wsol_ata,
+            amount_in,
+        );
+        instructions.push(transfer_to_wsol_ix);
+
+        // 6c. Sync native to update wSOL token balance
+        info!("[Raydium] Syncing native SOL to wSOL token balance");
+        let sync_native_ix = spl_token::instruction::sync_native(&spl_token::id(), &user_wsol_ata)?;
+        instructions.push(sync_native_ix);
+
+        // 6d. Create output token ATA if not exists
         match self.rpc_client.get_account(&user_token_ata) {
             Ok(_) => {
                 info!("[Raydium] Token ATA already exists");
             }
             Err(_) => {
                 info!("[Raydium] Creating token ATA");
-                let create_ata_ix = spl_associated_token_account::instruction::create_associated_token_account(
-                    &wallet,        // payer
-                    &wallet,        // wallet address
-                    &token_mint,    // mint address
-                    &spl_token::id(), // token program
+                let create_token_ata_ix = spl_associated_token_account::instruction::create_associated_token_account(
+                    &wallet,
+                    &wallet,
+                    &token_mint,
+                    &spl_token::id(),
                 );
-                instructions.push(create_ata_ix);
+                instructions.push(create_token_ata_ix);
             }
         }
 
@@ -216,7 +243,19 @@ impl SolanaTrader {
         )?;
         instructions.push(swap_ix);
 
-        // 8. Build and send transaction
+        // 8. Close wSOL ATA after swap to get remaining SOL back
+        // This is optional but recommended to avoid rent
+        info!("[Raydium] Adding instruction to close wSOL ATA and recover rent");
+        let close_wsol_ata_ix = spl_token::instruction::close_account(
+            &spl_token::id(),
+            &user_wsol_ata,
+            &wallet,        // destination for remaining SOL
+            &wallet,        // account authority
+            &[],            // no multisig
+        )?;
+        instructions.push(close_wsol_ata_ix);
+
+        // 9. Build and send transaction
         let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
         let transaction = Transaction::new_signed_with_payer(
             &instructions,
@@ -225,7 +264,7 @@ impl SolanaTrader {
             recent_blockhash,
         );
 
-        info!("[Raydium] Sending transaction...");
+        info!("[Raydium] Sending transaction with {} instructions...", instructions.len());
         let signature = self
             .rpc_client
             .send_and_confirm_transaction(&transaction)
