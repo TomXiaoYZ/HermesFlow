@@ -4,6 +4,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 // use solana_sdk::message::Message;
+use spl_associated_token_account::get_associated_token_address;
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client as HttpClient;
@@ -114,43 +115,126 @@ impl SolanaTrader {
         Ok(sig)
     }
 
-    /// Experimental Raydium on-chain swap (MVP)
+    /// Raydium on-chain swap with complete transaction flow
     pub async fn buy_raydium_experimental(
         &self,
         token_address: &str,
         amount_sol: f64,
-        _slippage_bps: u16,
+        slippage_bps: u16,
     ) -> Result<String> {
-        info!("[Raydium-MVP] Executing BUY: {} SOL -> {}", amount_sol, token_address);
+        info!("[Raydium] Executing BUY: {} SOL -> {}", amount_sol, token_address);
 
         // 1. Find pool
         let sol_mint = Pubkey::from_str(SOL_MINT)?;
         let token_mint = Pubkey::from_str(token_address)?;
         
         let pool = self.raydium.find_pool(&sol_mint, &token_mint).await?;
-        info!("[Raydium-MVP] Found pool: {}", pool);
+        info!("[Raydium] Found pool: {}", pool);
 
-        // 2. Calculate expected output (using placeholder reserves)
-        warn!("[Raydium-MVP] Using estimated reserves - NOT production ready!");
-        let (reserve_in, reserve_out) = (1_000_000_000u64, 5_000_000_000u64);
-        
-        let amount_in = (amount_sol * 1e9) as u64;
+        // 2. Get full AMM info (includes vaults and pool state)
+        let amm_info = self.raydium.get_amm_info(&pool).await?;
+        info!(
+            "[Raydium] Pool reserves: coin={} pc={}",
+            amm_info.pool_coin_total, amm_info.pool_pc_total
+        );
+
+        // 3. Determine which reserve is SOL and which is the token
+        // SOL is "wrapped SOL" (wSOL) in the pool
+        let wsol_mint = Pubkey::from_str(SOL_MINT)?;
+        let (reserve_in, reserve_out) = if amm_info.coin_mint == wsol_mint {
+            // coin is SOL, pc is token
+            (amm_info.pool_coin_total, amm_info.pool_pc_total)
+        } else if amm_info.pc_mint == wsol_mint {
+            // pc is SOL, coin is token
+            (amm_info.pool_pc_total, amm_info.pool_coin_total)
+        } else {
+            return Err(anyhow!(
+                "Pool does not contain SOL/wSOL. Coin: {}, PC: {}",
+                amm_info.coin_mint,
+                amm_info.pc_mint
+            ));
+        };
+
+        // 4. Calculate expected output with real reserves
+        let amount_in = (amount_sol * 1e9) as u64; // SOL has 9 decimals
         let amount_out = self.raydium.calculate_swap_output(
             amount_in,
             reserve_in,
             reserve_out,
-            25,     // 0.25% fee
+            25,     // 0.25% fee (Raydium standard)
             10_000,
         )?;
         
-        info!("[Raydium-MVP] Estimated output: {} tokens", amount_out);
+        // 5. Apply slippage protection
+        let slippage_multiplier = 1.0 - (slippage_bps as f64 / 10_000.0);
+        let minimum_amount_out = ((amount_out as f64) * slippage_multiplier) as u64;
+        
+        info!(
+            "[Raydium] Swap calculation: {} SOL -> {} tokens (min: {} with {}bps slippage)",
+            amount_sol, amount_out, minimum_amount_out, slippage_bps
+        );
 
-        // 3. TODO: Build and send transaction
-        warn!("[Raydium-MVP] Transaction building not yet implemented");
-        warn!("[Raydium-MVP] Returning mock signature for testing");
+        // 6. Get or create Associated Token Accounts (ATAs)
+        let wallet = self.keypair.pubkey();
+        
+        // Source: user's wSOL account (we'll use wallet for native SOL for now)
+        // Note: For production, we should wrap SOL -> wSOL properly
+        let user_wsol_ata = get_associated_token_address(&wallet, &wsol_mint);
+        let user_token_ata = get_associated_token_address(&wallet, &token_mint);
+        
+        info!("[Raydium] User wSOL ATA: {}", user_wsol_ata);
+        info!("[Raydium] User token ATA: {}", user_token_ata);
 
-        // For MVP: return error to trigger Jupiter fallback
-        Err(anyhow!("Raydium MVP not yet ready for real transactions"))
+        // Check if token ATA exists, if not we need to create it
+        let mut instructions = vec![];
+        
+        match self.rpc_client.get_account(&user_token_ata) {
+            Ok(_) => {
+                info!("[Raydium] Token ATA already exists");
+            }
+            Err(_) => {
+                info!("[Raydium] Creating token ATA");
+                let create_ata_ix = spl_associated_token_account::instruction::create_associated_token_account(
+                    &wallet,        // payer
+                    &wallet,        // wallet address
+                    &token_mint,    // mint address
+                    &spl_token::id(), // token program
+                );
+                instructions.push(create_ata_ix);
+            }
+        }
+
+        // 7. Build swap instruction
+        let swap_ix = self.raydium.build_swap_instruction(
+            &amm_info,
+            &pool,
+            &wallet,
+            &user_wsol_ata,
+            &user_token_ata,
+            amount_in,
+            minimum_amount_out,
+        )?;
+        instructions.push(swap_ix);
+
+        // 8. Build and send transaction
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let transaction = Transaction::new_signed_with_payer(
+            &instructions,
+            Some(&wallet),
+            &[&self.keypair],
+            recent_blockhash,
+        );
+
+        info!("[Raydium] Sending transaction...");
+        let signature = self
+            .rpc_client
+            .send_and_confirm_transaction(&transaction)
+            .map_err(|e| anyhow!("Raydium transaction failed: {}", e))?;
+
+        let sig_str = signature.to_string();
+        info!("[Raydium] Transaction successful: {}", sig_str);
+
+        Ok(sig_str)
     }
 
     /// Main buy entry point - tries Raydium first, falls back to Jupiter

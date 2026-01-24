@@ -4,7 +4,6 @@ use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    system_program,
 };
 use std::str::FromStr;
 use std::sync::Arc;
@@ -312,6 +311,43 @@ impl RaydiumTrader {
         }
 
         Ok((base_reserve, quote_reserve))
+    }
+
+    /// Get full AMM info by deserializing Raydium AMM pool account data
+    /// This returns the complete AmmInfo struct which includes vaults and all pool state
+    pub async fn get_amm_info(&self, pool_address: &Pubkey) -> Result<AmmInfo> {
+        info!("Fetching AMM info for: {}", pool_address);
+
+        // Fetch the pool account data from Solana RPC
+        let account = self
+            .rpc_client
+            .get_account(pool_address)
+            .map_err(|e| anyhow!("Failed to fetch pool account {}: {}", pool_address, e))?;
+
+        // Verify account owner is Raydium AMM program
+        let raydium_program_id = Pubkey::from_str(RAYDIUM_AMM_PROGRAM_ID)?;
+        if account.owner != raydium_program_id {
+            return Err(anyhow!(
+                "Pool account {} is not owned by Raydium AMM program. Owner: {}",
+                pool_address,
+                account.owner
+            ));
+        }
+
+        // Deserialize the account data using Borsh
+        let amm_info = AmmInfo::try_from_slice(&account.data)
+            .map_err(|e| anyhow!("Failed to deserialize Raydium pool state: {}", e))?;
+
+        // Verify pool is active
+        if amm_info.status == 0 {
+            return Err(anyhow!("Pool {} is not initialized", pool_address));
+        }
+
+        if amm_info.state == 0 {
+            warn!("Pool {} AMM state is 0 (not started)", pool_address);
+        }
+
+        Ok(amm_info)
     }
 }
 
