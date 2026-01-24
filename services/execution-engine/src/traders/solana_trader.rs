@@ -2,7 +2,7 @@ use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-// use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::Transaction;
 // use solana_sdk::message::Message;
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose, Engine as _};
@@ -10,7 +10,10 @@ use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
+
+// Import our Raydium trader
+use super::raydium_trader::RaydiumTrader;
 
 // Configuration constants (TODO: Move to config file)
 const JUPITER_QUOTE_API: &str = "https://jupiter-relay.slovinskypatrickiv729.workers.dev/v6/quote";
@@ -22,6 +25,7 @@ pub struct SolanaTrader {
     rpc_client: Arc<RpcClient>,
     http_client: HttpClient,
     keypair: Arc<Keypair>,
+    raydium: RaydiumTrader,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,10 +66,14 @@ impl SolanaTrader {
         let keypair = Keypair::from_bytes(&keypair_bytes)
             .map_err(|e| anyhow!("Invalid keypair bytes: {}", e))?;
 
+        // Initialize Raydium trader
+        let raydium = RaydiumTrader::new(Arc::clone(&rpc_client));
+
         Ok(Self {
             rpc_client,
             http_client: HttpClient::new(),
             keypair: Arc::new(keypair),
+            raydium,
         })
     }
 
@@ -77,13 +85,14 @@ impl SolanaTrader {
         Ok(balance_lamports as f64 / 1e9)
     }
 
-    pub async fn buy(
+    /// Buy using Jupiter API (fallback method)
+    pub async fn buy_jupiter(
         &self,
         token_address: &str,
         amount_sol: f64,
         slippage_bps: u16,
     ) -> Result<String> {
-        info!("Executing BUY: {} SOL -> {}", amount_sol, token_address);
+        info!("[Jupiter] Executing BUY: {} SOL -> {}", amount_sol, token_address);
 
         let amount_lamports = (amount_sol * 1e9) as u64;
 
@@ -91,7 +100,7 @@ impl SolanaTrader {
         let quote = self
             .get_quote(SOL_MINT, token_address, amount_lamports, slippage_bps)
             .await?;
-        info!("Quote received. Est Output: {}", quote.out_amount);
+        info!("[Jupiter] Quote received. Est Output: {}", quote.out_amount);
 
         // 2. Get Swap Transaction
         let swap_tx_base64 = self.get_swap_transaction(&quote).await?;
@@ -99,10 +108,69 @@ impl SolanaTrader {
         // 3. Sign and Send
         let sig = self.sign_and_send_transaction(&swap_tx_base64).await?;
 
-        // 4. Confirm Transaction (Blocking/Loop) - Added for Hardening
+        // 4. Confirm Transaction
         self.confirm_transaction(&sig).await?;
 
         Ok(sig)
+    }
+
+    /// Experimental Raydium on-chain swap (MVP)
+    pub async fn buy_raydium_experimental(
+        &self,
+        token_address: &str,
+        amount_sol: f64,
+        _slippage_bps: u16,
+    ) -> Result<String> {
+        info!("[Raydium-MVP] Executing BUY: {} SOL -> {}", amount_sol, token_address);
+
+        // 1. Find pool
+        let sol_mint = Pubkey::from_str(SOL_MINT)?;
+        let token_mint = Pubkey::from_str(token_address)?;
+        
+        let pool = self.raydium.find_pool(&sol_mint, &token_mint).await?;
+        info!("[Raydium-MVP] Found pool: {}", pool);
+
+        // 2. Calculate expected output (using placeholder reserves)
+        warn!("[Raydium-MVP] Using estimated reserves - NOT production ready!");
+        let (reserve_in, reserve_out) = (1_000_000_000u64, 5_000_000_000u64);
+        
+        let amount_in = (amount_sol * 1e9) as u64;
+        let amount_out = self.raydium.calculate_swap_output(
+            amount_in,
+            reserve_in,
+            reserve_out,
+            25,     // 0.25% fee
+            10_000,
+        )?;
+        
+        info!("[Raydium-MVP] Estimated output: {} tokens", amount_out);
+
+        // 3. TODO: Build and send transaction
+        warn!("[Raydium-MVP] Transaction building not yet implemented");
+        warn!("[Raydium-MVP] Returning mock signature for testing");
+
+        // For MVP: return error to trigger Jupiter fallback
+        Err(anyhow!("Raydium MVP not yet ready for real transactions"))
+    }
+
+    /// Main buy entry point - tries Raydium first, falls back to Jupiter
+    pub async fn buy(
+        &self,
+        token_address: &str,
+        amount_sol: f64,
+        slippage_bps: u16,
+    ) -> Result<String> {
+        // Try Raydium experimental first
+        match self.buy_raydium_experimental(token_address, amount_sol, slippage_bps).await {
+            Ok(sig) => {
+                info!("[Raydium-MVP] Successfully executed via Raydium");
+                Ok(sig)
+            }
+            Err(e) => {
+                warn!("[Raydium-MVP] Failed: {}. Falling back to Jupiter", e);
+                self.buy_jupiter(token_address, amount_sol, slippage_bps).await
+            }
+        }
     }
 
     pub async fn sell(
