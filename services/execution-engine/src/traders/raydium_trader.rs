@@ -187,11 +187,21 @@ impl RaydiumTrader {
         Ok(amount_out)
     }
 
-    /// Build a Raydium swap instruction
-    /// Note: This is a simplified version. Real Raydium instructions are more complex
-    /// and require proper account setup and data serialization
+    /// Build a complete Raydium SwapBaseInV2 instruction
+    /// Based on: https://github.com/raydium-io/raydium-amm/blob/master/program/src/instruction.rs
+    /// 
+    /// SwapBaseInV2 accounts (8 total):
+    /// 0. SPL Token program
+    /// 1. [writable] AMM Account
+    /// 2. [] AMM authority
+    /// 3. [writable] AMM coin vault
+    /// 4. [writable] AMM pc vault
+    /// 5. [writable] User source token account
+    /// 6. [writable] User destination token account
+    /// 7. [signer] User wallet
     pub fn build_swap_instruction(
         &self,
+        amm_info: &AmmInfo,
         pool_address: &Pubkey,
         user_wallet: &Pubkey,
         user_source_token: &Pubkey,
@@ -200,21 +210,50 @@ impl RaydiumTrader {
         minimum_amount_out: u64,
     ) -> Result<Instruction> {
         let program_id = Pubkey::from_str(RAYDIUM_AMM_PROGRAM_ID)?;
+        
+        // Derive AMM authority PDA
+        // Authority is derived from: create_program_address(&[AUTHORITY_AMM, &[nonce]])
+        let (amm_authority, _bump) = Pubkey::find_program_address(
+            &[b"amm authority".as_ref()],
+            &program_id,
+        );
 
-        // Simplified instruction data (real Raydium uses borsh serialization)
-        // Instruction discriminator for swap: 9 (this is simplified)
-        let mut data = vec![9u8]; // Swap instruction
+        info!(
+            "Building SwapBaseInV2 instruction: {} -> {} tokens",
+            amount_in, minimum_amount_out
+        );
+
+        // Instruction discriminator for SwapBaseInV2 (index 12 in AmmInstruction enum)
+        // This needs to match the exact borsh serialization of Raydium's instruction
+        let mut data = Vec::new();
+        data.push(12u8); // SwapBaseInV2 discriminator
+        
+        // SwapInstructionBaseIn data:
+        // pub struct SwapInstructionBaseIn {
+        //     pub amount_in: u64,
+        //     pub minimum_amount_out: u64,
+        // }
         data.extend_from_slice(&amount_in.to_le_bytes());
         data.extend_from_slice(&minimum_amount_out.to_le_bytes());
 
-        // Simplified account list (real Raydium requires many more accounts)
+        // Build accounts array for SwapBaseInV2
         let accounts = vec![
+            // 0. SPL Token program
+            AccountMeta::new_readonly(spl_token::id(), false),
+            // 1. [writable] AMM Account
             AccountMeta::new(*pool_address, false),
-            AccountMeta::new(*user_wallet, true), // Signer
+            // 2. [] AMM authority (derived PDA)
+            AccountMeta::new_readonly(amm_authority, false),
+            // 3. [writable] AMM coin vault
+            AccountMeta::new(amm_info.pool_coin_token_account, false),
+            // 4. [writable] AMM pc vault
+            AccountMeta::new(amm_info.pool_pc_token_account, false),
+            // 5. [writable] User source token account
             AccountMeta::new(*user_source_token, false),
+            // 6. [writable] User destination token account
             AccountMeta::new(*user_dest_token, false),
-            AccountMeta::new_readonly(system_program::id(), false),
-            // Note: Real Raydium requires pool vaults, authority, etc.
+            // 7. [signer] User wallet
+            AccountMeta::new_readonly(*user_wallet, true),
         ];
 
         Ok(Instruction {
