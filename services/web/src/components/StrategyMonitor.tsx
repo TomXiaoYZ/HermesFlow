@@ -11,62 +11,23 @@ interface StrategyStatus {
     timestamp: string;
 }
 
-export default function StrategyMonitor() {
-    const [currentGen, setCurrentGen] = useState(0);
-    const [currentFitness, setCurrentFitness] = useState<number | null>(null);
-    const [bestFormula, setBestFormula] = useState<number[]>([]);
-    const [fitnessHistory, setFitnessHistory] = useState<{ gen: number; fitness: number }[]>([]);
-    const [evolutionRate, setEvolutionRate] = useState(0);
+export interface StrategyMonitorProps {
+    currentGen: number;
+    currentFitness: number | null;
+    bestFormula: number[];
+    fitnessHistory: { gen: number; fitness: number }[];
+    evolutionRate: number;
+    isEvolving: boolean;
+}
 
-    useEffect(() => {
-        const ws = new WebSocket("ws://localhost:8080/ws");
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-
-                // Check if it's a strategy update from Redis pub/sub
-                if (data.strategy_id === "EvolutionaryKernel" && data.action === "Evolving") {
-                    // Parse generation from message (e.g., "Alpha-Gen-D8CA5F")
-                    const genMatch = data.message.match(/Gen-(\w+)/);
-                    if (genMatch) {
-                        const newGen = parseInt(genMatch[1], 16); // Parse hex generation ID
-                        setCurrentGen(newGen || currentGen + 1);
-                    }
-                }
-
-                // TODO: Add explicit StrategyUpdate message type to backend WS
-                if (data.type === "StrategyUpdate") {
-                    const status = data as StrategyStatus;
-                    setCurrentGen(status.generation);
-                    setCurrentFitness(status.fitness);
-                    setBestFormula(status.bestTokens);
-
-                    if (status.fitness !== null && status.fitness > -999) {
-                        setFitnessHistory((prev) => [...prev.slice(-50), { gen: status.generation, fitness: status.fitness! }]);
-                    }
-                }
-            } catch (e) {
-                console.error("Failed to parse WS message", e);
-            }
-        };
-
-        // Calculate evolution rate (gens/min)
-        const interval = setInterval(() => {
-            setEvolutionRate((prev) => {
-                const rate = currentGen > prev ? Math.round(((currentGen - prev) / 5) * 60) : 0;
-                return rate;
-            });
-        }, 5000);
-
-        return () => {
-            ws.close();
-            clearInterval(interval);
-        };
-    }, [currentGen]);
-
-
-    const isEvolving = currentGen > 0;
+export default function StrategyMonitor({
+    currentGen,
+    currentFitness,
+    bestFormula,
+    fitnessHistory,
+    evolutionRate,
+    isEvolving
+}: StrategyMonitorProps) {
     const hasFitness = currentFitness !== null && currentFitness > -999;
 
     return (

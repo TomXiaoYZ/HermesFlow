@@ -13,35 +13,13 @@ interface TradeSignal {
     status: "PENDING" | "FILLED" | "REJECTED";
 }
 
-export default function TradeExecutionPanel() {
-    const [signals, setSignals] = useState<TradeSignal[]>([]);
-    const [portfolioValue, setPortfolioValue] = useState(0);
-    const [pnl24h, setPnl24h] = useState(0);
+export interface TradeExecutionPanelProps {
+    signals: TradeSignal[];
+    portfolioValue: number;
+    pnl24h: number;
+}
 
-    useEffect(() => {
-        const ws = new WebSocket("ws://localhost:8080/ws");
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-
-                // Portfolio update
-                if (data.total_equity !== undefined) {
-                    setPortfolioValue(data.total_equity);
-                }
-
-                // Trade signal (TODO: Add to backend WS)
-                if (data.type === "TradeSignal") {
-                    const signal = data as TradeSignal;
-                    setSignals((prev) => [signal, ...prev.slice(0, 9)]);
-                }
-            } catch (e) {
-                console.error("Failed to parse WS message", e);
-            }
-        };
-
-        return () => ws.close();
-    }, []);
+export default function TradeExecutionPanel({ signals, portfolioValue, pnl24h }: TradeExecutionPanelProps) {
 
     return (
         <div className="bg-slate-900/50 backdrop-blur border border-slate-800/50 rounded-2xl p-6 shadow-2xl">

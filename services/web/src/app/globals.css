@@ -1,8 +1,26 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Dark mode as default for daytime visibility */
+  --background: #030712;     /* gray-950 */
+  --foreground: #f8fafc;     /* slate-50 */
+  --card: #111827;           /* gray-900 */
+  --card-foreground: #f8fafc;
+  --popover: #030712;
+  --popover-foreground: #f8fafc;
+  --primary: #6366f1;        /* indigo-500 */
+  --primary-foreground: #f8fafc;
+  --secondary: #1e293b;      /* slate-800 */
+  --secondary-foreground: #f8fafc;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8; /* slate-400 */
+  --accent: #1e293b;
+  --accent-foreground: #f8fafc;
+  --destructive: #ef4444;    /* red-500 */
+  --destructive-foreground: #f8fafc;
+  --border: #1e293b;         /* slate-800 */
+  --input: #1e293b;
+  --ring: #6366f1;
 }
 
 @theme inline {
@@ -12,36 +30,13 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #030712;
-    /* gray-950 */
-    --foreground: #f8fafc;
-    /* slate-50 */
-    --card: #111827;
-    /* gray-900 */
-    --card-foreground: #f8fafc;
-    --popover: #030712;
-    --popover-foreground: #f8fafc;
-    --primary: #6366f1;
-    /* indigo-500 */
-    --primary-foreground: #f8fafc;
-    --secondary: #1e293b;
-    /* slate-800 */
-    --secondary-foreground: #f8fafc;
-    --muted: #1e293b;
-    --muted-foreground: #94a3b8;
-    /* slate-400 */
-    --accent: #1e293b;
-    --accent-foreground: #f8fafc;
-    --destructive: #ef4444;
-    /* red-500 */
-    --destructive-foreground: #f8fafc;
-    --border: #1e293b;
-    /* slate-800 */
-    --input: #1e293b;
-    --ring: #6366f1;
-  }
+/* Optional light mode (if user manually requests) */
+.light-mode {
+  --background: #ffffff;
+  --foreground: #171717;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --border: #e5e7eb;
 }
 
 .glass-panel {

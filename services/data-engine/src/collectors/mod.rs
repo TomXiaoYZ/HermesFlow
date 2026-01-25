@@ -24,3 +24,5 @@ pub use massive::connector::MassiveConnector;
 pub use okx::connector::OkxConnector;
 pub use polymarket::PolymarketCollector;
 pub use twitter::TwitterCollector;
+pub mod jupiter;
+pub use jupiter::{JupiterConfig, JupiterPriceCollector};

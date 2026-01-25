@@ -76,7 +76,7 @@ impl MassiveConnector {
         });
 
         StandardMarketData {
-            source: self.source_type,
+            source: self.source_type.clone(),
             exchange: "Polygon".to_string(),
             symbol: ticker.to_string(),
             asset_type: if ticker.starts_with("X:") {
@@ -109,7 +109,7 @@ impl MassiveConnector {
 #[async_trait]
 impl DataSourceConnector for MassiveConnector {
     fn source_type(&self) -> DataSourceType {
-        self.source_type
+        self.source_type.clone()
     }
 
     fn supported_assets(&self) -> Vec<AssetType> {

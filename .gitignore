@@ -177,4 +177,12 @@ config/staging.yml
 credentials/
 
 # Migration backups (temporary files)
-migration_backup/ 
+migration_backup/
+
+# Infrastructure Data (Docker Volumes)
+infrastructure/database/clickhouse/data/
+infrastructure/database/clickhouse/log/
+infrastructure/database/postgres/data/
+infrastructure/database/redis/data/
+infrastructure/vector/data/
+infrastructure/vector/vector.toml

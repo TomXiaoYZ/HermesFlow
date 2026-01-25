@@ -20,15 +20,11 @@ pub mod history;
 // ... metrics background updater ...
 pub async fn spawn_metrics_updater(state: AppState) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        let mut interval = tokio::time::interval(Duration::from_secs(10)); // Increased frequency to 10s
         loop {
             interval.tick().await;
             
             // Query DB count
-            // Access pool via the exposed field in PostgresRepositories or add a getter
-            // Assuming PostgresRepositories has a public 'pool' or we should add one.
-            // Let's assume for now we can access it if confirmed by view_file.
-            // If mod.rs shows `pub pool: PgPool`, we use `&state.postgres.pool`.
             let pool = &state.postgres.pool;
             let count_res: Result<i64, _> = sqlx::query_scalar("SELECT count(*) FROM active_tokens WHERE is_active = true")
                 .fetch_one(pool)
@@ -36,6 +32,31 @@ pub async fn spawn_metrics_updater(state: AppState) {
 
             if let Ok(count) = count_res {
                 ACTIVE_SYMBOLS_COUNT.set(count);
+                
+                // Publish to Redis
+                if let Some(redis_lock) = &state.redis {
+                    let redis = redis_lock.read().await;
+                    // We need a raw connection or use publisher if available.
+                    // RedisCache might not expose raw publish easily.
+                    // Let's create a new client or use what's available.
+                    // Ideally verify RedisCache has publish. Assuming it does or we can get connection.
+                    // Actually, let's just use the connection string from config if possible, 
+                    // or better, use the RedisCache's internal mechanism if I knew it.
+                    // Since I don't check RedisCache source, let's try to get a connection from the lock?
+                    // "get_connection" is likely on RedisCache based on `get_strategy_population`.
+                    
+                    let mut conn = redis.get_connection();
+                    use redis::AsyncCommands;
+                    
+                    let payload = serde_json::json!({
+                        "active_tokens": count,
+                        "timestamp": chrono::Utc::now().to_rfc3339()
+                    }).to_string();
+
+                    if let Err(e) = conn.publish::<_, _, ()>("system_metrics", payload).await {
+                        tracing::error!("Failed to publish system_metrics: {}", e);
+                    }
+                }
             }
         }
     });

@@ -3,55 +3,19 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Terminal, Search } from "lucide-react";
 
-interface LogEntry {
+export interface LogEntry {
     timestamp: string;
     level: "INFO" | "WARN" | "ERROR";
     message: string;
+    module?: string;
 }
 
-export default function SystemLogs() {
-    const [logs, setLogs] = useState<LogEntry[]>([]);
+export default function SystemLogs({ logs }: { logs: LogEntry[] }) {
     const [search, setSearch] = useState("");
     const [activeModule, setActiveModule] = useState<"ALL" | "STRATEGY" | "DATA" | "SYSTEM">("ALL");
     const logsEndRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-        const ws = new WebSocket("ws://localhost:8080/ws");
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                // Parse log messages
-                // Handle standard JSON logs (strategy) and tracing logs (fields.message)
-                const rawMsg = data.message || data.fields?.message;
-
-                if (data.action || rawMsg) {
-                    let level: LogEntry["level"] = "INFO";
-                    if (data.action === "ERROR" || data.level === "ERROR") level = "ERROR";
-                    if (data.action === "WARNING" || data.level === "WARN") level = "WARN";
-
-                    // Determine Module
-                    let module = "SYSTEM";
-                    if (data.strategy_id || data.action === "Evolving") module = "STRATEGY";
-                    if (data.source || (data.symbol && !data.strategy_id)) module = "DATA";
-                    // Tracing logs from data-engine usually have target
-                    if (data.target && data.target.includes("data_engine")) module = "DATA";
-
-                    const logEntry: LogEntry = {
-                        timestamp: new Date(data.timestamp || Date.now()).toLocaleTimeString(),
-                        level,
-                        message: `[${data.symbol || module}] ${rawMsg || JSON.stringify(data)}`,
-                        module
-                    };
-                    setLogs((prev) => [logEntry, ...prev.slice(0, 99)]);
-                }
-            } catch (e) {
-                // Ignore parse errors
-            }
-        };
-
-        return () => ws.close();
-    }, []);
+    // Removed internal WS effect
 
     useEffect(() => {
         logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -139,9 +103,4 @@ function LogLine({ log }: { log: LogEntry }) {
     );
 }
 
-interface LogEntry {
-    timestamp: string;
-    level: "INFO" | "WARN" | "ERROR";
-    message: string;
-    module?: string;
-}
+

@@ -59,100 +59,24 @@ impl BirdeyeConnector {
         Ok(candles)
     }
 
-    /// Dynamic connector that queries database for active symbols
-    /// Refreshes symbol list every 5 minutes from active_tokens table
     pub async fn connect(
         &self,
-        token_repo: Arc<dyn TokenRepository>,
+        _token_repo: Arc<dyn TokenRepository>,
     ) -> Result<
         tokio::sync::mpsc::Receiver<crate::models::StandardMarketData>,
         Box<dyn Error + Send + Sync>,
     > {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
-        let client = self.client.clone();
-
+        let (_tx, rx) = tokio::sync::mpsc::channel(100);
+        
+        // Birdeye polling is disabled in favor of Jupiter Price API
+        // This connector now only serves on-demand history/overview requests
         tokio::spawn(async move {
-            let mut cached_symbols: Vec<String> = Vec::new();
-            let mut last_refresh = std::time::Instant::now();
-            let refresh_interval = std::time::Duration::from_secs(300); // 5 minutes
-
+            info!("Birdeye Collector: Real-time polling is DISABLED (API Cost Optimization).");
+            info!("Using Jupiter Price API for monitoring instead.");
+            
+            // Keep the task alive just in case, but do nothing
             loop {
-                // Refresh symbol list from database every 5 minutes
-                if cached_symbols.is_empty() || last_refresh.elapsed() >= refresh_interval {
-                    match token_repo.get_active_addresses().await {
-                        Ok(symbols) => {
-                            if symbols.len() != cached_symbols.len() {
-                                info!(
-                                    "🔄 Refreshed active symbols from DB: {} tokens",
-                                    symbols.len()
-                                );
-                            }
-                            cached_symbols = symbols;
-                            last_refresh = std::time::Instant::now();
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to fetch active symbols from DB: {}. Using cached list.",
-                                e
-                            );
-                        }
-                    }
-                }
-
-                if cached_symbols.is_empty() {
-                    info!("No active symbols in database, waiting 30s before retry...");
-                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                    continue;
-                }
-
-                // Poll each active symbol
-                for symbol in &cached_symbols {
-                    match client.get_token_overview(symbol).await {
-                        Ok(overview) => {
-                            let price = overview.price.unwrap_or(0.0);
-                            let liquidity = overview.liquidity.and_then(|v| Decimal::from_f64(v));
-                            let fdv = overview.market_cap.and_then(|v| Decimal::from_f64(v));
-
-                            let data = crate::models::StandardMarketData {
-                                source: crate::models::DataSourceType::Birdeye,
-                                exchange: "Birdeye".to_string(),
-                                symbol: symbol.clone(),
-                                asset_type: crate::models::AssetType::Spot,
-                                data_type: crate::models::MarketDataType::Ticker,
-                                price: Decimal::from_f64(price).unwrap_or_default(),
-                                quantity: Decimal::ZERO,
-                                timestamp: Utc::now().timestamp_millis(),
-                                received_at: Utc::now().timestamp_millis(),
-                                bid: None,
-                                ask: None,
-                                high_24h: None,
-                                low_24h: None,
-                                volume_24h: overview.volume_24h.and_then(|v| Decimal::from_f64(v)),
-                                open_interest: None,
-                                funding_rate: None,
-                                liquidity,
-                                fdv,
-                                sequence_id: None,
-                                raw_data: String::new(),
-                            };
-
-                            if let Err(_) = tx.send(data).await {
-                                error!("Birdeye connector: receiver dropped, exiting...");
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            if e.to_string().contains("429") {
-                                warn!("Birdeye rate limit hit for {}, backing off...", symbol);
-                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                            }
-                        }
-                    }
-                }
-
-                // Poll for prices
-                info!("Birdeye: Cycle complete. Sleeping for {} seconds...", client.config.poll_interval_secs);
-                tokio::time::sleep(tokio::time::Duration::from_secs(client.config.poll_interval_secs)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
             }
         });
 

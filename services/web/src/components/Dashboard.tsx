@@ -3,29 +3,142 @@
 import React, { useState, useEffect } from "react";
 import { Activity, TrendingUp, Database, Zap, AlertCircle } from "lucide-react";
 import StrategyMonitor from "@/components/StrategyMonitor";
-import DataPipeline from "@/components/DataPipeline";
+import DataPipeline, { DataMetrics } from "@/components/DataPipeline";
 import TradeExecutionPanel from "@/components/TradeExecutionPanel";
-import SystemLogs from "@/components/SystemLogs";
+import SystemLogs, { LogEntry } from "@/components/SystemLogs";
 import StrategyLab from "@/components/StrategyLab";
 import { cn } from "@/lib/utils";
+import SystemStatus from "@/components/SystemStatus";
+
+// Types
+interface TradeSignal {
+    id: string;
+    timestamp: string;
+    symbol: string;
+    side: "BUY" | "SELL";
+    price: number;
+    quantity: number;
+    status: "PENDING" | "FILLED" | "REJECTED";
+}
 
 export default function Dashboard() {
     const [wsConnected, setWsConnected] = useState(false);
     const [systemHealth, setSystemHealth] = useState<"healthy" | "degraded" | "offline">("offline");
-    const [activeTab, setActiveTab] = useState<"overview" | "strategy-lab">("overview");
+    const [activeTab, setActiveTab] = useState<"overview" | "strategy-lab" | "system">("overview");
+
+    // Centralized State
+    const [signals, setSignals] = useState<TradeSignal[]>([]);
+    const [portfolioValue, setPortfolioValue] = useState(0);
+    const [pnl24h, setPnl24h] = useState(0);
+    const [logs, setLogs] = useState<LogEntry[]>([]);
+    const [heartbeats, setHeartbeats] = useState<Record<string, number>>({});
+    const [metrics, setMetrics] = useState<DataMetrics>({
+        heliusConnected: false,
+        activeTokens: 0,
+        staleSymbols: 0,
+        gapSymbols: 0,
+        lowLiqSymbols: 0,
+    });
+
+    // Strategy State
+    const [currentGen, setCurrentGen] = useState(0);
+    const [currentFitness, setCurrentFitness] = useState<number | null>(null);
+    const [bestFormula, setBestFormula] = useState<number[]>([]);
+    const [fitnessHistory, setFitnessHistory] = useState<{ gen: number; fitness: number }[]>([]);
 
     useEffect(() => {
-        // WebSocket connection to data-engine
+        // WebSocket connection to data-engine via Gateway
         const ws = new WebSocket("ws://localhost:8080/ws");
 
         ws.onopen = () => {
             setWsConnected(true);
             setSystemHealth("healthy");
+            setMetrics(p => ({ ...p, heliusConnected: true }));
         };
 
         ws.onclose = () => {
             setWsConnected(false);
             setSystemHealth("offline");
+            setMetrics(p => ({ ...p, heliusConnected: false }));
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                const { type, data } = message;
+
+                if (type === "heartbeat") {
+                    setHeartbeats(prev => ({
+                        ...prev,
+                        [data.service]: data.timestamp
+                    }));
+                }
+
+                if (type === "signal") {
+                    // ... existing signal code ...
+                    // Trade Signal
+                    // Map backend TradeSignal (id, side=Buy/Sell, etc) to frontend shape
+                    const signal: TradeSignal = {
+                        id: data.id,
+                        timestamp: data.timestamp,
+                        symbol: data.symbol,
+                        side: data.side === "Buy" ? "BUY" : "SELL", // Rust uses "Buy"/"Sell", frontend expects "BUY"/"SELL"
+                        price: data.price || 0,
+                        quantity: data.quantity,
+                        status: "PENDING" // Default
+                    };
+                    setSignals(prev => [signal, ...prev.slice(0, 19)]);
+
+                    // Add to logs too
+                    const log: LogEntry = {
+                        timestamp: new Date().toLocaleTimeString(),
+                        level: "INFO",
+                        message: `Signal Received: ${signal.side} ${signal.symbol} @ ${signal.price}`,
+                        module: "STRATEGY"
+                    };
+                    setLogs(prev => [log, ...prev.slice(0, 99)]);
+                }
+
+                if (type === "portfolio") {
+                    if (data.cash !== undefined) {
+                        setPortfolioValue(data.cash); // Simplified for MVP
+                        // TODO: Calculate PnL from history
+                    }
+                }
+
+                if (type === "market") {
+                    // Market Data Update - Update metrics?
+                    // if data has active count etc.
+                }
+
+                if (type === "metrics") {
+                    if (data.active_tokens !== undefined) {
+                        setMetrics(prev => ({ ...prev, activeTokens: data.active_tokens }));
+                    }
+                }
+
+                if (type === "log" || data.strategy_id === "EvolutionaryKernel") {
+                    // Handle Strategy Status
+                    if (data.action === "Evolving") {
+                        const genMatch = data.message?.match(/Gen (\d+)/);
+                        if (genMatch) {
+                            setCurrentGen(parseInt(genMatch[1]));
+                        }
+                    }
+
+                    // Add to System Logs
+                    const log: LogEntry = {
+                        timestamp: new Date().toLocaleTimeString(),
+                        level: data.level === "ERROR" ? "ERROR" : (data.level === "WARN" ? "WARN" : "INFO"),
+                        message: data.message || JSON.stringify(data),
+                        module: data.strategy_id ? "STRATEGY" : (data.target?.includes("data") ? "DATA" : "SYSTEM")
+                    };
+                    setLogs(prev => [log, ...prev.slice(0, 99)]);
+                }
+
+            } catch (e) {
+                // console.error("Parse error", e);
+            }
         };
 
         return () => ws.close();
@@ -75,6 +188,17 @@ export default function Dashboard() {
                         >
                             Strategy Lab
                         </button>
+                        <button
+                            onClick={() => setActiveTab("system")}
+                            className={cn(
+                                "px-6 py-1.5 rounded-full text-sm font-medium transition-all duration-300",
+                                activeTab === "system"
+                                    ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/20"
+                                    : "text-slate-400 hover:text-white hover:bg-white/5"
+                            )}
+                        >
+                            System Status
+                        </button>
                     </div>
 
                     {/* System Status */}
@@ -99,18 +223,24 @@ export default function Dashboard() {
                     <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                         {/* Left Column: Strategy Monitor */}
                         <div className="col-span-12 lg:col-span-4 space-y-6">
-                            <StrategyMonitor />
+                            <StrategyMonitor
+                                currentGen={currentGen}
+                                currentFitness={currentFitness}
+                                bestFormula={bestFormula}
+                                fitnessHistory={fitnessHistory}
+                                evolutionRate={0} // TODO: calc rate
+                                isEvolving={currentGen > 0}
+                            />
                         </div>
 
-                        {/* Middle Column: Data Pipeline + Execution */}
-                        <div className="col-span-12 lg:col-span-5 space-y-6">
-                            <DataPipeline />
-                            <TradeExecutionPanel />
-                        </div>
-
-                        {/* Right Column: System Logs */}
-                        <div className="col-span-12 lg:col-span-3">
-                            <SystemLogs />
+                        {/* Middle Column: Data Pipeline + Execution (Expanded) */}
+                        <div className="col-span-12 lg:col-span-8 space-y-6">
+                            <DataPipeline metrics={metrics} />
+                            <TradeExecutionPanel
+                                signals={signals}
+                                portfolioValue={portfolioValue}
+                                pnl24h={pnl24h}
+                            />
                         </div>
                     </div>
                 )}
@@ -118,6 +248,20 @@ export default function Dashboard() {
                 {activeTab === "strategy-lab" && (
                     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                         <StrategyLab />
+                    </div>
+                )}
+
+                {activeTab === "system" && (
+                    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                        <SystemStatus
+                            logs={logs}
+                            heartbeats={heartbeats}
+                            metrics={{
+                                activeTokens: metrics.activeTokens,
+                                heliusConnected: metrics.heliusConnected,
+                                wsConnected: wsConnected
+                            }}
+                        />
                     </div>
                 )}
             </main>

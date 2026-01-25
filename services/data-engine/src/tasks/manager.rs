@@ -307,8 +307,8 @@ impl TaskManager {
         let repos_clone = self.repos.clone();
         let config_clone = self.config.clone();
 
-        // Every 15 minutes: 0 */15 * * * *
-        let job = Job::new_async("0 */15 * * * *", move |_uuid, _l| {
+        // Every 1 hour: 0 0 * * * *
+        let job = Job::new_async("0 0 * * * *", move |_uuid, _l| {
             let repos = repos_clone.clone();
             let config = config_clone.clone();
 
@@ -367,6 +367,45 @@ impl TaskManager {
             let task = DataQualityTask::new(repos_startup);
             task.run().await;
         });
+
+        Ok(())
+    }
+
+    pub async fn register_candle_aggregation_job(&self) -> Result<(), Box<dyn std::error::Error>> {
+        info!("Registering Candle Aggregation Job (Every 5 minutes)...");
+
+        let pool = self.repos.pool.clone();
+
+        // ONE-TIME: Run historical backfill on startup (past 48 hours)
+        info!("🚀 Running ONE-TIME historical candle backfill (48 hours)...");
+        let pool_startup = pool.clone();
+        tokio::spawn(async move {
+            let mut aggregator = crate::tasks::candle_aggregation::CandleAggregator::new(pool_startup);
+            if let Err(e) = aggregator.aggregate_candles(48 * 60).await {  // 48 hours in minutes
+                error!("Historical backfill failed: {}", e);
+            } else {
+                info!("✅ Historical candle backfill completed successfully");
+            }
+        });
+
+        // Schedule: Every 5 minutes
+        let job = Job::new_async("0 */5 * * * *", move |_uuid, _l| {
+            let pool_clone = pool.clone();
+            Box::pin(async move {
+                info!("Running Candle Aggregation Task...");
+                let mut aggregator = crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
+                
+                // Aggregate last 20 minutes of snapshots (overlap to ensure no gaps)
+                if let Err(e) = aggregator.aggregate_candles(20).await {
+                    error!("Candle Aggregation Task failed: {}", e);
+                } else {
+                    info!("Candle Aggregation Task completed successfully");
+                }
+            })
+        })?;
+
+        let mut scheduler = self.scheduler.write().await;
+        scheduler.add(job).await?;
 
         Ok(())
     }

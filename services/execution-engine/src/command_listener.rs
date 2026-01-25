@@ -65,26 +65,10 @@ impl CommandListener {
                         tokio::spawn(async move {
                             let res = match sig_clone.side {
                                 common::events::OrderSide::Buy => {
-                                    // Safety Check: Verify Token is sellable (Honeypot/Rug Check)
-                                    match trader.check_honeypot(&sig_clone.symbol).await {
-                                        Ok(true) => {
-                                            // Buy logic: quantity in SOL? Or quantity in Tokens?
-                                            // Signal says 'quantity' of Asset.
-                                            // If Buy SOL -> Token: Input is SOL amount.
-                                            // If we are given quantity of generic asset, we might need a price to valid input amount.
-                                            // For now, assume quantity is Input Amount (SOL for buys).
-                                            trader
-                                                .buy(&sig_clone.symbol, sig_clone.quantity, 100)
-                                                .await
-                                        }
-                                        Ok(false) => Err(anyhow::anyhow!(
-                                            "EXECUTION ABORTED: Honeypot Check Failed for {}",
-                                            sig_clone.symbol
-                                        )),
-                                        Err(e) => {
-                                            Err(anyhow::anyhow!("Honeypot Check Error: {}", e))
-                                        }
-                                    }
+                                    // Risk Engine has already verified this signal. Execute immediately.
+                                    trader
+                                        .buy(&sig_clone.symbol, sig_clone.quantity, 100)
+                                        .await
                                 }
                                 common::events::OrderSide::Sell => {
                                     // Sell logic: quantity is % to sell? Or strict amount?

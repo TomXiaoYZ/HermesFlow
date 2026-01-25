@@ -1,0 +1,30 @@
+<clickhouse>
+    <logger>
+        <!-- Log level: trace, debug, information, warning, error -->
+        <level>information</level>
+        
+        <!-- Console logging -->
+        <console>1</console>
+        
+        <!-- File logging -->
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+        
+        <!-- Log rotation -->
+        <size>1000M</size>
+        <count>10</count>
+        
+        <!-- Log retention: 15 days -->
+        <!-- Logs older than 15 days will be automatically deleted -->
+        <max_days>15</max_days>
+    </logger>
+    
+    <!-- Query log settings -->
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <!-- Keep query logs for 15 days -->
+        <partition_by>toYYYYMMDD(event_date)</partition_by>
+        <ttl>event_date + INTERVAL 15 DAY</ttl>
+    </query_log>
+</clickhouse>

@@ -1,0 +1,101 @@
+impl Factor for FOMO {
+    fn slug(&self) -> &str { "fomo" }
+    fn compute(&self, ctx: &mut FactorContext) -> Array2<f64> {
+        MemeIndicators::fomo_acceleration(&ctx.volume)
+    }
+}
+
+pub struct PumpDeviation {
+    window: usize,
+}
+
+impl PumpDeviation {
+    pub fn new(window: usize) -> Self {
+        Self { window }
+    }
+}
+
+impl Factor for PumpDeviation {
+    fn slug(&self) -> &str { "pump_dev" }
+    fn compute(&self, ctx: &mut FactorContext) -> Array2<f64> {
+        MemeIndicators::pump_deviation(&ctx.close, self.window)
+    }
+}
+
+pub struct LogVolume;
+impl Factor for LogVolume {
+    fn slug(&self) -> &str { "log_vol" }
+    fn compute(&self, ctx: &mut FactorContext) -> Array2<f64> {
+        ctx.volume.mapv(|v| (v + 1.0).ln())
+    }
+}
+
+pub struct VolatilityClustering {
+    window: usize,
+}
+
+impl VolatilityClustering {
+    pub fn new(window: usize) -> Self {
+        Self { window }
+    }
+}
+
+impl Factor for VolatilityClustering {
+
+    fn slug(&self) -> &str { "vol_cluster" }
+    fn compute(&self, ctx: &mut FactorContext) -> Array2<f64> {
+        let returns = ctx.cache.get("log_returns").cloned().unwrap_or_else(|| {
+            let prev = ts_delay(&ctx.close, 1);
+            (&ctx.close / (&prev + 1e-9)).mapv(f64::ln)
+        });
+        MemeIndicators::volatility_clustering(&returns, self.window)
+    }
+    fn dependencies(&self) -> Vec<&str> { vec!["log_returns"] }
+}
+
+pub struct MomentumReversal {
+    window: usize,
+}
+
+impl MomentumReversal {
+    pub fn new(window: usize) -> Self {
+        Self { window }
+    }
+}
+impl Factor for MomentumReversal {
+
+
+    fn slug(&self) -> &str { "mom_rev" }
+    fn compute(&self, ctx: &mut FactorContext) -> Array2<f64> {
+        MemeIndicators::momentum_reversal(&ctx.close, self.window)
+    }
+}
+
+pub struct RSI {
+    period: usize,
+}
+
+impl RSI {
+    pub fn new(period: usize) -> Self {
+        Self { period }
+    }
+}
+
+impl Factor for RSI {
+
+
+    fn slug(&self) -> &str { "rsi" }
+    fn compute(&self, ctx: &mut FactorContext) -> Array2<f64> {
+        MemeIndicators::relative_strength(&ctx.close, self.period)
+    }
+}
+
+// Moving Averages
+pub struct EMA12;
+impl Factor for EMA12 {
+    fn slug(&self) -> &str { "ema_12" }
+    fn compute(&self, ctx: &mut FactorContext) -> Array2<f64> {
+        let ema = MovingAverages::ema(&ctx.close, 12);
+        (&ctx.close - &ema) / (&ctx.close + 1e-9)
+    }
+}

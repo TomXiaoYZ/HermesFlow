@@ -9,10 +9,18 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod health;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting Execution Engine...");
+
+    // Spawn health check server
+    tokio::spawn(async {
+        health::start_health_server().await;
+    });
+
 
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
     let solana_rpc = env::var("SOLANA_RPC_URL")
@@ -105,6 +113,22 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+
+    // 2.6 Start Heartbeat Task
+    let redis_url_hb = redis_url.clone();
+    tokio::spawn(async move {
+        let client = redis::Client::open(redis_url_hb).expect("Invalid Redis URL for Heartbeat");
+        let mut con = client.get_connection().expect("Failed to connect to Redis for Heartbeat");
+        loop {
+            let hb = serde_json::json!({
+                "service": "execution-engine",
+                "status": "online",
+                "timestamp": Utc::now().timestamp_millis()
+            });
+            let _: () = con.publish("system_heartbeat", hb.to_string()).unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
 
     info!("Execution Engine Ready. Listening for signals...");
 

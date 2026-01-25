@@ -1,5 +1,6 @@
 use chrono::{TimeZone, Utc};
 use common::events::MarketDataUpdate;
+use redis::Commands;
 use data_engine::{
     collectors::{
         AkShareCollector, BinanceConnector, BybitConnector, FutuConnector, IBKRCollector,
@@ -150,6 +151,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = tm.register_data_quality_job().await {
                 tracing::warn!("Failed to register data quality job: {}", e);
             }
+            // Register Candle Aggregation job
+            if let Err(e) = tm.register_candle_aggregation_job().await {
+                tracing::warn!("Failed to register candle aggregation job: {}", e);
+            }
             Some(tm)
         }
         Err(e) => {
@@ -213,6 +218,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
+
+            // Start Heartbeat Task
+    tracing::info!("Starting Heartbeat Task...");
+    let redis_url_hb = config.redis.url.clone();
+    tokio::spawn(async move {
+        // Simple dedicated connection for heartbeat
+        if let Ok(client) = redis::Client::open(redis_url_hb) {
+            if let Ok(mut con) = client.get_connection() {
+                loop {
+                    let hb = serde_json::json!({
+                        "service": "data-engine",
+                        "status": "online",
+                        "timestamp": Utc::now().timestamp_millis()
+                    });
+                    // Fire and forget
+                    let _: redis::RedisResult<()> = con.publish("system_heartbeat", hb.to_string());
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            } else {
+                 tracing::error!("Failed to connect to Redis for Heartbeat");
+            }
+        }
+    });
 
     // Create broadcast channel for shutdown signal
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
@@ -475,6 +503,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Err(e) => {
                             tracing::error!("Helius Connect failed: {}. Retrying in 5s...", e);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    // Start Jupiter collector if configured (New Optimization)
+    if let Some(jupiter_config) = config.jupiter.clone() {
+        if jupiter_config.enabled {
+            tracing::info!("Starting Jupiter Price collector");
+            use data_engine::collectors::JupiterPriceCollector;
+            let jupiter_collector = JupiterPriceCollector::new(jupiter_config);
+            let mut shutdown_rx = shutdown_tx.subscribe();
+            let repos = Arc::clone(&postgres_repos);
+
+            let redis_publisher = if let Some(r) = &redis {
+                Some(r.read().await.clone())
+            } else {
+                None
+            };
+            let tx_clone = broadcast_tx.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    match jupiter_collector.connect(repos.token.clone()).await {
+                        Ok(mut rx) => {
+                            tracing::info!("Jupiter Price collector connection established");
+                            loop {
+                                tokio::select! {
+                                    Some(msg) = rx.recv() => {
+                                         if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                                             tracing::warn!("Failed to store Jupiter snapshot: {}", e);
+                                         }
+                                         
+                                         // Map to Standard Event
+                                         let update = MarketDataUpdate {
+                                             symbol: msg.symbol.clone(),
+                                             price: msg.price.to_f64().unwrap_or_default(),
+                                             volume: msg.quantity.to_f64().unwrap_or_default(),
+                                             timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
+                                             source: "jupiter".to_string(),
+                                         };
+
+                                         if let Ok(json) = serde_json::to_string(&update) {
+                                              let _ = tx_clone.send(json.clone());
+                                              let channel = "market_data";
+                                              if let Some(publisher) = &redis_publisher {
+                                                  if let Err(e) = publisher.publish(&channel, &json).await {
+                                                      tracing::warn!("Failed to publish to Redis: {}", e);
+                                                  }
+                                              }
+                                         }
+                                    }
+                                    _ = shutdown_rx.recv() => {
+                                        let _ = jupiter_collector.disconnect().await;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Jupiter Connect failed: {}. Retrying in 5s...", e);
                             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                         }
                     }

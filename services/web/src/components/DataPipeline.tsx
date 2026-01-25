@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { Database, CloudLightning, AlertTriangle, CheckCircle2 } from "lucide-react";
 
-interface DataMetrics {
+export interface DataMetrics {
     heliusConnected: boolean;
     activeTokens: number;
     staleSymbols: number;
@@ -11,58 +11,10 @@ interface DataMetrics {
     lowLiqSymbols: number;
 }
 
-export default function DataPipeline() {
-    const [metrics, setMetrics] = useState<DataMetrics>({
-        heliusConnected: false,
-        activeTokens: 0,
-        staleSymbols: 0,
-        gapSymbols: 0,
-        lowLiqSymbols: 0,
-    });
-
-    useEffect(() => {
-        const ws = new WebSocket("ws://localhost:8080/ws");
-
-        ws.onopen = () => {
-            setMetrics((prev) => ({ ...prev, heliusConnected: true }));
-        };
-
-        ws.onclose = () => {
-            setMetrics((prev) => ({ ...prev, heliusConnected: false }));
-        };
-
-        // Poll Prometheus metrics endpoint
-        const fetchMetrics = async () => {
-            try {
-                const res = await fetch("/metrics");
-                const text = await res.text();
-
-                // Parse Prometheus format (simple regex for demo)
-                const activeTokensMatch = text.match(/(?:dq_active_symbols|data_engine_active_symbols_count) (\d+)/);
-                const staleMatch = text.match(/dq_stale_symbols (\d+)/);
-                const gapMatch = text.match(/dq_gap_symbols (\d+)/);
-                const lowLiqMatch = text.match(/dq_low_liquidity_symbols (\d+)/);
-
-                setMetrics((prev) => ({
-                    ...prev,
-                    activeTokens: activeTokensMatch ? parseInt(activeTokensMatch[1]) : prev.activeTokens,
-                    staleSymbols: staleMatch ? parseInt(staleMatch[1]) : prev.staleSymbols,
-                    gapSymbols: gapMatch ? parseInt(gapMatch[1]) : prev.gapSymbols,
-                    lowLiqSymbols: lowLiqMatch ? parseInt(lowLiqMatch[1]) : prev.lowLiqSymbols,
-                }));
-            } catch (e) {
-                console.error("Failed to fetch metrics", e);
-            }
-        };
-
-        fetchMetrics();
-        const interval = setInterval(fetchMetrics, 10000); // Poll every 10s
-
-        return () => {
-            ws.close();
-            clearInterval(interval);
-        };
-    }, []);
+export default function DataPipeline({ metrics }: { metrics: DataMetrics }) {
+    // We removed internal fetching to trust parent or separate hook
+    // But parent needs to provide all this data.
+    // Ideally parent handles all data.
 
     const hasIssues = metrics.staleSymbols > 0 || metrics.gapSymbols > 0 || metrics.lowLiqSymbols > 0;
 

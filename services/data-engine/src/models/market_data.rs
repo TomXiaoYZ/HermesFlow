@@ -95,7 +95,7 @@ impl StandardMarketData {
         timestamp: i64,
     ) -> Self {
         Self {
-            source,
+            source: source.clone(),
             exchange: source.exchange().to_string(),
             symbol,
             asset_type,

@@ -9,6 +9,24 @@ services:
     volumes:
       - redis_data:/data
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_PASSWORD=hermesflow
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - ./infrastructure/database/clickhouse/data:/var/lib/clickhouse
+      - ./infrastructure/database/clickhouse/logs:/var/log/clickhouse-server
+    restart: always
+
   timescaledb:
     image: timescale/timescaledb:latest-pg15
     ports:
@@ -19,12 +37,22 @@ services:
       - hermesflow_postgres-data:/var/lib/postgresql/data
     restart: always
 
+  vector:
+    image: timberio/vector:latest-alpine
+    command: --config /etc/vector/vector.toml
+    volumes:
+      - ./infrastructure/vector/vector.toml:/etc/vector/vector.toml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - clickhouse
+    restart: always
+
   data-engine:
     build:
       context: .
       dockerfile: services/data-engine/Dockerfile
     ports:
-      - "8080:8080"
+      - "8081:8080" # Remapped to avoid conflict
     environment:
       - RUST_ENV=prod
       - DATA_ENGINE__REDIS__URL=redis://redis:6379
@@ -33,11 +61,29 @@ services:
       - DATA_ENGINE__SERVER__HOST=0.0.0.0
       - DATA_ENGINE__BIRDEYE__API_KEY=${DATA_ENGINE__BIRDEYE__API_KEY}
       - DATA_ENGINE__HELIUS__API_KEY=${DATA_ENGINE__HELIUS__API_KEY}
+      - DATA_ENGINE__JUPITER__API_KEY=${DATA_ENGINE__JUPITER__API_KEY}
       - SOLANA_RPC_URL=${SOLANA_RPC_URL}
       # Add API keys here or in .env
     depends_on:
       - redis
       - timescaledb
+    restart: always
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    ports:
+      - "8080:8080" # Exposed for WebSocket
+    environment:
+      - RUST_LOG=info
+      - REDIS_URL=redis://redis:6379
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=hermesflow
+    depends_on:
+      - redis
+      - clickhouse
     restart: always
 
   strategy-engine:
@@ -50,6 +96,21 @@ services:
     depends_on:
       - redis
       - data-engine
+    restart: always
+
+  user-management:
+    build:
+      context: ./services/user-management
+      dockerfile: Dockerfile
+    ports:
+      - "8086:8086"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://timescaledb:5432/hermesflow
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=password
+      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD}
+    depends_on:
+      - timescaledb
     restart: always
 
   execution-engine:
@@ -87,9 +148,10 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws
-      # Note: Browser connects to localhost:8080, not internal docker name
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - API_URL=http://gateway:8080
     depends_on:
-      - data-engine
+      - gateway
     restart: always
 
 volumes:

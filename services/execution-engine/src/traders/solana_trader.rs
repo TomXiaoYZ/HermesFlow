@@ -78,6 +78,10 @@ impl SolanaTrader {
         })
     }
 
+    pub fn get_pubkey(&self) -> Pubkey {
+        self.keypair.pubkey()
+    }
+
     pub async fn get_balance(&self) -> Result<f64> {
         let balance_lamports = self
             .rpc_client
@@ -240,7 +244,7 @@ impl SolanaTrader {
             &user_token_ata,
             amount_in,
             minimum_amount_out,
-        )?;
+        ).await?;
         instructions.push(swap_ix);
 
         // 8. Close wSOL ATA after swap to get remaining SOL back
@@ -276,6 +280,132 @@ impl SolanaTrader {
         Ok(sig_str)
     }
 
+    /// Raydium on-chain sell: Token -> SOL (native)
+    /// 1. Swap Token -> wSOL
+    /// 2. Unwrap wSOL -> Native SOL (by closing account)
+    pub async fn sell_raydium_experimental(
+        &self,
+        token_address: &str,
+        amount_token: u64,
+        slippage_bps: u16,
+    ) -> Result<String> {
+        info!("[Raydium] Executing SELL: {} tokens -> SOL", amount_token);
+
+        // 1. Find pool
+        let sol_mint = Pubkey::from_str(SOL_MINT)?;
+        let token_mint = Pubkey::from_str(token_address)?;
+        
+        let pool = self.raydium.find_pool(&sol_mint, &token_mint).await?;
+        info!("[Raydium] Found pool: {}", pool);
+
+        // 2. Get full AMM info
+        let amm_info = self.raydium.get_amm_info(&pool).await?;
+        
+        // 3. Determine reserves (Input = Token, Output = SOL)
+        let wsol_mint = Pubkey::from_str(SOL_MINT)?;
+        
+        // We are swapping Token -> wSOL
+        // reserve_in = Token Reserve
+        // reserve_out = SOL Reserve
+        let (reserve_in, reserve_out) = if amm_info.coin_mint == wsol_mint {
+            // coin is SOL, pc is Token. 
+            // In: Token (pc), Out: SOL (coin)
+            (amm_info.pool_pc_total, amm_info.pool_coin_total)
+        } else if amm_info.pc_mint == wsol_mint {
+            // pc is SOL, coin is Token.
+            // In: Token (coin), Out: SOL (pc)
+            (amm_info.pool_coin_total, amm_info.pool_pc_total)
+        } else {
+            return Err(anyhow!("Pool does not contain SOL/wSOL"));
+        };
+
+        // 4. Calculate expected output (wSOL)
+        let amount_out_wsol = self.raydium.calculate_swap_output(
+            amount_token,
+            reserve_in,
+            reserve_out,
+            25,     // 0.25% fee
+            10_000,
+        )?;
+
+        // 5. Apply slippage
+        let slippage_multiplier = 1.0 - (slippage_bps as f64 / 10_000.0);
+        let minimum_amount_out = ((amount_out_wsol as f64) * slippage_multiplier) as u64;
+
+        info!(
+            "[Raydium] Sell Calculation: {} tokens -> {} wSOL (min: {})",
+            amount_token, amount_out_wsol, minimum_amount_out
+        );
+
+        // 6. Build Instructions
+        let wallet = self.keypair.pubkey();
+        let user_wsol_ata = get_associated_token_address(&wallet, &wsol_mint);
+        let user_token_ata = get_associated_token_address(&wallet, &token_mint);
+        
+        let mut instructions = vec![];
+
+        // 6a. Create wSOL ATA (Destination) if NOT exists
+        // We need it to receive wSOL from the pool
+        let wsol_ata_exists = self.rpc_client.get_account(&user_wsol_ata).is_ok();
+        if !wsol_ata_exists {
+            info!("[Raydium] Creating wSOL ATA (destination for swap)");
+            let create_wsol_ata_ix = spl_associated_token_account::instruction::create_associated_token_account(
+                &wallet,
+                &wallet,
+                &wsol_mint,
+                &spl_token::id(),
+            );
+            instructions.push(create_wsol_ata_ix);
+        }
+
+        // 6b. Token ATA Must Exist (Source)
+        if self.rpc_client.get_account(&user_token_ata).is_err() {
+            return Err(anyhow!("User Token ATA does not exist. Cannot sell."));
+        }
+
+        // 7. Swap Instruction (Source: Token ATA, Dest: wSOL ATA)
+        let swap_ix = self.raydium.build_swap_instruction(
+            &amm_info,
+            &pool,
+            &wallet,
+            &user_token_ata, // Source: Token
+            &user_wsol_ata,  // Dest: wSOL
+            amount_token,
+            minimum_amount_out,
+        ).await?;
+        instructions.push(swap_ix);
+
+        // 8. Close wSOL ATA (Unwrap to native SOL)
+        // This sends the wSOL balance + rent back to the user as native SOL.
+        let close_wsol_ata_ix = spl_token::instruction::close_account(
+            &spl_token::id(),
+            &user_wsol_ata,
+            &wallet, // Dest for funds
+            &wallet, // Authority
+            &[],
+        )?;
+        instructions.push(close_wsol_ata_ix);
+
+        // 9. Send Transaction
+        let recent_blockhash = self.rpc_client.get_latest_blockhash()?;
+        let transaction = Transaction::new_signed_with_payer(
+            &instructions,
+            Some(&wallet),
+            &[&self.keypair],
+            recent_blockhash,
+        );
+
+        info!("[Raydium] Sending SELL transaction...");
+        let signature = self
+            .rpc_client
+            .send_and_confirm_transaction(&transaction)
+            .map_err(|e| anyhow!("Raydium sell failed: {}", e))?;
+
+        let sig_str = signature.to_string();
+        info!("[Raydium] Sell successful: {}", sig_str);
+
+        Ok(sig_str)
+    }
     /// Main buy entry point - tries Raydium first, falls back to Jupiter
     pub async fn buy(
         &self,
@@ -283,6 +413,11 @@ impl SolanaTrader {
         amount_sol: f64,
         slippage_bps: u16,
     ) -> Result<String> {
+        // Guard against self-swap
+        if token_address == SOL_MINT {
+            return Err(anyhow!("Cannot swap SOL for SOL (Self-swap detected)"));
+        }
+
         // Try Raydium experimental first
         match self.buy_raydium_experimental(token_address, amount_sol, slippage_bps).await {
             Ok(sig) => {
@@ -334,18 +469,29 @@ impl SolanaTrader {
             return Err(anyhow!("Sell amount is 0"));
         }
 
-        // 2. Get Quote
+        // 2. Try Raydium Sell First
+        match self.sell_raydium_experimental(token_address, amount_to_sell, slippage_bps).await {
+            Ok(sig) => {
+                 info!("[Raydium-MVP] Sell successful via Raydium");
+                 return Ok(sig);
+            }
+            Err(e) => {
+                warn!("[Raydium-MVP] Sell failed: {}. Falling back to Jupiter.", e);
+            }
+        }
+
+        // 3. Fallback to Jupiter (Get Quote)
         let quote = self
             .get_quote(token_address, SOL_MINT, amount_to_sell, slippage_bps)
             .await?;
 
-        // 3. Get Swap Transaction
+        // 4. Get Swap Transaction
         let swap_tx_base64 = self.get_swap_transaction(&quote).await?;
 
-        // 4. Sign and Send
+        // 5. Sign and Send
         let sig = self.sign_and_send_transaction(&swap_tx_base64).await?;
 
-        // 5. Confirm
+        // 6. Confirm
         self.confirm_transaction(&sig).await?;
 
         Ok(sig)
@@ -367,11 +513,15 @@ impl SolanaTrader {
             .http_client
             .get(&url)
             .send()
-            .await?
-            .json::<QuoteResponse>()
             .await?;
 
-        Ok(resp)
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            return Err(anyhow!("Jupiter Quote API error ({}): {}", url, text));
+        }
+
+        let quote = resp.json::<QuoteResponse>().await?;
+        Ok(quote)
     }
 
     async fn get_swap_transaction(&self, quote: &QuoteResponse) -> Result<String> {

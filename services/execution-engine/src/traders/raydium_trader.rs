@@ -18,66 +18,38 @@ const RAYDIUM_AMM_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1M
 pub struct AmmInfo {
     /// Initialized status
     pub status: u64,
-    /// Nonce used to generate seeds
     pub nonce: u64,
-    /// Max order count
     pub order_num: u64,
-    /// Within this range, 5 fraction_part is 1/10000
     pub depth: u64,
-    /// Coin mint decimals
     pub coin_decimals: u64,
-    /// Pc mint decimals
     pub pc_decimals: u64,
-    /// AMM start state: 0 - not started, 1 - started
     pub state: u64,
-    /// Reset flag
     pub reset_flag: u64,
-    /// Min size for order
     pub min_size: u64,
-    /// Vol max cut ratio
     pub vol_max_cut_ratio: u64,
-    /// Amm owner
-    pub amm_owner: Pubkey,
-    /// Fee amount for liquidity provider
-    pub fees_to_lp: u64,
-    /// Pool fees (numerator/denominator)
-    pub fees: u64,
-    /// Pool coin token account
+    
+    /// Padding for intermediate u64/u128 fields (amount_wave, lot_sizes, fees, PnLs, swap amounts)
+    /// Raydium V4 has ~256 bytes of params here before the first Pubkey.
+    /// 256 bytes = 32 * u64
+    pub padding_header: [u64; 32],
+
     pub pool_coin_token_account: Pubkey,
-    /// Pool pc token account
     pub pool_pc_token_account: Pubkey,
-    /// Coin mint address
     pub coin_mint: Pubkey,
-    /// Pc mint address
     pub pc_mint: Pubkey,
-    /// Lp mint address
     pub lp_mint: Pubkey,
-    /// Open orders
     pub open_orders: Pubkey,
-    /// Serum market
     pub market: Pubkey,
-    /// Serum program id
     pub serum_program_id: Pubkey,
-    /// Target orders
     pub target_orders: Pubkey,
-    /// Withdraw queue
     pub withdraw_queue: Pubkey,
-    /// Temp lp token account
     pub temp_lp_token_account: Pubkey,
-    /// Owner lp token account
-    pub amm_owner_lp_token_account: Pubkey,
-    /// Pnl coin offset
-    pub pnl_coin: u64,
-    /// Pnl pc offset
-    pub pnl_pc: u64,
-    /// Pool total deposit coin in liquidity
-    pub pool_coin_total: u64,
-    /// Pool total deposit pc in liquidity  
+    pub amm_owner: Pubkey,
+    pub amm_owner_lp_token_account: Pubkey, // pnl_owner
+    
+    // Remaining fields (u64s)
+    pub pool_coin_total: u64, 
     pub pool_pc_total: u64,
-    /// Total issue lp amount
-    pub pool_lp_supply: u64,
-    /// Padding
-    pub padding: [u64; 3],
 }
 
 // Raydium pool information
@@ -186,19 +158,9 @@ impl RaydiumTrader {
         Ok(amount_out)
     }
 
-    /// Build a complete Raydium SwapBaseInV2 instruction
-    /// Based on: https://github.com/raydium-io/raydium-amm/blob/master/program/src/instruction.rs
-    /// 
-    /// SwapBaseInV2 accounts (8 total):
-    /// 0. SPL Token program
-    /// 1. [writable] AMM Account
-    /// 2. [] AMM authority
-    /// 3. [writable] AMM coin vault
-    /// 4. [writable] AMM pc vault
-    /// 5. [writable] User source token account
-    /// 6. [writable] User destination token account
-    /// 7. [signer] User wallet
-    pub fn build_swap_instruction(
+    /// Build a complete Raydium SwapBaseInV2 instruction (Standard V4)
+    /// This requires 18 accounts to interact with Serum orderbook
+    pub async fn build_swap_instruction(
         &self,
         amm_info: &AmmInfo,
         pool_address: &Pubkey,
@@ -211,47 +173,84 @@ impl RaydiumTrader {
         let program_id = Pubkey::from_str(RAYDIUM_AMM_PROGRAM_ID)?;
         
         // Derive AMM authority PDA
-        // Authority is derived from: create_program_address(&[AUTHORITY_AMM, &[nonce]])
         let (amm_authority, _bump) = Pubkey::find_program_address(
             &[b"amm authority".as_ref()],
             &program_id,
         );
 
+        // Fetch Serum Market Accounts
+        // We need: Market, Bids, Asks, EventQueue, CoinVault, PCVault, VaultSigner
+        let market_info = self.get_market_accounts(&amm_info.market, &amm_info.serum_program_id).await?;
+
         info!(
-            "Building SwapBaseInV2 instruction: {} -> {} tokens",
+            "Building SwapBaseIn (Standard V4) instruction: {} -> {} tokens",
             amount_in, minimum_amount_out
         );
 
-        // Instruction discriminator for SwapBaseInV2 (index 12 in AmmInstruction enum)
-        // This needs to match the exact borsh serialization of Raydium's instruction
+        // Instruction discriminator for SwapBaseIn (index 9 in AmmInstruction enum)
+        // Standard V4 swap uses 9, not 12. 12 is SwapBaseInV2 but might be less supported or have different reqs.
+        // Let's us 9 (swap_base_in) which is the standard.
         let mut data = Vec::new();
-        data.push(12u8); // SwapBaseInV2 discriminator
-        
-        // SwapInstructionBaseIn data:
-        // pub struct SwapInstructionBaseIn {
-        //     pub amount_in: u64,
-        //     pub minimum_amount_out: u64,
-        // }
+        data.push(9u8); // swap_base_in discriminator
         data.extend_from_slice(&amount_in.to_le_bytes());
         data.extend_from_slice(&minimum_amount_out.to_le_bytes());
 
-        // Build accounts array for SwapBaseInV2
+        // Accounts required for Raydium V4 Swap (18 total):
+        // 0. Token Program
+        // 1. AMM Account
+        // 2. AMM Authority
+        // 3. AMM Open Orders
+        // 4. AMM Target Orders
+        // 5. AMM Coin Vault
+        // 6. AMM PC Vault
+        // 7. Serum Program
+        // 8. Serum Market
+        // 9. Serum Bids
+        // 10. Serum Asks
+        // 11. Serum Event Queue
+        // 12. Serum Coin Vault
+        // 13. Serum PC Vault
+        // 14. Serum Vault Signer
+        // 15. User Source Token
+        // 16. User Dest Token
+        // 17. User Owner
+        
         let accounts = vec![
-            // 0. SPL Token program
+            // 0. Token Program
             AccountMeta::new_readonly(spl_token::id(), false),
-            // 1. [writable] AMM Account
+            // 1. AMM Account
             AccountMeta::new(*pool_address, false),
-            // 2. [] AMM authority (derived PDA)
+            // 2. AMM Authority
             AccountMeta::new_readonly(amm_authority, false),
-            // 3. [writable] AMM coin vault
+            // 3. AMM Open Orders
+            AccountMeta::new(amm_info.open_orders, false),
+            // 4. AMM Target Orders
+            AccountMeta::new(amm_info.target_orders, false),
+            // 5. AMM Coin Vault
             AccountMeta::new(amm_info.pool_coin_token_account, false),
-            // 4. [writable] AMM pc vault
+            // 6. AMM PC Vault
             AccountMeta::new(amm_info.pool_pc_token_account, false),
-            // 5. [writable] User source token account
+            // 7. Serum Program
+            AccountMeta::new_readonly(amm_info.serum_program_id, false),
+            // 8. Serum Market
+            AccountMeta::new(amm_info.market, false),
+            // 9. Serum Bids
+            AccountMeta::new(market_info.bids, false),
+            // 10. Serum Asks
+            AccountMeta::new(market_info.asks, false),
+            // 11. Serum Event Queue
+            AccountMeta::new(market_info.event_queue, false),
+            // 12. Serum Coin Vault
+            AccountMeta::new(market_info.coin_vault, false),
+            // 13. Serum PC Vault
+            AccountMeta::new(market_info.pc_vault, false),
+            // 14. Serum Vault Signer
+            AccountMeta::new_readonly(market_info.vault_signer, false),
+            // 15. User Source Token
             AccountMeta::new(*user_source_token, false),
-            // 6. [writable] User destination token account
+            // 16. User Dest Token
             AccountMeta::new(*user_dest_token, false),
-            // 7. [signer] User wallet
+            // 17. User Owner
             AccountMeta::new_readonly(*user_wallet, true),
         ];
 
@@ -264,53 +263,9 @@ impl RaydiumTrader {
 
     /// Get pool reserves by deserializing Raydium AMM pool account data
     pub async fn get_pool_reserves(&self, pool_address: &Pubkey) -> Result<(u64, u64)> {
-        info!("Fetching pool reserves for: {}", pool_address);
-
-        // Fetch the pool account data from Solana RPC
-        let account = self
-            .rpc_client
-            .get_account(pool_address)
-            .map_err(|e| anyhow!("Failed to fetch pool account {}: {}", pool_address, e))?;
-
-        // Verify account owner is Raydium AMM program
-        let raydium_program_id = Pubkey::from_str(RAYDIUM_AMM_PROGRAM_ID)?;
-        if account.owner != raydium_program_id {
-            return Err(anyhow!(
-                "Pool account {} is not owned by Raydium AMM program. Owner: {}",
-                pool_address,
-                account.owner
-            ));
-        }
-
-        // Deserialize the account data using Borsh
-        let amm_info = AmmInfo::try_from_slice(&account.data)
-            .map_err(|e| anyhow!("Failed to deserialize Raydium pool state: {}", e))?;
-
-        // Extract reserves
-        // pool_coin_total = base token reserve
-        // pool_pc_total = quote token reserve (PC = Price Currency, usually USDC/USDT)
-        let base_reserve = amm_info.pool_coin_total;
-        let quote_reserve = amm_info.pool_pc_total;
-
-        info!(
-            "Pool {} reserves: coin={} ({} decimals), pc={} ({} decimals)",
-            pool_address,
-            base_reserve,
-            amm_info.coin_decimals,
-            quote_reserve,
-            amm_info.pc_decimals
-        );
-
-        // Verify pool is active
-        if amm_info.status == 0 {
-            return Err(anyhow!("Pool {} is not initialized", pool_address));
-        }
-
-        if amm_info.state == 0 {
-            warn!("Pool {} AMM state is 0 (not started)", pool_address);
-        }
-
-        Ok((base_reserve, quote_reserve))
+        // Reuse get_amm_info logic
+        let info = self.get_amm_info(pool_address).await?;
+        Ok((info.pool_coin_total, info.pool_pc_total))
     }
 
     /// Get full AMM info by deserializing Raydium AMM pool account data
@@ -334,21 +289,188 @@ impl RaydiumTrader {
             ));
         }
 
-        // Deserialize the account data using Borsh
-        let amm_info = AmmInfo::try_from_slice(&account.data)
-            .map_err(|e| anyhow!("Failed to deserialize Raydium pool state: {}", e))?;
+        // DEBUG: Print FULL bytes in hex to debug layout
+        let debug_hex: String = account.data.iter().take(100).map(|b| format!("{:02x}", b)).collect();
+        info!("AMM Account Data Hex (First 100): {}", debug_hex);
 
-        // Verify pool is active
-        if amm_info.status == 0 {
-            return Err(anyhow!("Pool {} is not initialized", pool_address));
+        // Dynamic Parsing: Scan for USDC Mint to calibrate layout
+        // Default layout assumption:
+        // offset 400: coin_mint
+        // offset 432: pc_mint (USDC)
+        
+        let data = &account.data;
+        if data.len() < 752 {
+             return Err(anyhow!("AMM Account data too short: {}", data.len()));
         }
 
-        if amm_info.state == 0 {
-            warn!("Pool {} AMM state is 0 (not started)", pool_address);
-        }
+        // Search for USDC Mint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+        let usdc_mint_pubkey = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let usdc_bytes = usdc_mint_pubkey.to_bytes();
+        
+        let pc_mint_offset = if let Some(offset) = data.windows(32).position(|w| w == usdc_bytes) {
+            info!("Found USDC Mint at offset: {}", offset);
+            offset
+        } else {
+            warn!("USDC Mint not found in pool data. Assuming standard offset 432.");
+            432
+        };
+        
+        // Calculate offsets relative to pc_mint
+        // Standard V4: 
+        // coin_mint (offset - 32)
+        // pc_mint (offset)
+        // lp_mint (offset + 32)
+        // open_orders (offset + 64)
+        // market (offset + 96)
+        // serum_program_id (offset + 128)
+        // target_orders (offset + 160)
+        // withdraw_queue (offset + 192)
+        // temp_lp_token_account (offset + 224)
+        // amm_owner (offset + 256)
+        // amm_owner_lp_token_account (offset + 288)
 
-        Ok(amm_info)
+        let coin_mint_offset = pc_mint_offset - 32;
+        let pool_pc_offset = coin_mint_offset - 32;   // pool_pc_token_account
+        let pool_coin_offset = pool_pc_offset - 32; // pool_coin_token_account
+        
+        // Parse Pubkeys
+        let pool_coin_token_account = Pubkey::new_from_array(data[pool_coin_offset..pool_coin_offset+32].try_into()?);
+        let pool_pc_token_account = Pubkey::new_from_array(data[pool_pc_offset..pool_pc_offset+32].try_into()?);
+        let coin_mint = Pubkey::new_from_array(data[coin_mint_offset..coin_mint_offset+32].try_into()?);
+        let pc_mint = Pubkey::new_from_array(data[pc_mint_offset..pc_mint_offset+32].try_into()?);
+        
+        let open_orders_offset = pc_mint_offset + 64;
+        let open_orders = Pubkey::new_from_array(data[open_orders_offset..open_orders_offset+32].try_into()?);
+        
+        let market_offset = pc_mint_offset + 96;
+        let market = Pubkey::new_from_array(data[market_offset..market_offset+32].try_into()?);
+        
+        let serum_prog_offset = pc_mint_offset + 128;
+        let serum_program_id = Pubkey::new_from_array(data[serum_prog_offset..serum_prog_offset+32].try_into()?);
+        
+        let target_orders_offset = pc_mint_offset + 160;
+        let target_orders = Pubkey::new_from_array(data[target_orders_offset..target_orders_offset+32].try_into()?);
+        
+        let amm_owner_offset = pc_mint_offset + 256;
+        let amm_owner = Pubkey::new_from_array(data[amm_owner_offset..amm_owner_offset+32].try_into()?);
+
+        // Parse Numerics (Header)
+        // Status at 0, Coin Decimals at 32, Pc Decimals at 40
+        let status = u64::from_le_bytes(data[0..8].try_into()?);
+        let coin_decimals = u64::from_le_bytes(data[32..40].try_into()?);
+        let pc_decimals = u64::from_le_bytes(data[40..48].try_into()?);
+        
+        info!("Fetching real reserves from token accounts...");
+        let base_reserve = self.get_token_balance(&pool_coin_token_account).await?;
+        let quote_reserve = self.get_token_balance(&pool_pc_token_account).await?;
+
+        Ok(AmmInfo {
+            status,
+            nonce: 0,
+            order_num: 0,
+            depth: 0,
+            coin_decimals,
+            pc_decimals,
+            state: 0,
+            reset_flag: 0,
+            min_size: 0,
+            vol_max_cut_ratio: 0,
+            padding_header: [0; 32],
+            pool_coin_token_account,
+            pool_pc_token_account,
+            coin_mint,
+            pc_mint,
+            lp_mint: Pubkey::default(),
+            open_orders,
+            market,
+            serum_program_id,
+            target_orders,
+            withdraw_queue: Pubkey::default(),
+            temp_lp_token_account: Pubkey::default(),
+            amm_owner,
+            amm_owner_lp_token_account: Pubkey::default(),
+            pool_coin_total: base_reserve,
+            pool_pc_total: quote_reserve,
+        })
     }
+
+    /// Helper to get token account balance
+    async fn get_token_balance(&self, token_account: &Pubkey) -> Result<u64> {
+        let balance = self.rpc_client.get_token_account_balance(token_account)?;
+        Ok(balance.amount.parse::<u64>()?)
+    }
+
+    /// Fetch Market Info (Bids, Asks, Queue, Vaults) from Serum Market account
+    /// This is simplified for OpenBook/Serum V3 layout
+    pub async fn get_market_accounts(&self, market_address: &Pubkey, serum_program_id: &Pubkey) -> Result<MarketAccounts> {
+        info!("Fetching Market account: {}", market_address);
+        let account = self.rpc_client.get_account(market_address)
+            .map_err(|e| anyhow!("Failed to fetch market account: {}", e))?;
+            
+        if &account.owner != serum_program_id {
+             return Err(anyhow!("Market owner mismatch! Expected {}, got {}", serum_program_id, account.owner));
+        }
+        
+        let data = account.data;
+        // Serum V3 Layout (approximate offsets for key fields)
+        // 0-5 blob: padding string "sem..." or header
+        // 13-45: account flags?
+        // Let's use standard offsets for Serum V3
+        // vault_signer_nonce: offset 4
+        // base_mint: offset 53
+        // quote_mint: offset 85
+        // base_vault: offset 117
+        // base_deposits_total: ...
+        // base_fees_accrued: ...
+        // quote_vault: offset 165
+        // ...
+        // bids: offset 285
+        // asks: offset 317
+        // event_queue: offset 349
+        
+        // Safety check
+        if data.len() < 380 {
+             return Err(anyhow!("Market account data too short"));
+        }
+        
+        let base_vault = Pubkey::new_from_array(data[117..149].try_into()?);
+        let quote_vault = Pubkey::new_from_array(data[165..197].try_into()?);
+        let bids = Pubkey::new_from_array(data[285..317].try_into()?);
+        let asks = Pubkey::new_from_array(data[317..349].try_into()?);
+        let event_queue = Pubkey::new_from_array(data[349..381].try_into()?);
+        
+        // Serum V3 Layout (approximate offsets for key fields)
+        // vault_signer_nonce is u64 at offset 4
+        
+        // Derive vault signer
+        let nonce_u64 = u64::from_le_bytes(data[4..12].try_into()?);
+        let (vault_signer, _) = Pubkey::find_program_address(
+            &[market_address.as_ref(), &nonce_u64.to_le_bytes()], 
+            serum_program_id
+        );
+
+        Ok(MarketAccounts {
+            market: *market_address,
+            bids,
+            asks,
+            event_queue,
+            coin_vault: base_vault,
+            pc_vault: quote_vault,
+            vault_signer,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MarketAccounts {
+    pub market: Pubkey,
+    pub bids: Pubkey,
+    pub asks: Pubkey,
+    pub event_queue: Pubkey,
+    pub coin_vault: Pubkey,
+    pub pc_vault: Pubkey,
+    pub vault_signer: Pubkey,
+
 }
 
 #[cfg(test)]

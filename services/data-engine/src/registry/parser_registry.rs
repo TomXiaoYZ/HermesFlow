@@ -106,7 +106,7 @@ impl ParserRegistry {
 
     /// Returns a list of all registered data source types
     pub fn registered_sources(&self) -> Vec<DataSourceType> {
-        self.parsers.keys().copied().collect()
+        self.parsers.keys().cloned().collect()
     }
 }
 

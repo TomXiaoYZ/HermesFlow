@@ -1,0 +1,10 @@
+{
+    "formula": [
+        0,
+        19
+    ],
+    "meta": {
+        "name": "Volatility Breakout (Default)",
+        "description": "Simple strategy using ABS(Return)"
+    }
+}

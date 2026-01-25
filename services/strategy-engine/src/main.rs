@@ -6,11 +6,20 @@ use strategy_engine::event_bus::EventBus;
 use strategy_engine::market_data_manager::MarketDataManager;
 use strategy_engine::risk::RiskEngine;
 use tracing::{error, info, warn};
+use redis::Commands;
+
+mod health;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting Strategy Engine...");
+
+    // Spawn health check server
+    tokio::spawn(async {
+        health::start_health_server().await;
+    });
+
 
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
@@ -37,10 +46,29 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 2. Load Initial Strategy Logic
-    // Default: Volatility Breakout (ABS(Return))
-    // Offset 14. ABS is op 5. Token = 19. feature 0 = Ret.
-    let formula_tokens = Arc::new(RwLock::new(vec![0, 19]));
-    let current_strategy_name = Arc::new(RwLock::new("Volatility Breakout (Base)".to_string()));
+    // Try to load from file, otherwise use default
+    let strategy_file = "best_meme_strategy.json";
+    let (initial_formula, initial_name) = match std::fs::read_to_string(strategy_file) {
+        Ok(content) => {
+            match serde_json::from_str::<StrategyUpdate>(&content) {
+                Ok(update) => {
+                    info!("Loaded strategy from file: {}", update.meta.name);
+                    (update.formula, update.meta.name)
+                },
+                Err(e) => {
+                    error!("Failed to parse strategy file: {}", e);
+                    (vec![0, 19], "Volatility Breakout (Fallback)".to_string())
+                }
+            }
+        },
+        Err(_) => {
+            warn!("Strategy file not found, using default.");
+            (vec![0, 19], "Volatility Breakout (Base)".to_string())
+        }
+    };
+
+    let formula_tokens = Arc::new(RwLock::new(initial_formula));
+    let current_strategy_name = Arc::new(RwLock::new(initial_name));
 
     info!("Strategy Engine Initialized. Connecting to Event Bus...");
 
@@ -58,6 +86,24 @@ async fn main() -> anyhow::Result<()> {
         let _ = pubsub.subscribe("strategy_updates");
 
         info!("Evolution Listener: Connected to strategy_updates channel");
+        
+        // Spawn Heartbeat Loop (sub-task)
+        let redis_url_hb = redis_url.clone();
+        tokio::spawn(async move {
+            if let Ok(client) = redis::Client::open(redis_url_hb) {
+                if let Ok(mut con) = client.get_connection() {
+                    loop {
+                        let hb = serde_json::json!({
+                            "service": "strategy-engine",
+                            "status": "online",
+                            "timestamp": Utc::now().timestamp_millis()
+                        });
+                        let _: redis::RedisResult<()> = con.publish("system_heartbeat", hb.to_string());
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
 
         loop {
             if let Ok(msg) = pubsub.get_message() {
@@ -79,185 +125,131 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     });
 
-    // 3. Subscribe to Market Data
+    // 3. Subscribe to Market Data & Portfolio Updates
     let mut market_rx = event_bus.subscribe_market_data("market_data").await?;
+    let mut portfolio_rx = event_bus.subscribe_portfolio_updates("portfolio_updates").await?;
 
-    info!("Listening for Market Data...");
+    info!("Listening for Market Data and Portfolio Updates...");
 
     // 4. Main Loop
-    while let Some(msg) = market_rx.recv().await {
-        // Debug Log
-        info!("Market Data Received: {} Price: {}", msg.symbol, msg.price);
-
-        // 4.0 Update Portfolio Prices & Check Exits
-        portfolio_manager.update_price(&msg.symbol, msg.price);
-
-        // Run Exit Logic (Stop Loss / Take Profit)
-        let exit_signals = portfolio_manager.check_exits();
-        for exit in exit_signals {
-            // Check if we are already closing this position to avoid spam
-            if let Some(pos) = portfolio_manager.positions.get_mut(&exit.token_address) {
-                if pos.status == strategy_engine::portfolio::PositionStatus::Closing {
-                    continue;
-                }
-                // Mark as Closing
-                pos.status = strategy_engine::portfolio::PositionStatus::Closing;
-
-                info!(
-                    "EXIT SIGNAL TRIGGERED: {} Reason: {:?}",
-                    exit.symbol, exit.reason
-                );
-
-                // Construct Signal
-                let signal = TradeSignal {
-                    id: uuid::Uuid::new_v4(),
-                    strategy_id: "ExitLogic".to_string(),
-                    symbol: exit.symbol.clone(),
-                    side: OrderSide::Sell,
-                    quantity: exit.sell_ratio, // Sell Ratio (0.5 or 1.0)
-                    price: Some(msg.price),
-                    order_type: OrderType::Market,
-                    timestamp: Utc::now(),
-                    reason: format!("Exit: {:?}", exit.reason),
-                };
-
-                // Publish
-                if let Err(e) = event_bus.publish_signal(&signal).await {
-                    error!("Failed to publish Exit signal: {}", e);
-                }
-
-                // If Full Exit, we might want to remove it?
-                // Better to keep it as 'Closing' until we get confirmation or next tick loop handles it?
-                // For optimistic update:
-                if exit.sell_ratio >= 0.99 {
-                    // Assume closed? No, keep it 'Closing' so we don't buy it back immediately or trigger SL again.
-                    // But we rely on Strategy updates.
-                } else {
-                    // Partial sell (Moonbag). Mark is_moonbag = true.
-                    if let Some(p) = portfolio_manager.positions.get_mut(&exit.token_address) {
-                        p.is_moonbag = true;
-                        // Status remains Active? Or ActiveMoonbag?
-                        // Current logic: status remains Active, but is_moonbag=true prevents triggers again.
-                        p.status = strategy_engine::portfolio::PositionStatus::Active;
-                    }
-                }
-            }
-        }
-
-        // 4.1 Update Buffer / Generate Features
-        // FORCE TRADE FOR VERIFICATION (RE-ENABLED)
-        if msg.symbol.contains("mSoL") {
-             let quantity_usd = 100.0;
-             let sol_bet = 0.02;
-             let signal = TradeSignal {
-                    id: uuid::Uuid::new_v4(),
-                    strategy_id: "VerificationForceMock".to_string(),
-                    symbol: msg.symbol.clone(),
-                    side: OrderSide::Buy,
-                    quantity: sol_bet,
-                    price: Some(msg.price),
-                    order_type: OrderType::Market,
-                    timestamp: Utc::now(),
-                    reason: "Forced Verification (Mock)".to_string(),
-             };
-             // Risk Check
-             if risk_engine.check(&signal, Some(10000.0)) {
-                  info!("ENTRY SIGNAL: {} @ {}", msg.symbol, msg.price);
-                  if let Err(e) = event_bus.publish_signal(&signal).await {
-                       error!("Failed to publish Entry signal: {}", e);
-                  }
-             }
-        }
-
-        if let Some(features) = market_manager.on_update(msg.clone()) {
-            // 4.2 Run VM (Entry Logic)
-            let current_formula = { formula_tokens.read().unwrap().clone() };
-            let strategy_name = { current_strategy_name.read().unwrap().clone() };
-
-            // Start Entry Logic only if we don't hold it (or stack positions?)
-            // Simplification: One active position per token.
-            if portfolio_manager.positions.contains_key(&msg.symbol) {
-                // We already hold it. Skip Entry logic.
-                continue;
+    loop {
+        tokio::select! {
+            Some(update) = portfolio_rx.recv() => {
+                info!("Portfolio Update: Cash={:.4}, Total={:.4}", update.cash, update.total_equity);
+                risk_engine.update_equity(update.total_equity);
+                // Also update portfolio manager cash if needed, but RiskEngine is the gatekeeper here.
             }
 
-            if let Some(result) = vm.execute(&current_formula, &features) {
-                if let Some(last_val) = result.last() {
-                    // Log (Sampling)
-                    if rand::random::<f64>() < 0.05 {
-                        let _ = event_bus
-                            .publish_strategy_log(&StrategyLog {
-                                timestamp: Utc::now(),
-                                strategy_id: "alpha_gpt_vm".to_string(),
-                                symbol: msg.symbol.clone(),
-                                action: "Analyzing".to_string(),
-                                message: format!("[{}] Val: {:.4}", strategy_name, last_val),
-                            })
-                            .await;
-                    }
+            Some(msg) = market_rx.recv() => {
+                // Debug Log
+                info!("Market Data Received: {} Price: {}", msg.symbol, msg.price);
 
-                    let threshold = 0.001; // Lower threshold (0.1%) to ensure trades occur
+                // 4.0 Update Portfolio Prices & Check Exits
+                portfolio_manager.update_price(&msg.symbol, msg.price);
 
-                    if *last_val > threshold || msg.symbol.contains("mSoL") {
-                        // ENTRY SIGNAL
-                        let quantity_usd = 100.0; // Fixed bet size
-                        let quantity_token = quantity_usd / msg.price;
+                // Run Exit Logic (Stop Loss / Take Profit)
+                let exit_signals = portfolio_manager.check_exits();
+                for exit in exit_signals {
+                    // Check if we are already closing this position to avoid spam
+                    if let Some(pos) = portfolio_manager.positions.get_mut(&exit.token_address) {
+                        if pos.status == strategy_engine::portfolio::PositionStatus::Closing {
+                            continue;
+                        }
+                        // Mark as Closing
+                        pos.status = strategy_engine::portfolio::PositionStatus::Closing;
 
+                        info!(
+                            "EXIT SIGNAL TRIGGERED: {} Reason: {:?}",
+                            exit.symbol, exit.reason
+                        );
+
+                        // Construct Signal
                         let signal = TradeSignal {
                             id: uuid::Uuid::new_v4(),
-                            strategy_id: strategy_name.clone(),
-                            symbol: msg.symbol.clone(),
-                            side: OrderSide::Buy,
-                            quantity: quantity_usd, // Use USD here? Or Token Amount?
-                            // Trader expects "quantity". CommandListener::Buy interprets it.
-                            // CommandListener comments said: "Assume quantity is Input Amount (SOL for buys)".
-                            // So if we send 100.0, it tries to swaps 100 SOL? That's huge!
-                            // Use 0.1 SOL for Safety!
+                            strategy_id: "ExitLogic".to_string(),
+                            symbol: exit.symbol.clone(),
+                            side: OrderSide::Sell,
+                            quantity: exit.sell_ratio, // Sell Ratio (0.5 or 1.0)
                             price: Some(msg.price),
                             order_type: OrderType::Market,
                             timestamp: Utc::now(),
-                            reason: format!("Entry Signal: {:.4}", last_val),
+                            reason: format!("Exit: {:?}", exit.reason),
                         };
 
-                        // Determine SOL amount
-                        // Using small size for 0.4 SOL account testing
-                        let sol_bet = 0.02;
-                        let mut safe_signal = signal.clone();
-                        safe_signal.quantity = sol_bet;
+                        // Publish
+                        if let Err(e) = event_bus.publish_signal(&signal).await {
+                            error!("Failed to publish Exit signal: {}", e);
+                        }
 
-                        // Risk Check
-                        if risk_engine.check(&safe_signal, Some(10000.0)) {
-                            // Valid Signal
-                            info!("ENTRY SIGNAL: {} @ {}", msg.symbol, msg.price);
+                        if exit.sell_ratio < 0.99 {
+                            // Partial sell (Moonbag). Mark is_moonbag = true.
+                            if let Some(p) = portfolio_manager.positions.get_mut(&exit.token_address) {
+                                p.is_moonbag = true;
+                                p.status = strategy_engine::portfolio::PositionStatus::Active;
+                            }
+                        }
+                    }
+                }
 
-                            if let Err(e) = event_bus.publish_signal(&safe_signal).await {
-                                error!("Failed to publish Entry signal: {}", e);
-                            } else {
-                                // Optimistic Portfolio Update
-                                // Assume we bought `sol_bet` worth of tokens.
-                                // Quantity = sol_bet / price_in_sol?
-                                // Wait, price in msg is USD? or SOL?
-                                // Birdeye prices are usually USD. SOL is ~150 USD.
-                                // If price is 0.001 USD.
-                                // We spend 0.1 SOL (~$15).
-                                // Quantity = $15 / 0.001 = 15,000 tokens.
-                                // We need SOL price to convert.
-                                // For now, let's just track cost basis.
-                                // Optimization: Just trust the system tracks PnL based on PRICE CHANGE.
-                                // Entry Price = msg.price. Current Price = msg.price.
-                                // Quantity = 1.0 (Unit doesn't matter for % PnL if we assume 100% allocation).
+                // 4.1 Update Buffer / Generate Features
+                if let Some(features) = market_manager.on_update(msg.clone()) {
+                    // 4.2 Run VM (Entry Logic)
+                    let current_formula = { formula_tokens.read().unwrap().clone() };
+                    let strategy_name = { current_strategy_name.read().unwrap().clone() };
 
-                                portfolio_manager.add_position(
-                                    msg.symbol.clone(), // Token Address
-                                    msg.symbol.clone(), // Symbol
-                                    msg.price,          // Entry Price
-                                    1.0,                // Amount (Mock 1 unit)
-                                    msg.price,          // Cost Basis
-                                );
+                    // Start Entry Logic only if we don't hold it
+                    if portfolio_manager.positions.contains_key(&msg.symbol) {
+                        continue;
+                    }
+
+                    if let Some(result) = vm.execute(&current_formula, &features) {
+                        if let Some(last_val) = result.last() {
+                            let threshold = 0.001; 
+
+                            if *last_val > threshold {
+                                // ENTRY SIGNAL
+                                // Calculate Size
+                                let amount_sol = risk_engine.calculate_entry_size();
+                                if amount_sol <= 0.0 {
+                                    warn!("Insufficient equity/size for entry.");
+                                    continue;
+                                }
+
+                                // Construct Signal
+                                let signal = TradeSignal {
+                                    id: uuid::Uuid::new_v4(),
+                                    strategy_id: strategy_name.clone(),
+                                    symbol: msg.symbol.clone(),
+                                    side: OrderSide::Buy,
+                                    quantity: amount_sol, 
+                                    price: Some(msg.price),
+                                    order_type: OrderType::Market,
+                                    timestamp: Utc::now(),
+                                    reason: format!("Entry Signal: {:.4}", last_val),
+                                };
+
+                                // Async Risk Check (with Honeypot)
+                                if risk_engine.check(&signal, Some(10000.0)).await {
+                                    // Valid Signal
+                                    info!("ENTRY SIGNAL: {} @ {} (Amt: {} SOL)", msg.symbol, msg.price, amount_sol);
+
+                                    if let Err(e) = event_bus.publish_signal(&signal).await {
+                                        error!("Failed to publish Entry signal: {}", e);
+                                    } else {
+                                        // Optimistic Portfolio Update
+                                        portfolio_manager.add_position(
+                                            msg.symbol.clone(), 
+                                            msg.symbol.clone(), 
+                                            msg.price,          
+                                            amount_sol / msg.price, 
+                                            msg.price,          
+                                        );
+                                    }
+                                }
                             }
                         }
                     }

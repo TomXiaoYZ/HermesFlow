@@ -77,7 +77,7 @@ async fn test_live_strategy_loop() -> anyhow::Result<()> {
                             reason: "UnitTest".to_string(),
                         };
 
-                        if risk_engine.check(&signal, Some(1_000_000.0)) {
+                        if risk_engine.check(&signal, Some(1_000_000.0)).await {
                             // println!("Loop {}: Publishing Signal...", i);
                             event_bus.publish_signal(&signal).await?;
                             // println!("Loop {}: Signal Published!", i);

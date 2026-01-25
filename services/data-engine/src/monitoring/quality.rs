@@ -81,9 +81,12 @@ impl DataMonitor {
 
         let stale_rows = sqlx::query(
             r#"
-            SELECT symbol, timestamp 
-            FROM mkt_equity_snapshots 
-            WHERE timestamp < $1
+            SELECT DISTINCT s.symbol, s.timestamp 
+            FROM mkt_equity_snapshots s
+            INNER JOIN active_tokens a ON s.symbol = a.address
+            WHERE a.is_active = true 
+            AND s.timestamp < $1
+            ORDER BY s.timestamp DESC
             "#,
         )
         .bind(threshold)

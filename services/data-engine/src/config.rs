@@ -5,6 +5,7 @@ use crate::collectors::dexscreener::DexScreenerConfig;
 use crate::collectors::futu::FutuConfig;
 use crate::collectors::helius::HeliusConfig;
 use crate::collectors::okx::OkxConfig;
+use crate::collectors::jupiter::JupiterConfig;
 use config::{Config, ConfigError, Environment, File};
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -31,6 +32,7 @@ pub struct AppConfig {
     pub birdeye: Option<BirdeyeConfig>,
     pub dexscreener: Option<DexScreenerConfig>,
     pub helius: Option<HeliusConfig>,
+    pub jupiter: Option<JupiterConfig>,
     pub performance: PerformanceConfig,
     pub logging: LoggingConfig,
 }
@@ -308,6 +310,7 @@ impl Default for AppConfig {
             birdeye: None,
             dexscreener: None,
             helius: None,
+            jupiter: None,
             performance: PerformanceConfig::default(),
             logging: LoggingConfig::default(),
         }

@@ -1,4 +1,4 @@
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Commands};
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::time::Duration;
@@ -6,6 +6,7 @@ use tracing::{error, info, warn};
 
 mod backtest;
 mod genetic;
+mod health;
 
 use backtest::Backtester;
 use genetic::GeneticAlgorithm;
@@ -15,6 +16,12 @@ async fn main() -> anyhow::Result<()> {
     // 1. Initialize Logging
     tracing_subscriber::fmt::init();
     info!("Starting Strategy Generator (Evolutionary Optimizer)...");
+
+    // Spawn health check server
+    tokio::spawn(async {
+        health::start_health_server().await;
+    });
+
 
     // 2. Connect to Infrastructure
     let db_url = env::var("DATABASE_URL")
@@ -26,8 +33,27 @@ async fn main() -> anyhow::Result<()> {
         .connect(&db_url)
         .await?;
 
-    let client = redis::Client::open(redis_url)?;
+    let client = redis::Client::open(redis_url.clone())?;
     let mut redis_conn = client.get_async_connection().await?;
+
+    // Start Heartbeat Task
+    let redis_url_hb = redis_url.clone();
+    tokio::spawn(async move {
+        if let Ok(client) = redis::Client::open(redis_url_hb) {
+             if let Ok(mut con) = client.get_connection() {
+                 loop {
+                     let hb = serde_json::json!({
+                         "service": "strategy-generator",
+                         "status": "online",
+                         "timestamp": chrono::Utc::now().timestamp_millis()
+                     });
+                     let _: redis::RedisResult<()> = con.publish("system_heartbeat", hb.to_string());
+                     tokio::time::sleep(Duration::from_secs(5)).await;
+                 }
+             }
+        }
+    });
+
 
     // 3. Initialize Components
     let mut backtester = Backtester::new(pool.clone());
@@ -36,12 +62,12 @@ async fn main() -> anyhow::Result<()> {
     // 4. Load Data
     // Fetch top active symbols from DB
     use sqlx::Row;
-    let rows = sqlx::query("SELECT symbol FROM active_tokens WHERE is_active = true")
+    let rows = sqlx::query("SELECT address FROM active_tokens WHERE is_active = true")
         .fetch_all(&pool)
         .await
         .unwrap_or_default();
 
-    let mut symbols: Vec<String> = rows.into_iter().map(|r| r.get("symbol")).collect();
+    let mut symbols: Vec<String> = rows.into_iter().map(|r| r.get("address")).collect();
 
     if symbols.is_empty() {
         warn!("No active tokens found in DB. Falling back to default list.");
@@ -56,7 +82,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     info!("Loading historical data for {} symbols...", symbols.len());
-    let _ = backtester.load_data(&symbols, 7).await; // Load 7 days
+    if let Err(e) = backtester.load_data(&symbols, 7).await {
+        error!("Failed to load historical data: {}", e);
+        warn!("Backtester will have no data - all fitness will be 0.0");
+    }
 
     // 4.1 Load Strategy State
     // Check DB for last generation

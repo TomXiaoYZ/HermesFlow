@@ -5,18 +5,19 @@ use chrono::{DateTime, Utc};
 use ndarray::{Array2, Array3, Axis};
 use sqlx::postgres::PgPool;
 use sqlx::FromRow;
+use rust_decimal::prelude::ToPrimitive;
 use std::collections::HashMap;
 
 #[derive(Debug, FromRow)]
 pub struct Candle {
     pub time: DateTime<Utc>,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    pub volume: f64,
-    pub liquidity: f64,
-    pub fdv: f64,
+    pub open: rust_decimal::Decimal,
+    pub high: rust_decimal::Decimal,
+    pub low: rust_decimal::Decimal,
+    pub close: rust_decimal::Decimal,
+    pub volume: rust_decimal::Decimal,
+    pub liquidity: rust_decimal::Decimal,
+    pub fdv: rust_decimal::Decimal,
 }
 
 pub struct Backtester {
@@ -53,7 +54,7 @@ impl Backtester {
                        COALESCE(liquidity, 0) as liquidity, 
                        COALESCE(fdv, 0) as fdv
                 FROM mkt_equity_candles
-                WHERE symbol = $1 AND resolution = '15m'
+                WHERE exchange = 'solana' AND symbol = $1 AND resolution = '15m'
                 AND time > NOW() - make_interval(days := $2)
                 ORDER BY time ASC
                 "#,
@@ -63,7 +64,7 @@ impl Backtester {
             .fetch_all(&self.pool)
             .await?;
 
-            if rows.len() < 100 {
+            if rows.len() < 50 {
                 tracing::warn!("Insufficient data for {}: {} rows", symbol, rows.len());
                 continue;
             }
@@ -79,13 +80,13 @@ impl Backtester {
             let mut fdv = Array2::<f64>::zeros((1, len));
 
             for (i, c) in rows.iter().enumerate() {
-                close[[0, i]] = c.close;
-                open[[0, i]] = c.open;
-                high[[0, i]] = c.high;
-                low[[0, i]] = c.low;
-                volume[[0, i]] = c.volume;
-                liq[[0, i]] = c.liquidity;
-                fdv[[0, i]] = c.fdv;
+                close[[0, i]] = c.close.to_f64().unwrap_or(0.0);
+                open[[0, i]] = c.open.to_f64().unwrap_or(0.0);
+                high[[0, i]] = c.high.to_f64().unwrap_or(0.0);
+                low[[0, i]] = c.low.to_f64().unwrap_or(0.0);
+                volume[[0, i]] = c.volume.to_f64().unwrap_or(0.0);
+                liq[[0, i]] = c.liquidity.to_f64().unwrap_or(0.0);
+                fdv[[0, i]] = c.fdv.to_f64().unwrap_or(0.0);
             }
 
             // Generate Features (12 dims)
@@ -101,7 +102,9 @@ impl Backtester {
             // ret_t+1 = close[t+1] / close[t] - 1
             let mut future_ret = Array2::<f64>::zeros((1, len));
             for i in 0..len - 1 {
-                let r = rows[i + 1].close / rows[i].close - 1.0;
+                let curr = close[[0, i]];
+                let next = close[[0, i + 1]];
+                let r = next / curr - 1.0;
                 future_ret[[0, i]] = r;
             }
 

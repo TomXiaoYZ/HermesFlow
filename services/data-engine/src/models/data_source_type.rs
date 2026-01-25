@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Data source type identification for different exchanges and markets
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum DataSourceType {
     // Binance
     BinanceSpot,
@@ -29,7 +29,10 @@ pub enum DataSourceType {
     GmgnDex,
     UniswapV3,
     Birdeye,
-    Helius, // Added
+    DexScreener,
+    Helius,
+    Jupiter,
+    Other(String),
 
     // Traditional Finance
     IbkrStock,
@@ -53,7 +56,7 @@ pub enum DataSourceType {
 
 impl DataSourceType {
     /// Returns a string representation of the data source type
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             DataSourceType::BinanceSpot => "BinanceSpot",
             DataSourceType::BinanceFutures => "BinanceFutures",
@@ -80,11 +83,14 @@ impl DataSourceType {
             DataSourceType::PolymarketGamma => "PolymarketGamma",
             DataSourceType::AkShare => "AkShare",
             DataSourceType::FredMacro => "FredMacro",
+            DataSourceType::DexScreener => "DexScreener",
+            DataSourceType::Jupiter => "Jupiter",
+            DataSourceType::Other(s) => s.as_str(),
         }
     }
 
     /// Returns the exchange name
-    pub fn exchange(&self) -> &'static str {
+    pub fn exchange(&self) -> &str {
         match self {
             DataSourceType::BinanceSpot
             | DataSourceType::BinanceFutures
@@ -107,6 +113,9 @@ impl DataSourceType {
             DataSourceType::PolymarketGamma => "Polymarket",
             DataSourceType::AkShare => "AkShare",
             DataSourceType::FredMacro => "FRED",
+            DataSourceType::DexScreener => "DexScreener",
+            DataSourceType::Jupiter => "Jupiter",
+            DataSourceType::Other(_) => "Other",
         }
     }
 }

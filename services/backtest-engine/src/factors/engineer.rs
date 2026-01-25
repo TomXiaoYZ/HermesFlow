@@ -1,36 +1,40 @@
-use ndarray::{Array2, Axis};
-// use ndarray_stats::Quantile1dExt;
-use super::indicators::MemeIndicators;
+use crate::factors::indicators::MemeIndicators;
+use crate::factors::moving_averages::MovingAverages;
+use crate::factors::macd::MACD;
+use crate::factors::bollinger::BollingerBands;
+use crate::factors::atr::ATR;
+use crate::factors::stochastic::Stochastic;
+use crate::factors::cci::CCI;
+use crate::factors::williams_r::WilliamsR;
+use crate::factors::vwap::VWAP;
+use crate::factors::obv::OBV;
+use crate::factors::mfi::MFI;
 use crate::vm::ops::ts_delay;
+use ndarray::{Array2, Array3, Axis};
 
 pub struct FeatureEngineer;
 
 impl FeatureEngineer {
     pub const INPUT_DIM: usize = 6;
+    pub const BASIC_DIM: usize = 9;
+    pub const EXTENDED_DIM: usize = 33;
 
     /// Robust normalization: (x - median) / MAD
     pub fn robust_norm(x: &Array2<f64>) -> Array2<f64> {
         let mut out = x.clone();
-
-        // Compute per-row (batch item) statistics
         for mut row in out.rows_mut() {
-            // Collect into vec for sorting
             let mut v: Vec<f64> = row.to_vec();
-            // Sort ignoring NaNs (treat as large or small, or filter)
-            // Here we assume clean data or standard sort behavior
             v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
             let len = v.len();
-            if len == 0 {
-                continue;
-            }
+            if len == 0 { continue; }
+            
             let median = if len % 2 == 0 {
                 (v[len / 2 - 1] + v[len / 2]) / 2.0
             } else {
                 v[len / 2]
             };
 
-            // MAD
             let mut diffs: Vec<f64> = row.mapv(|v| (v - median).abs()).to_vec();
             diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let mad = if len % 2 == 0 {
@@ -44,16 +48,10 @@ impl FeatureEngineer {
                 norm.clamp(-5.0, 5.0)
             });
         }
-
         out
     }
 
-    /// Compute basic features
-    /// Returns: (batch, features, time) which is flattened/permuted to fit VM input?
-    /// VM expects (batch, features, time)
-    /// Compute basic features
-    /// Returns: (batch, features, time) which is flattened/permuted to fit VM input?
-    /// VM expects (batch, features, time)
+    /// Compute basic 9-dimensional meme-focused features (backward compatible)
     pub fn compute_features(
         close: &Array2<f64>,
         open: &Array2<f64>,
@@ -62,77 +60,30 @@ impl FeatureEngineer {
         volume: &Array2<f64>,
         liquidity: &Array2<f64>,
         fdv: &Array2<f64>,
-    ) -> ndarray::Array3<f64> {
-        // 1. Log returns
+    ) -> Array3<f64> {
         let prev_close = ts_delay(close, 1);
         let ret = (close / (&prev_close + 1e-9)).mapv(f64::ln);
 
-        // 2. Liquidity Score
         let liq_score = MemeIndicators::liquidity_health(liquidity, fdv);
-
-        // 3. Pressure
         let pressure = MemeIndicators::buy_sell_imbalance(close, open, high, low);
-
-        // 4. FOMO
         let fomo = MemeIndicators::fomo_acceleration(volume);
-
-        // 5. Deviation
-        let dev = MemeIndicators::pump_deviation(close, 20); // Default window 20
-
-        // 6. Log Volume
+        let dev = MemeIndicators::pump_deviation(close, 20);
         let log_vol = volume.mapv(|v| (v + 1.0).ln());
-
-        // 7. Volatility Clustering
         let vol_cluster = MemeIndicators::volatility_clustering(&ret, 20);
+        let mom_rev = MemeIndicators::momentum_reversal(close, 20);
+        let rsi = MemeIndicators::relative_strength(close, 14);
 
-        // 8. Momentum Reversal
-        let mom_rev = MemeIndicators::momentum_reversal(&close, 20);
-
-        // 9. RSI (Relative Strength)
-        let rsi = MemeIndicators::relative_strength(&close, 14);
-
-        // Normalize
         let ret_norm = Self::robust_norm(&ret);
         let fomo_norm = Self::robust_norm(&fomo);
         let dev_norm = Self::robust_norm(&dev);
         let log_vol_norm = Self::robust_norm(&log_vol);
         let vol_cluster_norm = Self::robust_norm(&vol_cluster);
-        // mom_rev is 0/1, no need to normalize? Or robust_norm it to center?
-        // It's a binary flag 0.0 or 1.0.
-        // Robust norm might make it weird if only 0s exist.
-        // Let's keep it raw or map to -1, 1?
-        // AlphaGPT usually normalizes everything.
-        // But binary features are usually left as is or centered.
-        // robustness check: if all 0, median=0, mad=1e-6 -> 0.
         let mom_rev_norm = Self::robust_norm(&mom_rev);
+        let rsi_norm = Self::robust_norm(&rsi);
 
-        let rsi_norm = Self::robust_norm(&rsi); // RSI is -1 to 1 centered roughly, but robust norm helps outliers.
-
-        // Stack into Array3 inputs
-        // Shape: (batch, features, time)
         let (batch, time) = close.dim();
-        let features = 14;
+        let mut out = Array3::<f64>::zeros((batch, Self::BASIC_DIM, time));
 
-        // 0: Ret
-        // 1: Liq
-        // 2: Pressure
-        // 3: FOMO
-        // 4: Dev
-        // 5: LogVol
-        // 6: VolCluster
-        // 7: MomRev
-        // 8: RSI
-        // 9: lnOpen
-        // 10: lnHigh
-        // 11: lnLow
-        // 12: lnClose
-        // 13: lnVolRaw
-
-        let mut out = ndarray::Array3::<f64>::zeros((batch, features, time));
-
-        // Assign slices
-        // Axis 1 is feature dimension
-        // 0-8: Expert Features (Normalized)
         out.index_axis_mut(Axis(1), 0).assign(&ret_norm);
         out.index_axis_mut(Axis(1), 1).assign(&liq_score);
         out.index_axis_mut(Axis(1), 2).assign(&pressure);
@@ -143,19 +94,120 @@ impl FeatureEngineer {
         out.index_axis_mut(Axis(1), 7).assign(&mom_rev_norm);
         out.index_axis_mut(Axis(1), 8).assign(&rsi_norm);
 
-        // 9-13: Raw Log Inputs (for VM composition)
-        let log_open = open.mapv(|v| (v + 1e-9).ln());
-        let log_high = high.mapv(|v| (v + 1e-9).ln());
-        let log_low = low.mapv(|v| (v + 1e-9).ln());
-        let log_close = close.mapv(|v| (v + 1e-9).ln());
-        let log_volume_raw = volume.mapv(|v| (v + 1e-9).ln());
-
-        out.index_axis_mut(Axis(1), 9).assign(&log_open);
-        out.index_axis_mut(Axis(1), 10).assign(&log_high);
-        out.index_axis_mut(Axis(1), 11).assign(&log_low);
-        out.index_axis_mut(Axis(1), 12).assign(&log_close);
-        out.index_axis_mut(Axis(1), 13).assign(&log_volume_raw);
-
         out
+    }
+
+    /// Compute extended 33-dimensional feature set with ALL Tier 1-3 indicators
+    pub fn compute_extended_features(
+        close: &Array2<f64>,
+        open: &Array2<f64>,
+        high: &Array2<f64>,
+        low: &Array2<f64>,
+        volume: &Array2<f64>,
+        liquidity: &Array2<f64>,
+        fdv: &Array2<f64>,
+    ) -> Array3<f64> {
+        // Meme indicators (9)
+        let prev_close = ts_delay(close, 1);
+        let ret = (close / (&prev_close + 1e-9)).mapv(f64::ln);
+        let liq_score = MemeIndicators::liquidity_health(liquidity, fdv);
+        let pressure = MemeIndicators::buy_sell_imbalance(close, open, high, low);
+        let fomo = MemeIndicators::fomo_acceleration(volume);
+        let dev = MemeIndicators::pump_deviation(close, 20);
+        let log_vol = volume.mapv(|v| (v + 1.0).ln());
+        let vol_cluster = MemeIndicators::volatility_clustering(&ret, 20);
+        let mom_rev = MemeIndicators::momentum_reversal(close, 20);
+        let rsi = MemeIndicators::relative_strength(close, 14);
+
+        // Moving averages (4)
+        let ema_12_diff = (close - &MovingAverages::ema(close, 12)) / (close + 1e-9);
+        let ema_26_diff = (close - &MovingAverages::ema(close, 26)) / (close + 1e-9);
+        let ema_50_diff = (close - &MovingAverages::ema(close, 50)) / (close + 1e-9);
+        let sma_200_diff = (close - &MovingAverages::sma(close, 200)) / (close + 1e-9);
+
+        // MACD (3)
+        let (macd_line, macd_signal, macd_hist) = MACD::macd(close);
+        let macd_line_norm = &macd_line / (close + 1e-9);
+        let macd_signal_norm = &macd_signal / (close + 1e-9);
+        let macd_hist_norm = &macd_hist / (close + 1e-9);
+
+        // Bollinger Bands (3)
+        let bb_bandwidth = BollingerBands::bandwidth(close, 20);
+        let bb_percent_b = BollingerBands::percent_b(close, 20);
+        let (_, bb_middle, _) = BollingerBands::bollinger(close);
+        let bb_position = (close - &bb_middle) / (&bb_middle + 1e-9);
+
+        // ATR (1)
+        let atr_pct = ATR::atr_percent(high, low, close);
+
+        // Stochastic (2)
+        let (stoch_k, stoch_d) = Stochastic::stochastic(high, low, close);
+        let stoch_k_norm = (&stoch_k - 50.0) / 50.0;
+        let stoch_d_norm = (&stoch_d - 50.0) / 50.0;
+
+        // CCI (1)
+        let cci_norm = CCI::cci_normalized(high, low, close, 20);
+
+        // Williams %R (1)
+        let williams_norm = WilliamsR::williams_r_normalized(high, low, close, 14);
+
+        // VWAP (2)
+        let vwap_dev = VWAP::vwap_deviation(high, low, close, volume);
+        let vwap_roll = VWAP::vwap_rolling(high, low, close, volume, 20);
+        let vwap_roll_dev = (close - &vwap_roll) / (&vwap_roll + 1e-9);
+
+        // OBV (1)
+        let obv_pct = OBV::obv_pct_change(close, volume);
+
+        // MFI (1)
+        let mfi_norm = MFI::mfi_normalized(high, low, close, volume, 14);
+
+        // Additional (5)
+        let hl_range = (high - low) / (close + 1e-9);
+        let close_pos = (close - low) / (high - low + 1e-9);
+        let vol_trend = (volume - &ts_delay(volume, 1)) / (&ts_delay(volume, 1) + 1.0);
+        let momentum_10 = (close - &ts_delay(close, 10)) / (&ts_delay(close, 10) + 1e-9);
+        let momentum_20 = (close - &ts_delay(close, 20)) / (&ts_delay(close, 20) + 1e-9);
+
+        // Stack all 33 features
+       let (batch, time) = close.dim();
+        let mut features = Array3::<f64>::zeros((batch, Self::EXTENDED_DIM, time));
+
+        let mut idx = 0;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&ret)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&liq_score); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&pressure); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&fomo)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&dev)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&log_vol)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&vol_cluster)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&mom_rev)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&rsi)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&ema_12_diff)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&ema_26_diff)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&ema_50_diff)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&sma_200_diff)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&macd_line_norm)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&macd_signal_norm)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&macd_hist_norm)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&bb_bandwidth)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&bb_percent_b.mapv(|v| v.clamp(0.0, 1.0))); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&bb_position)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&atr_pct)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&stoch_k_norm); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&stoch_d_norm); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&cci_norm); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&williams_norm); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&vwap_dev)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&vwap_roll_dev)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&obv_pct)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&mfi_norm); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&hl_range)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&close_pos.mapv(|v| v.clamp(0.0, 1.0))); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&vol_trend)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&momentum_10)); idx += 1;
+        features.index_axis_mut(Axis(1), idx).assign(&Self::robust_norm(&momentum_20));
+
+        features
     }
 }
