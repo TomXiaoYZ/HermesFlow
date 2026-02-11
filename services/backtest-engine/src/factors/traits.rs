@@ -13,6 +13,43 @@ use crate::vm::ops::ts_delay;
 use ndarray::Array2;
 use std::collections::HashMap;
 
+/// Borrowed OHLCV market data for passing to factor computation functions
+pub struct OhlcvData<'a> {
+    pub close: &'a Array2<f64>,
+    pub open: &'a Array2<f64>,
+    pub high: &'a Array2<f64>,
+    pub low: &'a Array2<f64>,
+    pub volume: &'a Array2<f64>,
+    pub liquidity: &'a Array2<f64>,
+    pub fdv: &'a Array2<f64>,
+}
+
+/// Owned OHLCV arrays, convertible to borrowed `OhlcvData`
+#[derive(Clone)]
+pub struct OhlcvArrays {
+    pub close: Array2<f64>,
+    pub open: Array2<f64>,
+    pub high: Array2<f64>,
+    pub low: Array2<f64>,
+    pub volume: Array2<f64>,
+    pub liquidity: Array2<f64>,
+    pub fdv: Array2<f64>,
+}
+
+impl OhlcvArrays {
+    pub fn as_ref(&self) -> OhlcvData<'_> {
+        OhlcvData {
+            close: &self.close,
+            open: &self.open,
+            high: &self.high,
+            low: &self.low,
+            volume: &self.volume,
+            liquidity: &self.liquidity,
+            fdv: &self.fdv,
+        }
+    }
+}
+
 /// Factor computation context - all input data needed
 #[derive(Clone)]
 pub struct FactorContext {

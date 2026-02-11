@@ -1,4 +1,5 @@
 use backtest_engine::factors::engineer::FeatureEngineer;
+use backtest_engine::factors::traits::OhlcvArrays;
 use chrono::{DateTime, Utc};
 use common::events::MarketDataUpdate;
 use ndarray::{Array2, Array3};
@@ -83,34 +84,19 @@ impl SymbolBuffer {
         }
     }
 
-    fn to_arrays(
-        &self,
-    ) -> (
-        Array2<f64>,
-        Array2<f64>,
-        Array2<f64>,
-        Array2<f64>,
-        Array2<f64>,
-        Array2<f64>,
-        Array2<f64>,
-    ) {
-        // Convert Vec<f64> to Array2<f64> of shape (1, T) - Single batch, T time steps
-        // Actually FeatureEngineer expects (batch, time) per asset?
-        // No, compute_features takes &Array2<f64> which is usually (batch, time).
-        // Since we are processing 1 symbol, batch=1.
-
+    fn to_arrays(&self) -> OhlcvArrays {
         let t = self.close.len();
         let shape = (1, t);
 
-        (
-            Array2::from_shape_vec(shape, self.close.clone()).unwrap(),
-            Array2::from_shape_vec(shape, self.open.clone()).unwrap(),
-            Array2::from_shape_vec(shape, self.high.clone()).unwrap(),
-            Array2::from_shape_vec(shape, self.low.clone()).unwrap(),
-            Array2::from_shape_vec(shape, self.volume.clone()).unwrap(),
-            Array2::from_shape_vec(shape, self.liquidity.clone()).unwrap(),
-            Array2::from_shape_vec(shape, self.fdv.clone()).unwrap(),
-        )
+        OhlcvArrays {
+            close: Array2::from_shape_vec(shape, self.close.clone()).unwrap(),
+            open: Array2::from_shape_vec(shape, self.open.clone()).unwrap(),
+            high: Array2::from_shape_vec(shape, self.high.clone()).unwrap(),
+            low: Array2::from_shape_vec(shape, self.low.clone()).unwrap(),
+            volume: Array2::from_shape_vec(shape, self.volume.clone()).unwrap(),
+            liquidity: Array2::from_shape_vec(shape, self.liquidity.clone()).unwrap(),
+            fdv: Array2::from_shape_vec(shape, self.fdv.clone()).unwrap(),
+        }
     }
 }
 
@@ -147,9 +133,9 @@ impl MarketDataManager {
         }
 
         // Generate Features
-        let (c, o, h, l, v, liq, fdv) = buffer.to_arrays();
+        let arrays = buffer.to_arrays();
 
-        let features = FeatureEngineer::compute_features(&c, &o, &h, &l, &v, &liq, &fdv);
+        let features = FeatureEngineer::compute_features(&arrays.as_ref());
         Some(features)
     }
 }

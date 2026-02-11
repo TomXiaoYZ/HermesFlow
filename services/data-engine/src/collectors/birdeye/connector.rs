@@ -69,17 +69,17 @@ impl BirdeyeConnector {
 
                         let time = Utc.timestamp_opt(item.unix_time, 0).unwrap();
 
-                        let candle = Candle::new(
-                            "Birdeye".to_string(),
-                            address.to_string(),
-                            resolution.to_string(),
+                        let candle = Candle::new(crate::models::CandleParams {
+                            exchange: "Birdeye".to_string(),
+                            symbol: address.to_string(),
+                            resolution: resolution.to_string(),
                             open,
                             high,
                             low,
                             close,
                             volume,
                             time,
-                        );
+                        });
 
                         all_candles.push(candle);
                     }

@@ -112,17 +112,17 @@ impl DataSourceConnector for IBKRCollector {
                                     Utc.timestamp_opt(bar.date.unix_timestamp(), 0).unwrap();
 
                                 // Create Candle DTO (Force Update)
-                                let candle = crate::models::Candle::new(
-                                    "IBKR".to_string(),
-                                    symbol.clone(),
-                                    resolution.to_string(),
-                                    Decimal::from_f64_retain(bar.open).unwrap_or_default(),
-                                    Decimal::from_f64_retain(bar.high).unwrap_or_default(),
-                                    Decimal::from_f64_retain(bar.low).unwrap_or_default(),
-                                    Decimal::from_f64_retain(bar.close).unwrap_or_default(),
-                                    Decimal::from_f64_retain(bar.volume).unwrap_or_default(),
-                                    timestamp,
-                                );
+                                let candle = crate::models::Candle::new(crate::models::CandleParams {
+                                    exchange: "IBKR".to_string(),
+                                    symbol: symbol.clone(),
+                                    resolution: resolution.to_string(),
+                                    open: Decimal::from_f64_retain(bar.open).unwrap_or_default(),
+                                    high: Decimal::from_f64_retain(bar.high).unwrap_or_default(),
+                                    low: Decimal::from_f64_retain(bar.low).unwrap_or_default(),
+                                    close: Decimal::from_f64_retain(bar.close).unwrap_or_default(),
+                                    volume: Decimal::from_f64_retain(bar.volume).unwrap_or_default(),
+                                    time: timestamp,
+                                });
 
                                 if let Err(e) = repository.insert_candle(&candle).await {
                                     warn!(

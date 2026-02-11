@@ -28,26 +28,29 @@ pub struct AppState {
     pub start_time: std::time::Instant,
 }
 
+/// Parameters for constructing `AppState`
+pub struct AppStateParams {
+    pub config: AppConfig,
+    pub redis: Option<Arc<RwLock<RedisCache>>>,
+    pub clickhouse: Option<Arc<RwLock<ClickHouseWriter>>>,
+    pub postgres: Arc<PostgresRepositories>,
+    pub health_monitor: HealthMonitor,
+    pub ibkr_trader: Option<IBKRTrader>,
+    pub task_manager: Option<TaskManager>,
+    pub broadcast_tx: tokio::sync::broadcast::Sender<String>,
+}
+
 impl AppState {
-    pub fn new(
-        config: AppConfig,
-        redis: Option<Arc<RwLock<RedisCache>>>,
-        clickhouse: Option<Arc<RwLock<ClickHouseWriter>>>,
-        postgres: Arc<PostgresRepositories>,
-        health_monitor: HealthMonitor,
-        ibkr_trader: Option<IBKRTrader>,
-        task_manager: Option<TaskManager>,
-        broadcast_tx: tokio::sync::broadcast::Sender<String>,
-    ) -> Self {
+    pub fn new(params: AppStateParams) -> Self {
         Self {
-            config: Arc::new(config),
-            redis,
-            clickhouse,
-            postgres,
-            health_monitor: Arc::new(health_monitor),
-            ibkr_trader: ibkr_trader.map(Arc::new),
-            task_manager: task_manager.map(Arc::new),
-            broadcast_tx,
+            config: Arc::new(params.config),
+            redis: params.redis,
+            clickhouse: params.clickhouse,
+            postgres: params.postgres,
+            health_monitor: Arc::new(params.health_monitor),
+            ibkr_trader: params.ibkr_trader.map(Arc::new),
+            task_manager: params.task_manager.map(Arc::new),
+            broadcast_tx: params.broadcast_tx,
             start_time: std::time::Instant::now(),
         }
     }

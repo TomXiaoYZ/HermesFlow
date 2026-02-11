@@ -18,4 +18,4 @@ pub mod trading;
 pub use trading::*;
 
 pub mod candle;
-pub use candle::Candle;
+pub use candle::{Candle, CandleParams};

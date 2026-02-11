@@ -128,7 +128,6 @@ impl ATR {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_abs_diff_eq;
     use ndarray::arr2;
 
     #[test]

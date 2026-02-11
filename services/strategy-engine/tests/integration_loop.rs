@@ -1,7 +1,6 @@
 use chrono::Utc;
 use common::events::{MarketDataUpdate, OrderSide, TradeSignal};
 use redis::Commands;
-use std::time::Duration;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -47,7 +46,7 @@ async fn test_integration_loop() {
     println!("Published Simulated Signal");
 
     // Read back to verify round trip matches
-    let msg = pubsub.get_message();
+    let _msg = pubsub.get_message();
     // This might block or return the message we just sent?
     // Redis PubSub echoes to publisher if subscribed? No, usually distinct connection needed.
     // But we are on same connection? "con" vs "pubsub".

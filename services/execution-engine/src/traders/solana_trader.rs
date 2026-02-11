@@ -242,15 +242,15 @@ impl SolanaTrader {
         // 7. Build swap instruction
         let swap_ix = self
             .raydium
-            .build_swap_instruction(
-                &amm_info,
-                &pool,
-                &wallet,
-                &user_wsol_ata,
-                &user_token_ata,
+            .build_swap_instruction(&super::raydium_trader::SwapInstructionParams {
+                amm_info: &amm_info,
+                pool_address: &pool,
+                user_wallet: &wallet,
+                user_source_token: &user_wsol_ata,
+                user_dest_token: &user_token_ata,
                 amount_in,
                 minimum_amount_out,
-            )
+            })
             .await?;
         instructions.push(swap_ix);
 
@@ -377,15 +377,15 @@ impl SolanaTrader {
         // 7. Swap Instruction (Source: Token ATA, Dest: wSOL ATA)
         let swap_ix = self
             .raydium
-            .build_swap_instruction(
-                &amm_info,
-                &pool,
-                &wallet,
-                &user_token_ata, // Source: Token
-                &user_wsol_ata,  // Dest: wSOL
-                amount_token,
+            .build_swap_instruction(&super::raydium_trader::SwapInstructionParams {
+                amm_info: &amm_info,
+                pool_address: &pool,
+                user_wallet: &wallet,
+                user_source_token: &user_token_ata, // Source: Token
+                user_dest_token: &user_wsol_ata,    // Dest: wSOL
+                amount_in: amount_token,
                 minimum_amount_out,
-            )
+            })
             .await?;
         instructions.push(swap_ix);
 

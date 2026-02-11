@@ -131,8 +131,6 @@ pub async fn get_last_synced_time(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_date_range_calculation() {
         // Simple sanity check

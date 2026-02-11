@@ -38,26 +38,20 @@ impl DynamicFeatureEngineer {
     /// Compute all active factors
     pub fn compute_features(
         &self,
-        close: &Array2<f64>,
-        open: &Array2<f64>,
-        high: &Array2<f64>,
-        low: &Array2<f64>,
-        volume: &Array2<f64>,
-        liquidity: &Array2<f64>,
-        fdv: &Array2<f64>,
+        ohlcv: &super::traits::OhlcvData<'_>,
     ) -> Array3<f64> {
         let num_factors = self.active_factors.len();
-        let (batch, time) = close.dim();
+        let (batch, time) = ohlcv.close.dim();
         let mut features = Array3::zeros((batch, num_factors, time));
-        
+
         let mut ctx = FactorContext {
-            close: close.clone(),
-            open: open.clone(),
-            high: high.clone(),
-            low: low.clone(),
-            volume: volume.clone(),
-            liquidity: liquidity.clone(),
-            fdv: fdv.clone(),
+            close: ohlcv.close.clone(),
+            open: ohlcv.open.clone(),
+            high: ohlcv.high.clone(),
+            low: ohlcv.low.clone(),
+            volume: ohlcv.volume.clone(),
+            liquidity: ohlcv.liquidity.clone(),
+            fdv: ohlcv.fdv.clone(),
             cache: HashMap::new(),
         };
         
@@ -147,7 +141,16 @@ mod tests {
         let liq = arr2(&[[5000.0, 5000.0, 5000.0, 5000.0]]);
         let fdv = arr2(&[[100000.0, 110000.0, 120000.0, 130000.0]]);
         
-        let features = engineer.compute_features(&close, &open, &high, &low, &volume, &liq, &fdv);
+        let ohlcv = super::traits::OhlcvData {
+            close: &close,
+            open: &open,
+            high: &high,
+            low: &low,
+            volume: &volume,
+            liquidity: &liq,
+            fdv: &fdv,
+        };
+        let features = engineer.compute_features(&ohlcv);
         
         assert_eq!(features.dim(), (1, 2, 4)); // batch=1, factors=2, time=4
     }

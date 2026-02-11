@@ -1,13 +1,14 @@
 use backtest_engine::factors::engineer::FeatureEngineer;
 use backtest_engine::vm::vm::StackVM;
-use ndarray::{Array2, Array3};
+use ndarray::Array2;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::BufReader;
 
 #[derive(Deserialize)]
 struct GoldenSet {
-    metadata: Metadata,
+    #[serde(rename = "metadata")]
+    _metadata: Metadata,
     inputs: Inputs,
     computed_features: Vec<Vec<Vec<f64>>>, // (batch, features, time)
     tests: Vec<TestCase>,
@@ -74,8 +75,16 @@ fn test_python_parity() {
     // 3. Compute Features
     // Note: Python script computes separate features then stacks inputs.
     // Rust compute_features takes all inputs and does it all.
-    let features =
-        FeatureEngineer::compute_features(&close, &open, &high, &low, &volume, &liquidity, &fdv);
+    let ohlcv = backtest_engine::factors::traits::OhlcvData {
+        close: &close,
+        open: &open,
+        high: &high,
+        low: &low,
+        volume: &volume,
+        liquidity: &liquidity,
+        fdv: &fdv,
+    };
+    let features = FeatureEngineer::compute_features(&ohlcv);
 
     // 4. Verify Features
     let (batch, feat_dim, time) = features.dim();

@@ -23,29 +23,14 @@ impl FeatureEngineer {
 
     pub fn compute_features_from_config(
         config: &FactorConfig,
-        close: &Array2<f64>,
-        open: &Array2<f64>,
-        high: &Array2<f64>,
-        low: &Array2<f64>,
-        volume: &Array2<f64>,
-        liquidity: &Array2<f64>,
-        fdv: &Array2<f64>,
+        ohlcv: &crate::factors::traits::OhlcvData<'_>,
     ) -> Array3<f64> {
-        let (batch, time) = close.dim();
+        let (batch, time) = ohlcv.close.dim();
         let n_factors = config.feat_count();
         let mut out = Array3::<f64>::zeros((batch, n_factors, time));
 
         for (idx, factor_def) in config.active_factors.iter().enumerate() {
-            let raw_values = Self::compute_single_factor(
-                &factor_def.name,
-                close,
-                open,
-                high,
-                low,
-                volume,
-                liquidity,
-                fdv,
-            );
+            let raw_values = Self::compute_single_factor(&factor_def.name, ohlcv);
 
             let processed = match factor_def.normalization {
                 NormalizationType::Robust => Self::robust_norm(&raw_values),
@@ -61,36 +46,30 @@ impl FeatureEngineer {
 
     fn compute_single_factor(
         name: &str,
-        close: &Array2<f64>,
-        open: &Array2<f64>,
-        high: &Array2<f64>,
-        low: &Array2<f64>,
-        volume: &Array2<f64>,
-        liquidity: &Array2<f64>,
-        fdv: &Array2<f64>,
+        d: &crate::factors::traits::OhlcvData<'_>,
     ) -> Array2<f64> {
         match name {
             "return" => {
-                let prev = ts_delay(close, 1);
-                (close / (&prev + 1e-9)).mapv(f64::ln)
+                let prev = ts_delay(d.close, 1);
+                (d.close / (&prev + 1e-9)).mapv(f64::ln)
             }
-            "liquidity_health" => MemeIndicators::liquidity_health(liquidity, fdv),
-            "buy_sell_pressure" => MemeIndicators::buy_sell_imbalance(close, open, high, low),
-            "fomo_acceleration" => MemeIndicators::fomo_acceleration(volume),
-            "pump_deviation" => MemeIndicators::pump_deviation(close, 20),
-            "log_volume" => volume.mapv(|v| (v + 1.0).ln()),
+            "liquidity_health" => MemeIndicators::liquidity_health(d.liquidity, d.fdv),
+            "buy_sell_pressure" => {
+                MemeIndicators::buy_sell_imbalance(d.close, d.open, d.high, d.low)
+            }
+            "fomo_acceleration" => MemeIndicators::fomo_acceleration(d.volume),
+            "pump_deviation" => MemeIndicators::pump_deviation(d.close, 20),
+            "log_volume" => d.volume.mapv(|v| (v + 1.0).ln()),
             "volatility_clustering" => {
-                let prev = ts_delay(close, 1);
-                let ret = (close / (&prev + 1e-9)).mapv(f64::ln);
+                let prev = ts_delay(d.close, 1);
+                let ret = (d.close / (&prev + 1e-9)).mapv(f64::ln);
                 MemeIndicators::volatility_clustering(&ret, 20)
             }
-            "momentum_reversal" => MemeIndicators::momentum_reversal(close, 20),
-            "relative_strength" => MemeIndicators::relative_strength(close, 14),
-            // Add other factors as needed for full 33-factor support
-            // This implementation focuses on the AlphaGPT set first but is extensible
+            "momentum_reversal" => MemeIndicators::momentum_reversal(d.close, 20),
+            "relative_strength" => MemeIndicators::relative_strength(d.close, 14),
             _ => {
                 info!("Warning: Unknown factor '{}', returning zeros", name);
-                Array2::zeros(close.dim())
+                Array2::zeros(d.close.dim())
             }
         }
     }
@@ -142,24 +121,16 @@ impl FeatureEngineer {
 
     /// AlphaGPT-compatible feature computation (6 dimensions)
     /// Matches model_core/factors.py::FeatureEngineer.compute_features exactly
-    pub fn compute_features(
-        close: &Array2<f64>,
-        open: &Array2<f64>,
-        high: &Array2<f64>,
-        low: &Array2<f64>,
-        volume: &Array2<f64>,
-        liquidity: &Array2<f64>,
-        fdv: &Array2<f64>,
-    ) -> Array3<f64> {
-        let prev_close = ts_delay(close, 1);
-        let ret = (close / (&prev_close + 1e-9)).mapv(f64::ln);
+    pub fn compute_features(d: &crate::factors::traits::OhlcvData<'_>) -> Array3<f64> {
+        let prev_close = ts_delay(d.close, 1);
+        let ret = (d.close / (&prev_close + 1e-9)).mapv(f64::ln);
 
         // AlphaGPT 6 factors in exact order
-        let liq_score = MemeIndicators::liquidity_health(liquidity, fdv);
-        let pressure = MemeIndicators::buy_sell_imbalance(close, open, high, low);
-        let fomo = MemeIndicators::fomo_acceleration(volume);
-        let dev = MemeIndicators::pump_deviation(close, 20);
-        let log_vol = volume.mapv(|v| (v + 1.0).ln());
+        let liq_score = MemeIndicators::liquidity_health(d.liquidity, d.fdv);
+        let pressure = MemeIndicators::buy_sell_imbalance(d.close, d.open, d.high, d.low);
+        let fomo = MemeIndicators::fomo_acceleration(d.volume);
+        let dev = MemeIndicators::pump_deviation(d.close, 20);
+        let log_vol = d.volume.mapv(|v| (v + 1.0).ln());
 
         // Normalize specific factors (matching AlphaGPT)
         let ret_norm = Self::robust_norm(&ret);
@@ -167,7 +138,7 @@ impl FeatureEngineer {
         let dev_norm = Self::robust_norm(&dev);
         let log_vol_norm = Self::robust_norm(&log_vol);
 
-        let (batch, time) = close.dim();
+        let (batch, time) = d.close.dim();
         let mut out = Array3::<f64>::zeros((batch, Self::INPUT_DIM, time));
 
         // Stack in AlphaGPT order
@@ -182,26 +153,18 @@ impl FeatureEngineer {
     }
 
     /// Compute basic 9-dimensional meme-focused features (backward compatible)
-    pub fn compute_basic_features(
-        close: &Array2<f64>,
-        open: &Array2<f64>,
-        high: &Array2<f64>,
-        low: &Array2<f64>,
-        volume: &Array2<f64>,
-        liquidity: &Array2<f64>,
-        fdv: &Array2<f64>,
-    ) -> Array3<f64> {
-        let prev_close = ts_delay(close, 1);
-        let ret = (close / (&prev_close + 1e-9)).mapv(f64::ln);
+    pub fn compute_basic_features(d: &crate::factors::traits::OhlcvData<'_>) -> Array3<f64> {
+        let prev_close = ts_delay(d.close, 1);
+        let ret = (d.close / (&prev_close + 1e-9)).mapv(f64::ln);
 
-        let liq_score = MemeIndicators::liquidity_health(liquidity, fdv);
-        let pressure = MemeIndicators::buy_sell_imbalance(close, open, high, low);
-        let fomo = MemeIndicators::fomo_acceleration(volume);
-        let dev = MemeIndicators::pump_deviation(close, 20);
-        let log_vol = volume.mapv(|v| (v + 1.0).ln());
+        let liq_score = MemeIndicators::liquidity_health(d.liquidity, d.fdv);
+        let pressure = MemeIndicators::buy_sell_imbalance(d.close, d.open, d.high, d.low);
+        let fomo = MemeIndicators::fomo_acceleration(d.volume);
+        let dev = MemeIndicators::pump_deviation(d.close, 20);
+        let log_vol = d.volume.mapv(|v| (v + 1.0).ln());
         let vol_cluster = MemeIndicators::volatility_clustering(&ret, 20);
-        let mom_rev = MemeIndicators::momentum_reversal(close, 20);
-        let rsi = MemeIndicators::relative_strength(close, 14);
+        let mom_rev = MemeIndicators::momentum_reversal(d.close, 20);
+        let rsi = MemeIndicators::relative_strength(d.close, 14);
 
         let ret_norm = Self::robust_norm(&ret);
         let fomo_norm = Self::robust_norm(&fomo);
@@ -211,7 +174,7 @@ impl FeatureEngineer {
         let mom_rev_norm = Self::robust_norm(&mom_rev);
         let rsi_norm = Self::robust_norm(&rsi);
 
-        let (batch, time) = close.dim();
+        let (batch, time) = d.close.dim();
         let mut out = Array3::<f64>::zeros((batch, Self::BASIC_DIM, time));
 
         out.index_axis_mut(Axis(1), 0).assign(&ret_norm);

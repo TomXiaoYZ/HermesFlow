@@ -118,15 +118,18 @@ impl Backtester {
             }
 
             // Generate Features based on Config
+            let ohlcv = backtest_engine::factors::traits::OhlcvData {
+                close: &close,
+                open: &open,
+                high: &high,
+                low: &low,
+                volume: &volume,
+                liquidity: &liq,
+                fdv: &fdv,
+            };
             let features = FeatureEngineer::compute_features_from_config(
                 &self.factor_config,
-                &close,
-                &open,
-                &high,
-                &low,
-                &volume,
-                &liq,
-                &fdv,
+                &ohlcv,
             );
 
             // Calculate Future Returns (Target)

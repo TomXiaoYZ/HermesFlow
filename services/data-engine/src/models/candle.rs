@@ -2,6 +2,19 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+/// Parameters for constructing a `Candle`
+pub struct CandleParams {
+    pub exchange: String,
+    pub symbol: String,
+    pub resolution: String,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
+    pub time: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candle {
     pub exchange: String, // e.g. "Polygon", "Binance"
@@ -56,31 +69,21 @@ impl Candle {
         Ok(())
     }
 
-    pub fn new(
-        exchange: String,
-        symbol: String,
-        resolution: String,
-        open: Decimal,
-        high: Decimal,
-        low: Decimal,
-        close: Decimal,
-        volume: Decimal,
-        time: DateTime<Utc>,
-    ) -> Self {
+    pub fn new(params: CandleParams) -> Self {
         Self {
-            exchange,
-            symbol,
-            resolution,
-            open,
-            high,
-            low,
-            close,
-            volume,
+            exchange: params.exchange,
+            symbol: params.symbol,
+            resolution: params.resolution,
+            open: params.open,
+            high: params.high,
+            low: params.low,
+            close: params.close,
+            volume: params.volume,
             amount: None,
             liquidity: None,
             fdv: None,
             metadata: None,
-            time,
+            time: params.time,
         }
     }
 }

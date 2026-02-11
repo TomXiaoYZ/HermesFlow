@@ -35,21 +35,9 @@ pub async fn start_agent_monitoring(State(state): State<AppState>) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use axum::http::StatusCode;
-
     #[tokio::test]
     async fn test_start_agent_monitoring() {
-        // Mock state creation would be complex, but for this handler we don't use state yet.
-        // However, the handler takes State calls which makes it hard to test directly without mocking state.
-        // given the AppState struct has many fields.
-
-        // Use a simpler approach: just verify the Response struct for now, or skip state-dependent test
-        // if we can't easily mock AppState.
-
-        // Actually, we can just test the response struct logic effectively by creating it manually for now,
-        // but testing the handler requires the State.
-
-        // Let's rely on compilation for now as AppState mocking is non-trivial (needs database pools).
+        // Handler requires AppState with database pools — verified via compilation only.
+        // Full integration test would require mocking PostgresRepositories + HealthMonitor.
     }
 }

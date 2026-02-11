@@ -1,7 +1,6 @@
 use backtest_engine::vm::vm::StackVM;
 use chrono::Utc;
 use common::events::{MarketDataUpdate, OrderSide, TradeSignal};
-use std::env;
 use strategy_engine::event_bus::EventBus;
 use strategy_engine::market_data_manager::MarketDataManager;
 use strategy_engine::risk::RiskEngine;
@@ -15,11 +14,11 @@ async fn test_live_strategy_loop() -> anyhow::Result<()> {
     let redis_url = "redis://127.0.0.1:6379";
     let event_bus = EventBus::new(redis_url)?;
     let mut market_manager = MarketDataManager::new();
-    let mut vm = StackVM::new();
+    let vm = StackVM::new();
     let risk_engine = RiskEngine::new();
 
     // Subscribe to signals to verify output
-    let mut signal_rx = event_bus.subscribe_market_data("trade_signals").await?; // Using generic subscribe for now, returns raw string in rx?
+    let _signal_rx = event_bus.subscribe_market_data("trade_signals").await?; // Using generic subscribe for now, returns raw string in rx?
                                                                                  // Wait, subscribe_market_data returns Receiver<MarketDataUpdate>.
                                                                                  // I need a Receiver for TradeSignal.
                                                                                  // EventBus doesn't have subscribe_signals yet.

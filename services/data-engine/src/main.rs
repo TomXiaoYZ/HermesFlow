@@ -12,7 +12,7 @@ use data_engine::{
         MarketDataRepository,
         SocialRepository, // Traits
     },
-    server::{create_router, AppState},
+    server::{create_router, routes::AppStateParams, AppState},
     storage::{ClickHouseWriter, RedisCache},
     tasks::TaskManager,
     traits::DataSourceConnector,
@@ -170,16 +170,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (broadcast_tx, _) = tokio::sync::broadcast::channel(100);
 
     // Create application state
-    let app_state = AppState::new(
-        config.clone(),
-        redis.clone(),
+    let app_state = AppState::new(AppStateParams {
+        config: config.clone(),
+        redis: redis.clone(),
         clickhouse,
-        postgres_repos.clone(),
+        postgres: postgres_repos.clone(),
         health_monitor,
         ibkr_trader,
         task_manager,
-        broadcast_tx.clone(),
-    );
+        broadcast_tx: broadcast_tx.clone(),
+    });
 
     // Start Metrics Updater (Background Task)
     data_engine::server::handlers::spawn_metrics_updater(app_state.clone()).await;

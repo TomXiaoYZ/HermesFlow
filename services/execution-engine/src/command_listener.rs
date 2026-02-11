@@ -16,8 +16,6 @@ enum BrokerRoute {
     Solana,
     Ibkr,
     Futu,
-    #[allow(dead_code)]
-    Unknown,
 }
 
 pub struct CommandListener {
@@ -297,10 +295,6 @@ impl CommandListener {
                             signal.symbol
                         );
                     }
-                }
-
-                BrokerRoute::Unknown => {
-                    warn!("Unknown route for symbol: {}", signal.symbol);
                 }
             }
         }

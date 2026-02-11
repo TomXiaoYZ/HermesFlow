@@ -94,7 +94,7 @@ mod tests {
             16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, // Uptrend
         ]]);
 
-        let (macd_line, signal_line, histogram) = MACD::macd(&close);
+        let (_macd_line, _signal_line, histogram) = MACD::macd(&close);
 
         // Histogram should eventually become positive in strong uptrend
         // (though exact timing depends on EMA parameters)

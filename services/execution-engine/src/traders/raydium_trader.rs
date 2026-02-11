@@ -12,6 +12,17 @@ use tracing::{debug, info, warn};
 // Raydium AMM Program ID
 const RAYDIUM_AMM_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 
+/// Parameters for building a Raydium swap instruction
+pub struct SwapInstructionParams<'a> {
+    pub amm_info: &'a AmmInfo,
+    pub pool_address: &'a Pubkey,
+    pub user_wallet: &'a Pubkey,
+    pub user_source_token: &'a Pubkey,
+    pub user_dest_token: &'a Pubkey,
+    pub amount_in: u64,
+    pub minimum_amount_out: u64,
+}
+
 /// Raydium AMM V4 Pool State
 /// Based on https://github.com/raydium-io/raydium-amm/blob/master/program/src/state.rs
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
@@ -167,14 +178,15 @@ impl RaydiumTrader {
     /// This requires 18 accounts to interact with Serum orderbook
     pub async fn build_swap_instruction(
         &self,
-        amm_info: &AmmInfo,
-        pool_address: &Pubkey,
-        user_wallet: &Pubkey,
-        user_source_token: &Pubkey,
-        user_dest_token: &Pubkey,
-        amount_in: u64,
-        minimum_amount_out: u64,
+        p: &SwapInstructionParams<'_>,
     ) -> Result<Instruction> {
+        let amm_info = p.amm_info;
+        let pool_address = p.pool_address;
+        let user_wallet = p.user_wallet;
+        let user_source_token = p.user_source_token;
+        let user_dest_token = p.user_dest_token;
+        let amount_in = p.amount_in;
+        let minimum_amount_out = p.minimum_amount_out;
         let program_id = Pubkey::from_str(RAYDIUM_AMM_PROGRAM_ID)?;
 
         // Derive AMM authority PDA
