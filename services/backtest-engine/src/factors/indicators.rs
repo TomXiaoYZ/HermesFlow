@@ -48,8 +48,8 @@ impl MemeIndicators {
         }
         let ma: Array2<f64> = sum / (window as f64);
 
-        let dev = (close - &ma) / (&ma + 1e-9);
-        dev
+        
+        (close - &ma) / (&ma + 1e-9)
     }
 
     /// Volatility Clustering: sqrt(mean(log_return^2))
@@ -99,8 +99,8 @@ impl MemeIndicators {
             avg_gain = avg_gain + ts_delay(&gains, i);
             avg_loss = avg_loss + ts_delay(&losses, i);
         }
-        avg_gain = avg_gain / (window as f64);
-        avg_loss = avg_loss / (window as f64);
+        avg_gain /= window as f64;
+        avg_loss /= window as f64;
 
         let rs = (&avg_gain + 1e-9) / (&avg_loss + 1e-9);
 

@@ -5,6 +5,7 @@ use sqlx::{postgres::PgPoolOptions, Row};
 use std::env;
 
 #[tokio::test]
+#[ignore] // Requires DATABASE_URL and running PostgreSQL
 async fn test_multi_exchange_aggregation() {
     // 1. Setup DB Connection
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");

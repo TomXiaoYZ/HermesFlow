@@ -152,13 +152,13 @@ async fn main() -> anyhow::Result<()> {
     .await;
 
     if let Ok(Some(row)) = last_gen_row {
-        if let Some(max_gen) = row.try_get::<i32, _>("generation").ok() {
+        if let Ok(max_gen) = row.try_get::<i32, _>("generation") {
             info!("Resuming evolution from generation {}", max_gen);
             ga.generation = max_gen as usize + 1;
         }
 
         // Load the best genome to preserve logic!
-        if let Some(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome").ok() {
+        if let Ok(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome") {
             info!("Restoring best genome from DB: {:?}", best_tokens);
             // Replace the first random genome with the saved best one
             // We need to cast i32 back to i32 (it matches).
@@ -258,7 +258,7 @@ async fn main() -> anyhow::Result<()> {
             // PubSub & Logging ...
 
             // 4. Persistence: Run Detailed Backtest & Save to backtest_results
-            if gen % 5 == 0 {
+            if gen.is_multiple_of(5) {
                 // Universal Portfolio Simulation
                 let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
 
@@ -318,7 +318,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // Cleanup old generations (Keep last 1000)
-            if gen % 10 == 0 && gen > 1000 {
+            if gen.is_multiple_of(10) && gen > 1000 {
                 let cutoff = gen as i32 - 1000;
                 let _ = sqlx::query("DELETE FROM strategy_generations WHERE generation < $1")
                     .bind(cutoff)

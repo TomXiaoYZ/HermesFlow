@@ -106,7 +106,7 @@ impl BinanceStreamer {
                                         // Binance uses standard frames, but payload might contain error/result
                                         if value.get("e").is_some() {
                                             if let Some(data) = Self::parse_message(value) {
-                                                if let Err(_) = tx.send(data).await {
+                                                if tx.send(data).await.is_err() {
                                                     break; // Receiver dropped, exit
                                                 }
                                             }

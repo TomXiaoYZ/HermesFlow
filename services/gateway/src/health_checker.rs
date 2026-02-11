@@ -61,7 +61,7 @@ impl HealthChecker {
             interval.tick().await;
 
             for service in &self.services {
-                match self.check_health(&service).await {
+                match self.check_health(service).await {
                     Ok(health) => {
                         // Store in Redis
                         if let Ok(mut conn) = redis_client.get_connection() {
@@ -117,9 +117,7 @@ impl HealthChecker {
             let health: ServiceHealth = response.json().await?;
             Ok(health)
         } else {
-            Err(reqwest::Error::from(
-                response.error_for_status().unwrap_err(),
-            ))
+            Err(response.error_for_status().unwrap_err())
         }
     }
 }

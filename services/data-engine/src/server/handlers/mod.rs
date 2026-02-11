@@ -64,7 +64,7 @@ pub async fn spawn_metrics_updater(state: AppState) {
             }
 
             // Persist to DB every 60 seconds (6 ticks)
-            if _ticks % 6 == 0 {
+            if _ticks.is_multiple_of(6) {
                 let current_birdeye_reqs = BIRDEYE_API_REQUESTS_TOTAL.get();
                 let delta = if current_birdeye_reqs >= last_birdeye_reqs {
                     current_birdeye_reqs - last_birdeye_reqs

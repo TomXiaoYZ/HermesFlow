@@ -70,7 +70,7 @@ impl EventBus {
                                     Ok(payload) => {
                                         match serde_json::from_str::<MarketDataUpdate>(&payload) {
                                             Ok(data) => {
-                                                if let Err(_) = tx.blocking_send(data) {
+                                                if tx.blocking_send(data).is_err() {
                                                     // Receiver dropped, exit loop
                                                     break;
                                                 }
@@ -121,7 +121,7 @@ impl EventBus {
                             Ok(payload) => {
                                 match serde_json::from_str::<PortfolioUpdate>(&payload) {
                                     Ok(data) => {
-                                        if let Err(_) = tx.blocking_send(data) {
+                                        if tx.blocking_send(data).is_err() {
                                             break;
                                         }
                                     }

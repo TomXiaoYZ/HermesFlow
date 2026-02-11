@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use super::{AccountSummary, BrokerOrderType, BrokerPosition, OrderParams, OrderResult, Trader};
 
@@ -25,6 +25,7 @@ struct PlaceOrderRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct PlaceOrderResponse {
     order_id: String,
     status: String,
@@ -49,6 +50,7 @@ struct AccountResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct HealthResponse {
     status: String,
     opend_connected: bool,

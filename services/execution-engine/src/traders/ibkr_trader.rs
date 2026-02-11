@@ -56,11 +56,7 @@ impl IBKRTrader {
     }
 
     fn build_contract(symbol: &str) -> Contract {
-        let clean_symbol = if symbol.starts_with("US.") {
-            &symbol[3..]
-        } else {
-            symbol
-        };
+        let clean_symbol = symbol.strip_prefix("US.").unwrap_or(symbol);
         Contract::stock(clean_symbol)
     }
 }
@@ -75,18 +71,18 @@ impl Trader for IBKRTrader {
         let contract = Self::build_contract(symbol);
         let order_id = next_order_id();
 
-        let mut order = IbOrder::default();
-        order.action = Action::Buy;
-        order.total_quantity = quantity;
-        order.order_type = match params.order_type {
-            BrokerOrderType::Market => "MKT".to_string(),
-            BrokerOrderType::Limit => "LMT".to_string(),
-            BrokerOrderType::MarketOnClose => "MOC".to_string(),
+        let order = IbOrder {
+            action: Action::Buy,
+            total_quantity: quantity,
+            order_type: match params.order_type {
+                BrokerOrderType::Market => "MKT".to_string(),
+                BrokerOrderType::Limit => "LMT".to_string(),
+                BrokerOrderType::MarketOnClose => "MOC".to_string(),
+            },
+            limit_price: params.limit_price,
+            order_id,
+            ..Default::default()
         };
-        if let Some(price) = params.limit_price {
-            order.limit_price = Some(price);
-        }
-        order.order_id = order_id;
 
         info!(
             "IBKR BUY: {} x{} ({}) order_id={}",
@@ -129,18 +125,18 @@ impl Trader for IBKRTrader {
         let contract = Self::build_contract(symbol);
         let order_id = next_order_id();
 
-        let mut order = IbOrder::default();
-        order.action = Action::Sell;
-        order.total_quantity = quantity;
-        order.order_type = match params.order_type {
-            BrokerOrderType::Market => "MKT".to_string(),
-            BrokerOrderType::Limit => "LMT".to_string(),
-            BrokerOrderType::MarketOnClose => "MOC".to_string(),
+        let order = IbOrder {
+            action: Action::Sell,
+            total_quantity: quantity,
+            order_type: match params.order_type {
+                BrokerOrderType::Market => "MKT".to_string(),
+                BrokerOrderType::Limit => "LMT".to_string(),
+                BrokerOrderType::MarketOnClose => "MOC".to_string(),
+            },
+            limit_price: params.limit_price,
+            order_id,
+            ..Default::default()
         };
-        if let Some(price) = params.limit_price {
-            order.limit_price = Some(price);
-        }
-        order.order_id = order_id;
 
         info!(
             "IBKR SELL: {} x{} ({}) order_id={}",

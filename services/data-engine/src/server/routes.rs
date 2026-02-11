@@ -108,38 +108,6 @@ pub fn create_router(state: AppState) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::*;
-    use crate::monitoring::HealthMonitor;
-
-    #[allow(dead_code)]
-    async fn create_test_state() -> AppState {
-        let config = AppConfig {
-            server: ServerConfig::default(),
-            redis: RedisConfig::default(),
-            postgres: PostgresConfig::default(),
-            clickhouse: ClickHouseConfig::default(),
-            data_sources: vec![],
-            twitter: None,
-            polymarket: None,
-            performance: PerformanceConfig::default(),
-            logging: LoggingConfig::default(),
-        };
-
-        // For tests, we can skip Redis/ClickHouse connections
-        let (tx, _) = tokio::sync::broadcast::channel(100);
-        AppState::new(
-            config,
-            None,
-            None,
-            Arc::new(postgres),
-            health_monitor,
-            None,
-            None,
-            tx,
-        )
-    }
-
     #[tokio::test]
     async fn test_router_creation() {
         // This test just verifies the router can be created

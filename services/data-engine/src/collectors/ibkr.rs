@@ -54,7 +54,7 @@ impl DataSourceConnector for IBKRCollector {
         // Connect to IB Gateway
         let client = Client::connect(&addr, self.config.client_id)
             .await
-            .map_err(|e| DataError::IbkrError(e))?;
+            .map_err(DataError::IbkrError)?;
 
         info!("IBKR Collector connected successfully");
         let client_arc = Arc::new(client);

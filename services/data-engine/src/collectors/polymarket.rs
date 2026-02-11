@@ -262,18 +262,18 @@ impl PolymarketCollector {
         let end_date = gamma
             .end_date
             .as_deref()
-            .and_then(|s| parse_datetime(s));
+            .and_then(parse_datetime);
 
         let created_at = gamma
             .created_at
             .as_deref()
-            .and_then(|s| parse_datetime(s))
+            .and_then(parse_datetime)
             .unwrap_or_else(Utc::now);
 
         let updated_at = gamma
             .updated_at
             .as_deref()
-            .and_then(|s| parse_datetime(s))
+            .and_then(parse_datetime)
             .unwrap_or_else(Utc::now);
 
         let active = gamma.active.unwrap_or(true) && !gamma.closed.unwrap_or(false);

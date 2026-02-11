@@ -118,7 +118,7 @@ impl FeatureEngineer {
                 continue;
             }
 
-            let median = if len % 2 == 0 {
+            let median = if len.is_multiple_of(2) {
                 (v[len / 2 - 1] + v[len / 2]) / 2.0
             } else {
                 v[len / 2]
@@ -126,7 +126,7 @@ impl FeatureEngineer {
 
             let mut diffs: Vec<f64> = row.mapv(|v| (v - median).abs()).to_vec();
             diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let mad = if len % 2 == 0 {
+            let mad = if len.is_multiple_of(2) {
                 (diffs[len / 2 - 1] + diffs[len / 2]) / 2.0
             } else {
                 diffs[len / 2]

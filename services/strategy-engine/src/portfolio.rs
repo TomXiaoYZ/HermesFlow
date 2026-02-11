@@ -151,10 +151,8 @@ impl PortfolioManager {
             if self.positions.remove(token).is_some() {
                 info!("Position {} closed fully.", token);
             }
-        } else {
-            if let Some(pos) = self.positions.get_mut(token) {
-                pos.amount_held = new_amount;
-            }
+        } else if let Some(pos) = self.positions.get_mut(token) {
+            pos.amount_held = new_amount;
         }
     }
 

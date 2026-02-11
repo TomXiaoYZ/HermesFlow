@@ -1,6 +1,5 @@
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-use std::env;
 
 fn main() {
     let key_str =

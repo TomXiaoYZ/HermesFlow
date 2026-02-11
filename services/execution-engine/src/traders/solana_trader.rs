@@ -6,7 +6,6 @@ use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-use solana_sdk::system_instruction;
 use solana_sdk::transaction::Transaction;
 use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
@@ -706,22 +705,18 @@ impl SolanaTrader {
             }
 
             let statuses = self.rpc_client.get_signature_statuses(&[sig])?;
-            if let Some(Some(status)) = statuses.value.get(0) {
+            if let Some(Some(status)) = statuses.value.first() {
                 if let Some(err) = &status.err {
                     return Err(anyhow!("Transaction failed: {:?} - {:?}", err, status));
                 }
 
-                if let Some(confirmation_status) = &status.confirmation_status {
-                    match confirmation_status {
-                        solana_transaction_status::TransactionConfirmationStatus::Confirmed
-                        | solana_transaction_status::TransactionConfirmationStatus::Finalized => {
-                            info!("Transaction CONFIRMED: {}", signature);
-                            return Ok(());
-                        }
-                        _ => {
-                            // Processed but not confirmed yet
-                        }
-                    }
+                if let Some(
+                    solana_transaction_status::TransactionConfirmationStatus::Confirmed
+                    | solana_transaction_status::TransactionConfirmationStatus::Finalized,
+                ) = &status.confirmation_status
+                {
+                    info!("Transaction CONFIRMED: {}", signature);
+                    return Ok(());
                 }
             }
 

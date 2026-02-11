@@ -23,7 +23,7 @@ impl IBKRTrader {
         // Use client_id + 1 to avoid conflict with collector
         let client = Client::connect(&addr, config.client_id + 1)
             .await
-            .map_err(|e| crate::error::DataError::IbkrError(e))?;
+            .map_err(crate::error::DataError::IbkrError)?;
 
         Ok(Self {
             client: Arc::new(client),
@@ -41,10 +41,12 @@ impl IBKRTrader {
             Action::Sell
         };
 
-        let mut order = IbOrder::default();
-        order.action = action;
-        order.total_quantity = req.quantity;
-        order.order_type = req.order_type.clone();
+        let mut order = IbOrder {
+            action,
+            total_quantity: req.quantity,
+            order_type: req.order_type.clone(),
+            ..Default::default()
+        };
 
         if req.order_type.to_uppercase() == "LMT" {
             if let Some(price) = req.price {
@@ -64,7 +66,7 @@ impl IBKRTrader {
         self.client
             .place_order(order_id, &contract, &order)
             .await
-            .map_err(|e| crate::error::DataError::IbkrError(e))?;
+            .map_err(crate::error::DataError::IbkrError)?;
 
         info!("Order placed with ID: {}", order_id);
 
@@ -76,7 +78,7 @@ impl IBKRTrader {
         self.client
             .cancel_order(order_id, "")
             .await
-            .map_err(|e| crate::error::DataError::IbkrError(e))?;
+            .map_err(crate::error::DataError::IbkrError)?;
         Ok(())
     }
 

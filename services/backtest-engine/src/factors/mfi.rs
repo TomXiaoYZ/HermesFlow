@@ -83,9 +83,9 @@ impl MFI {
 
         // 5. MFI calculation
         let mfr = &sum_pos / (&sum_neg + 1e-9);
-        let mfi = 100.0 - (100.0 / (1.0 + &mfr));
+        
 
-        mfi
+        100.0 - (100.0 / (1.0 + &mfr))
     }
 
     /// Normalized MFI (scaled to -1 to 1)

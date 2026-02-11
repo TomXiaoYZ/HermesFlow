@@ -96,8 +96,7 @@ impl JupiterPriceCollector {
                                     let mut fdv = None;
 
                                     if let Some(r) = &mut redis {
-                                        match r.get_token_metadata(&id).await {
-                                            Ok(Some(meta)) => {
+                                        if let Ok(Some(meta)) = r.get_token_metadata(&id).await {
                                                 liquidity = Some(
                                                     Decimal::from_f64(meta.liquidity)
                                                         .unwrap_or_default(),
@@ -109,8 +108,6 @@ impl JupiterPriceCollector {
                                                 fdv = Some(
                                                     Decimal::from_f64(meta.fdv).unwrap_or_default(),
                                                 );
-                                            }
-                                            _ => {} // Ignore errors or missing data
                                         }
                                     }
 
@@ -137,7 +134,7 @@ impl JupiterPriceCollector {
                                         raw_data: String::new(),
                                     };
 
-                                    if let Err(_) = tx.send(data).await {
+                                    if tx.send(data).await.is_err() {
                                         error!("[Jupiter] Receiver dropped, exiting...");
                                         return;
                                     }

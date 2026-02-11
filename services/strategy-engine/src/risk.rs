@@ -56,6 +56,12 @@ struct AccountInfo {
                        // ... we just need data
 }
 
+impl Default for RiskEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RiskEngine {
     pub fn new() -> Self {
         Self {
@@ -108,15 +114,14 @@ impl RiskEngine {
         }
 
         // 3. Honeypot Check (Sell Simulation)
-        if self.config.check_honeypot && signal.side == OrderSide::Buy {
-            if !self.check_honeypot(&signal.symbol).await {
+        if self.config.check_honeypot && signal.side == OrderSide::Buy
+            && !self.check_honeypot(&signal.symbol).await {
                 warn!(
                     "Risk Reject: Honeypot detected/Simulation failed for {}",
                     signal.symbol
                 );
                 return false;
             }
-        }
 
         true
     }
@@ -197,7 +202,7 @@ impl RiskEngine {
             Ok(resp) => {
                 if let Ok(rpc_resp) = resp.json::<RpcResponse<AccountInfo>>().await {
                     if let Some(result) = rpc_resp.result {
-                        if let Some(base64_str) = result.value.data.get(0) {
+                        if let Some(base64_str) = result.value.data.first() {
                             // Decode Base64
                             use base64::{engine::general_purpose, Engine as _};
                             if let Ok(data) = general_purpose::STANDARD.decode(base64_str) {
@@ -253,6 +258,7 @@ mod tests {
     #[tokio::test]
     async fn test_position_sizing_logic() {
         let mut engine = RiskEngine::new();
+        engine.update_equity(0.5);
         // Config: 0.5 portion, 0.02 entry default, current equity 0.5 SOL
         // Max portion size = 0.5 * 0.5 = 0.25 SOL
         // Entry default = 0.02 SOL

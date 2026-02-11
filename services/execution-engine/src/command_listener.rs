@@ -16,6 +16,7 @@ enum BrokerRoute {
     Solana,
     Ibkr,
     Futu,
+    #[allow(dead_code)]
     Unknown,
 }
 

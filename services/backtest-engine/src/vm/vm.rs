@@ -92,7 +92,7 @@ impl StackVM {
                     }
                     4 => {
                         // NEG
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -100,7 +100,7 @@ impl StackVM {
                     }
                     5 => {
                         // ABS
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -108,7 +108,7 @@ impl StackVM {
                     }
                     6 => {
                         // SIGN
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -126,7 +126,7 @@ impl StackVM {
                     }
                     8 => {
                         // JUMP
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -134,7 +134,7 @@ impl StackVM {
                     }
                     9 => {
                         // DECAY
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -142,7 +142,7 @@ impl StackVM {
                     }
                     10 => {
                         // DELAY1
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -150,7 +150,7 @@ impl StackVM {
                     }
                     11 => {
                         // MAX3
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -158,7 +158,7 @@ impl StackVM {
                     }
                     12 => {
                         // TS_MEAN_10
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -166,7 +166,7 @@ impl StackVM {
                     }
                     13 => {
                         // TS_STD_10
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -174,7 +174,7 @@ impl StackVM {
                     }
                     14 => {
                         // TS_RANK_10
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -182,7 +182,7 @@ impl StackVM {
                     }
                     15 => {
                         // TS_SUM_10
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -199,7 +199,7 @@ impl StackVM {
                     }
                     17 => {
                         // CS_RANK
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -207,7 +207,7 @@ impl StackVM {
                     }
                     18 => {
                         // CS_MEAN
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -215,7 +215,7 @@ impl StackVM {
                     }
                     19 => {
                         // LOG
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -223,7 +223,7 @@ impl StackVM {
                     }
                     20 => {
                         // SQRT
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -231,7 +231,7 @@ impl StackVM {
                     }
                     21 => {
                         // INV
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
@@ -239,7 +239,7 @@ impl StackVM {
                     }
                     22 => {
                         // TS_DELTA
-                        if stack.len() < 1 {
+                        if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;

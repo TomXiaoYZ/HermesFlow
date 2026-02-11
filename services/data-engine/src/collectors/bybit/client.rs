@@ -64,10 +64,8 @@ impl BybitClient {
                     params_str = query_str;
                 }
             }
-        } else {
-            if let Some(b) = &body {
-                params_str = b.to_string();
-            }
+        } else if let Some(b) = &body {
+            params_str = b.to_string();
         }
 
         let signature = self.sign_request(&timestamp, &params_str)?;

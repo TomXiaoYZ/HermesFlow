@@ -118,6 +118,12 @@ pub struct MarketDataManager {
     buffers: HashMap<String, SymbolBuffer>,
 }
 
+impl Default for MarketDataManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarketDataManager {
     pub fn new() -> Self {
         Self {

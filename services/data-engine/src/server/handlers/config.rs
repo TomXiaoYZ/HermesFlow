@@ -145,7 +145,7 @@ pub async fn add_to_watchlist(
 
     let res = sqlx::query(query)
         .bind(&payload.exchange)
-        .bind(&payload.symbol.to_uppercase())
+        .bind(payload.symbol.to_uppercase())
         .bind(&payload.name)
         .bind(asset_type)
         .execute(pool)
@@ -189,7 +189,7 @@ pub async fn remove_from_watchlist(
 
     let res = sqlx::query(query)
         .bind(&payload.exchange)
-        .bind(&payload.symbol.to_uppercase())
+        .bind(payload.symbol.to_uppercase())
         .execute(pool)
         .await;
 

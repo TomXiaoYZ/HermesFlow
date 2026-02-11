@@ -199,7 +199,7 @@ impl Backtester {
         let mut total_score = 0.0;
         let count = self.cache.len() as f64;
 
-        for (_sym, data) in &self.cache {
+        for data in self.cache.values() {
             // Run VM
             if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
                 // Debug log (only once per generation/genome? too noisy. only if best?)

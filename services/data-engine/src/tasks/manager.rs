@@ -222,77 +222,75 @@ impl TaskManager {
                 } else {
                     error!("Birdeye not configured for contract address {}", symbol);
                 }
-            } else {
-                if let Some(massive_cfg) = config.massive {
-                    let connector = MassiveConnector::new(massive_cfg);
-                    info!("Backfill (Massive) task running for {}...", symbol);
+            } else if let Some(massive_cfg) = config.massive {
+                let connector = MassiveConnector::new(massive_cfg);
+                info!("Backfill (Massive) task running for {}...", symbol);
 
-                    // Default to 5 years if 'to' is not specified
-                    let to_date = to.unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
+                // Default to 5 years if 'to' is not specified
+                let to_date = to.unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
 
-                    // Fetch Day Aggregates (1d)
-                    match connector
-                        .fetch_history_candles(&symbol, 1, "day", &from, &to_date)
-                        .await
-                    {
-                        Ok(candles) => {
-                            let total_candles = candles.len();
-                            info!("Fetched {} candles for {}", total_candles, symbol);
-                            let mut success_count = 0;
-                            for data in candles {
-                                // Extract OHLC from raw_data or fields
-                                let meta_value = serde_json::from_str::<Value>(&data.raw_data).ok();
+                // Fetch Day Aggregates (1d)
+                match connector
+                    .fetch_history_candles(&symbol, 1, "day", &from, &to_date)
+                    .await
+                {
+                    Ok(candles) => {
+                        let total_candles = candles.len();
+                        info!("Fetched {} candles for {}", total_candles, symbol);
+                        let mut success_count = 0;
+                        for data in candles {
+                            // Extract OHLC from raw_data or fields
+                            let meta_value = serde_json::from_str::<Value>(&data.raw_data).ok();
 
-                                let open = if let Some(json) = &meta_value {
-                                    json.get("open")
-                                        .and_then(|v| v.as_f64())
-                                        .map(|f| Decimal::from_f64_retain(f).unwrap_or_default())
-                                        .unwrap_or(data.price)
-                                } else {
-                                    data.price // Fallback
-                                };
+                            let open = if let Some(json) = &meta_value {
+                                json.get("open")
+                                    .and_then(|v| v.as_f64())
+                                    .map(|f| Decimal::from_f64_retain(f).unwrap_or_default())
+                                    .unwrap_or(data.price)
+                            } else {
+                                data.price // Fallback
+                            };
 
-                                let high = data.high_24h.unwrap_or(data.price);
-                                let low = data.low_24h.unwrap_or(data.price);
+                            let high = data.high_24h.unwrap_or(data.price);
+                            let low = data.low_24h.unwrap_or(data.price);
 
-                                let candle = Candle {
-                                    exchange: "Polygon".to_string(),
-                                    symbol: data.symbol.clone(),
-                                    resolution: "1d".to_string(),
-                                    open,
-                                    high,
-                                    low,
-                                    close: data.price,
-                                    volume: data.quantity,
-                                    amount: None,
-                                    liquidity: None,
-                                    fdv: None,
-                                    metadata: meta_value,
-                                    time: Utc.timestamp_opt(data.timestamp / 1000, 0).unwrap(),
-                                };
+                            let candle = Candle {
+                                exchange: "Polygon".to_string(),
+                                symbol: data.symbol.clone(),
+                                resolution: "1d".to_string(),
+                                open,
+                                high,
+                                low,
+                                close: data.price,
+                                volume: data.quantity,
+                                amount: None,
+                                liquidity: None,
+                                fdv: None,
+                                metadata: meta_value,
+                                time: Utc.timestamp_opt(data.timestamp / 1000, 0).unwrap(),
+                            };
 
-                                if let Err(e) = repos_clone_for_task
-                                    .market_data
-                                    .insert_candle(&candle)
-                                    .await
-                                {
-                                    error!("Failed to insert candle for {}: {}", symbol, e);
-                                } else {
-                                    success_count += 1;
-                                }
+                            if let Err(e) = repos_clone_for_task
+                                .market_data
+                                .insert_candle(&candle)
+                                .await
+                            {
+                                error!("Failed to insert candle for {}: {}", symbol, e);
+                            } else {
+                                success_count += 1;
                             }
-                            info!(
-                                "Backfill complete for {}. Inserted {}/{}",
-                                symbol, success_count, total_candles
-                            );
                         }
-                        Err(e) => {
-                            error!("Failed to fetch history for {}: {}", symbol, e);
-                        }
+                        info!(
+                            "Backfill complete for {}. Inserted {}/{}",
+                            symbol, success_count, total_candles
+                        );
                     }
-                } else {
-                    error!("Massive/Polygon is not configured!");
+                    Err(e) => {
+                        error!("Failed to fetch history for {}: {}", symbol, e);
+                    }
                 }
+            } else {
+                error!("Massive/Polygon is not configured!");
             }
         });
 

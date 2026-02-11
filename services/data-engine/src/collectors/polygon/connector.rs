@@ -153,7 +153,7 @@ impl PolygonConnector {
         let time = Utc
             .timestamp_millis_opt(agg.timestamp)
             .single()
-            .unwrap_or_else(|| Utc::now());
+            .unwrap_or_else(Utc::now);
 
         Candle {
             exchange: "Polygon".to_string(),

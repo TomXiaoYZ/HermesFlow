@@ -192,16 +192,17 @@ mod tests {
         let low = arr2(&[[10.0, 10.0, 10.0]]);
         let close = arr2(&[[19.5, 19.8, 19.9]]); // Near high
 
-        let wr = WilliamsR::williams_r(&high, &low, &close);
+        // Use period=3 to match data length (default 14 causes zero-padding issues)
+        let wr = WilliamsR::williams_r_custom(&high, &low, &close, 3);
 
         // Should be near 0 (overbought)
         assert!(wr[[0, 2]] > -20.0, "Should indicate overbought");
 
         // Create oversold condition (price near low)
         let close_low = arr2(&[[10.5, 10.2, 10.1]]); // Near low
-        let wr_low = WilliamsR::williams_r(&high, &low, &close_low);
+        let wr_low = WilliamsR::williams_r_custom(&high, &low, &close_low, 3);
 
-        // Should be near -100 (oversold) - relax threshold slightly
+        // Should be near -100 (oversold)
         assert!(
             wr_low[[0, 2]] < -70.0,
             "Should indicate oversold, got {}",

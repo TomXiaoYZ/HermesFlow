@@ -178,7 +178,7 @@ impl TokenDiscoveryTask {
                                 let count = candles.len();
                                 let mut upserted = 0;
                                 for candle in candles {
-                                    if let Ok(_) = market_repo_clone.insert_candle(&candle).await {
+                                    if market_repo_clone.insert_candle(&candle).await.is_ok() {
                                         upserted += 1;
                                     }
                                 }

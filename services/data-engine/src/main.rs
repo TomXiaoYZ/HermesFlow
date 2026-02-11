@@ -207,16 +207,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut stream = pubsub.on_message();
 
-            loop {
-                match stream.next().await {
-                    Some(msg) => {
-                        if let Ok(payload) = msg.get_payload::<String>() {
-                            // Check channel name if needed, but for now we just forward everything to WS
-                            tracing::info!("Received Redis Msg (Forwarding to WS): {}", payload);
-                            let _ = tx_clone.send(payload);
-                        }
-                    }
-                    None => break,
+            while let Some(msg) = stream.next().await {
+                if let Ok(payload) = msg.get_payload::<String>() {
+                    // Check channel name if needed, but for now we just forward everything to WS
+                    tracing::info!("Received Redis Msg (Forwarding to WS): {}", payload);
+                    let _ = tx_clone.send(payload);
                 }
             }
         });
@@ -445,7 +440,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                               let channel = "market_data";
                                               if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(&channel, &json).await {
+                                                  if let Err(e) = publisher.publish(channel, &json).await {
                                                       tracing::warn!("Failed to publish to Redis: {}", e);
                                                   }
                                               }
@@ -510,7 +505,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                               let _ = tx_clone.send(json.clone());
                                               let channel = "market_data";
                                               if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(&channel, &json).await {
+                                                  if let Err(e) = publisher.publish(channel, &json).await {
                                                       tracing::warn!("Failed to publish to Redis: {}", e);
                                                   }
                                               }
@@ -581,7 +576,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                               let _ = tx_clone.send(json.clone());
                                               let channel = "market_data";
                                               if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(&channel, &json).await {
+                                                  if let Err(e) = publisher.publish(channel, &json).await {
                                                       tracing::warn!("Failed to publish to Redis: {}", e);
                                                   }
                                               }
@@ -673,7 +668,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                              let channel = "market_data";
                                              if let Some(publisher) = &redis_publisher {
-                                                 if let Err(e) = publisher.publish(&channel, &json).await {
+                                                 if let Err(e) = publisher.publish(channel, &json).await {
                                                      tracing::warn!("Failed to publish to Redis: {}", e);
                                                  }
                                              }
@@ -807,7 +802,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                               let channel = "market_data";
                                               if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(&channel, &json).await {
+                                                  if let Err(e) = publisher.publish(channel, &json).await {
                                                       tracing::warn!("Failed to publish to Redis: {}", e);
                                                   }
                                               }
@@ -872,7 +867,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                               let channel = "market_data";
                                               if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(&channel, &json).await {
+                                                  if let Err(e) = publisher.publish(channel, &json).await {
                                                       tracing::warn!("Failed to publish to Redis: {}", e);
                                                   }
                                               }
@@ -937,7 +932,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                               let channel = "market_data";
                                               if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(&channel, &json).await {
+                                                  if let Err(e) = publisher.publish(channel, &json).await {
                                                       tracing::warn!("Failed to publish to Redis: {}", e);
                                                   }
                                               }
@@ -973,7 +968,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 if let Some(r) = &redis {
                     let mut r_guard = r.write().await;
-                    health_monitor.check_redis(&mut *r_guard).await;
+                    health_monitor.check_redis(&mut r_guard).await;
                 }
 
                 if clickhouse.is_some() {

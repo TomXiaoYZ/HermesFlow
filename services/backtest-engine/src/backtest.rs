@@ -143,7 +143,7 @@ impl BacktestRunner {
             0.0
         } else {
             let mid = scores_vec.len() / 2;
-            if scores_vec.len() % 2 == 0 {
+            if scores_vec.len().is_multiple_of(2) {
                 (scores_vec[mid - 1] + scores_vec[mid]) / 2.0
             } else {
                 scores_vec[mid]

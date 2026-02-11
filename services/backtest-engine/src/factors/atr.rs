@@ -111,7 +111,7 @@ impl ATR {
     /// # Returns
     /// ATR / SMA(ATR, window)
     /// > 1.0: volatility expanding
-    /// < 1.0: volatility contracting
+    /// > < 1.0: volatility contracting
     pub fn atr_ratio(
         high: &Array2<f64>,
         low: &Array2<f64>,

@@ -99,7 +99,7 @@ impl PortfolioBacktester {
             let mut total_abs = 0.0;
 
             // Collect active signals
-            for (_sym, sigs) in &aligned_signals {
+            for sigs in aligned_signals.values() {
                 let s = sigs[t].clamp(-1.0, 1.0);
                 if s.abs() > 0.1 {
                     // Threshold

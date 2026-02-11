@@ -13,6 +13,7 @@ use std::fmt;
 
 /// Main application configuration
 #[derive(Debug, Deserialize, Clone)]
+#[derive(Default)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub redis: RedisConfig,
@@ -210,6 +211,7 @@ impl Default for MassiveConfig {
 
 /// Data source configuration
 #[derive(Debug, Deserialize, Clone)]
+#[derive(Default)]
 pub struct DataSourceConfig {
     /// Data source name (e.g., "binance_spot")
     pub name: String,
@@ -290,45 +292,7 @@ impl AppConfig {
     }
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            redis: RedisConfig::default(),
-            postgres: PostgresConfig::default(),
-            clickhouse: ClickHouseConfig::default(),
-            data_sources: vec![],
-            twitter: None,
-            ibkr: None,
-            polymarket: None,
-            akshare: None,
-            massive: None,
-            binance: None,
-            okx: None,
-            bybit: None,
-            futu: None,
-            birdeye: None,
-            dexscreener: None,
-            helius: None,
-            jupiter: None,
-            performance: PerformanceConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
-}
 
-impl Default for DataSourceConfig {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            source_type: String::new(),
-            enabled: false,
-            symbols: vec![],
-            api_key: None,
-            api_secret: None,
-        }
-    }
-}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -454,7 +418,7 @@ mod tests {
         let config = RedisConfig::default();
         assert_eq!(config.url, "redis://localhost:6379");
         assert_eq!(config.pool_size, 10);
-        assert_eq!(config.ttl_secs, 86400);
+        assert_eq!(config.ttl_secs, 300);
     }
 
     #[test]

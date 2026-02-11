@@ -53,7 +53,7 @@ async fn main() {
         api_key: std::env::var("DATA_ENGINE__JUPITER__API_KEY").ok(),
     };
 
-    let collector = JupiterPriceCollector::new(config);
+    let collector = JupiterPriceCollector::new(config, None);
     let repo = Arc::new(MockRepo);
 
     tracing::info!("Connecting to Jupiter...");

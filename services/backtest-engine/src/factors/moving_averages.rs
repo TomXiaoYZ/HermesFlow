@@ -159,10 +159,11 @@ mod tests {
         let data = arr2(&[[1.0, 2.0, 3.0]]);
         let result = MovingAverages::wma(&data, 2);
 
-        // t=0: (2*0 + 1*1) / 3 = 1/3
-        // t=1: (2*1 + 1*2) / 3 = 4/3
-        // t=2: (2*2 + 1*3) / 3 = 7/3
-        let expected = arr2(&[[1.0 / 3.0, 4.0 / 3.0, 7.0 / 3.0]]);
+        // Most recent gets weight=2, previous gets weight=1, divisor=3
+        // t=0: (2*1 + 1*0) / 3 = 2/3
+        // t=1: (2*2 + 1*1) / 3 = 5/3
+        // t=2: (2*3 + 1*2) / 3 = 8/3
+        let expected = arr2(&[[2.0 / 3.0, 5.0 / 3.0, 8.0 / 3.0]]);
         assert_abs_diff_eq!(result, expected, epsilon = 1e-6);
     }
 

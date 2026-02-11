@@ -7,6 +7,12 @@ pub struct FactorRegistry {
     factories: HashMap<String, Box<dyn FactorFactory>>,
 }
 
+impl Default for FactorRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FactorRegistry {
     pub fn new() -> Self {
         let mut registry = Self {

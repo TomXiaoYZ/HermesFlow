@@ -217,6 +217,8 @@ mod tests {
             volume_24h: Some(dec!(1000.0)),
             open_interest: None,
             funding_rate: None,
+            liquidity: None,
+            fdv: None,
             sequence_id: Some(12345),
             raw_data: r#"{"test":"data"}"#.to_string(),
         };
