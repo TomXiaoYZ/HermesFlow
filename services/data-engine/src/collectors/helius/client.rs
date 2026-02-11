@@ -1,7 +1,7 @@
 use crate::collectors::helius::config::HeliusConfig;
-use std::error::Error;
 use tracing::info;
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct HeliusClient {
     pub config: HeliusConfig,

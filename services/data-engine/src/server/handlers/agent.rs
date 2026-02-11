@@ -5,7 +5,6 @@ use axum::{
     Json,
 };
 use serde::Serialize;
-use tracing::instrument;
 
 use crate::server::routes::AppState;
 
@@ -18,7 +17,7 @@ pub struct StartAgentResponse {
 
 /// Start agent monitoring
 /// POST /api/v1/agent/monitoring/start
-#[instrument(skip(state))]
+#[allow(unused_variables)]
 pub async fn start_agent_monitoring(State(state): State<AppState>) -> Response {
     tracing::info!("Starting agent monitoring...");
 

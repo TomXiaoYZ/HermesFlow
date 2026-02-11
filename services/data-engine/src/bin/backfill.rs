@@ -2,11 +2,10 @@ use clap::Parser;
 use data_engine::{
     collectors::MassiveConnector,
     config::{AppConfig, MassiveConfig},
-    models::{Candle, MarketDataType, StandardMarketData},
+    models::Candle,
     repository::{postgres::PostgresRepositories, MarketDataRepository},
 };
-use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -178,6 +177,102 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Backfill completed. Processed: {}, Upserted: {}",
             total_count, upserted
         );
+    } else if args.source == "birdeye" {
+        // Handle BirdEye Backfill
+        let api_key = if let Some(birdeye_cfg) = &config.birdeye {
+            birdeye_cfg.api_key.clone()
+        } else {
+            std::env::var("DATA_ENGINE__BIRDEYE__API_KEY").unwrap_or_default()
+        };
+
+        if api_key.is_empty() {
+            error!("Birdeye API Key not found. Set DATA_ENGINE__BIRDEYE__API_KEY.");
+            return Ok(());
+        }
+
+        info!("Initializing Birdeye Connector for {}...", args.symbol);
+
+        // Construct config manually or from loaded config
+        use data_engine::collectors::birdeye::config::BirdeyeConfig;
+        use data_engine::collectors::BirdeyeConnector;
+
+        let be_config = BirdeyeConfig {
+            enabled: true,
+            api_key,
+            base_url: "https://public-api.birdeye.so".to_string(),
+            chain: "solana".to_string(),
+            poll_interval_secs: 10,
+        };
+
+        let connector = BirdeyeConnector::new(be_config);
+
+        // Convert dates to timestamps
+        // args.from (YYYY-MM-DD) -> Timestamp
+        let from_date = chrono::NaiveDate::parse_from_str(&args.from, "%Y-%m-%d")?;
+        let to_date = chrono::NaiveDate::parse_from_str(&args.to, "%Y-%m-%d")?;
+
+        let from_ts = from_date
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        let to_ts = to_date
+            .and_hms_opt(23, 59, 59)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+
+        // Resolution mapping
+        // Logic: if timespan is exactly "1m", "15m", "1h", "4h", "1d" etc, use it.
+        // Otherwise try to construct it from multiplier (legacy support).
+
+        let ts_arg = args.timespan.as_str();
+        let resolution = if ts_arg == "day" {
+            "1D".to_string()
+        } else if ts_arg == "hour" {
+            "1H".to_string()
+        } else if ts_arg == "minute" {
+            "1m".to_string()
+        } else {
+            // Pass strict string like "15m", "4H", "1W" directly if provided in timespan arg
+            if ts_arg.ends_with('m')
+                || ts_arg.ends_with('H')
+                || ts_arg.ends_with('D')
+                || ts_arg.ends_with('W')
+            {
+                ts_arg.to_string()
+            } else {
+                // Fallback legacy construction
+                format!(
+                    "{}{}",
+                    args.multiplier,
+                    ts_arg.chars().next().unwrap_or('m')
+                )
+            }
+        };
+
+        info!(
+            "Fetching history from {} to {} (Res: {})...",
+            from_ts, to_ts, resolution
+        );
+
+        let candles = connector
+            .fetch_history_candles(&args.symbol, &resolution, from_ts, to_ts)
+            .await
+            .map_err(|e| e as Box<dyn std::error::Error>)?;
+
+        info!("Fetched {} candles. Saving to DB...", candles.len());
+
+        let mut upserted = 0;
+        for candle in candles {
+            if let Err(e) = repos.market_data.insert_candle(&candle).await {
+                error!("Failed to insert candle for {}: {}", candle.time, e);
+            } else {
+                upserted += 1;
+            }
+        }
+
+        info!("BirdEye Backfill completed. Upserted: {}", upserted);
     } else {
         error!("Unlock implemented for source: {}", args.source);
     }

@@ -1,6 +1,6 @@
 use crate::error::DataEngineError;
 use sqlx::PgPool;
-use tracing::{info, warn};
+use tracing::info;
 
 pub struct MigrationManager {
     pool: PgPool,
@@ -19,7 +19,53 @@ impl MigrationManager {
         self.create_strategy_table().await?;
         self.run_trading_system_migrations().await?;
         self.run_market_data_migrations().await?;
+        self.create_metrics_table().await?;
+        self.create_watchlist_table().await?;
         info!("All DB migrations completed successfully");
+        Ok(())
+    }
+
+    async fn create_watchlist_table(&self) -> Result<(), DataEngineError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS market_watchlist (
+                exchange TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                name TEXT,
+                asset_type TEXT NOT NULL DEFAULT 'stock',
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (exchange, symbol)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!(
+                "Failed to create market_watchlist table: {}",
+                e
+            ))
+        })?;
+
+        // Ensure asset_type column exists
+        sqlx::query(
+            r#"
+            ALTER TABLE market_watchlist 
+            ADD COLUMN IF NOT EXISTS asset_type TEXT NOT NULL DEFAULT 'stock'
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!(
+                "Failed to add asset_type to market_watchlist: {}",
+                e
+            ))
+        })?;
+
+        // Create trigger for auto-sync on insert if needed
+        // For now, simpler to just have the table.
         Ok(())
     }
 
@@ -38,7 +84,10 @@ impl MigrationManager {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            DataEngineError::DatabaseError(format!("Failed to create strategy_generations table: {}", e))
+            DataEngineError::DatabaseError(format!(
+                "Failed to create strategy_generations table: {}",
+                e
+            ))
         })?;
         Ok(())
     }
@@ -70,7 +119,7 @@ impl MigrationManager {
             DataEngineError::DatabaseError(format!("Failed to create active_tokens table: {}", e))
         })?;
 
-        // Index for liquidity sorting 
+        // Index for liquidity sorting
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_active_tokens_liquidity ON active_tokens(liquidity_usd DESC)")
             .execute(&self.pool)
             .await
@@ -294,6 +343,44 @@ impl MigrationManager {
 
     async fn run_trading_system_migrations(&self) -> Result<(), DataEngineError> {
         // Disabled in favor of manual SQL file migration
+        Ok(())
+    }
+
+    async fn create_metrics_table(&self) -> Result<(), DataEngineError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_usage_metrics (
+                timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                provider TEXT NOT NULL,
+                endpoint TEXT,
+                request_count BIGINT NOT NULL,
+                metadata JSONB
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!(
+                "Failed to create api_usage_metrics table: {}",
+                e
+            ))
+        })?;
+
+        // Convert to hypertable for TimescaleDB efficiency
+        // We use a separate query or handle error if it's not timescaledb or already exists
+        let _ = sqlx::query(
+            "SELECT create_hypertable('api_usage_metrics', 'timestamp', if_not_exists => TRUE)",
+        )
+        .execute(&self.pool)
+        .await;
+
+        // Create index for query performance
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_api_usage_metrics_provider_timestamp ON api_usage_metrics (provider, timestamp DESC)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DataEngineError::DatabaseError(format!("Failed to create index: {}", e)))?;
+
         Ok(())
     }
 }

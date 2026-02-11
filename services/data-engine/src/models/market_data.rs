@@ -108,6 +108,36 @@ impl StandardMarketData {
         }
     }
 
+    /// Validates market data for basic sanity.
+    /// Returns Ok(()) if valid, Err(reason) if invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.symbol.is_empty() {
+            return Err("symbol is empty".into());
+        }
+        if self.price < Decimal::ZERO {
+            return Err(format!("price is negative: {}", self.price));
+        }
+        if self.quantity < Decimal::ZERO {
+            return Err(format!("quantity is negative: {}", self.quantity));
+        }
+        // Timestamp sanity: not before 2000-01-01 (946684800000ms) and not more than 1min in the future
+        let min_ts = 946_684_800_000i64;
+        let max_ts = chrono::Utc::now().timestamp_millis() + 60_000;
+        if self.timestamp < min_ts {
+            return Err(format!("timestamp too old: {}", self.timestamp));
+        }
+        if self.timestamp > max_ts {
+            return Err(format!("timestamp in the future: {}", self.timestamp));
+        }
+        // Bid/ask sanity
+        if let (Some(bid), Some(ask)) = (self.bid, self.ask) {
+            if bid > ask {
+                return Err(format!("bid {} > ask {}", bid, ask));
+            }
+        }
+        Ok(())
+    }
+
     /// Calculates the mid price from bid and ask if available
     pub fn mid_price(&self) -> Option<Decimal> {
         match (self.bid, self.ask) {

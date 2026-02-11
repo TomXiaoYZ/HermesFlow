@@ -8,6 +8,7 @@ pub mod helius;
 pub mod ibkr;
 pub mod massive;
 pub mod okx;
+pub mod polygon;
 pub mod polymarket;
 pub mod twitter;
 
@@ -22,6 +23,7 @@ pub use helius::{config::HeliusConfig, connector::HeliusConnector};
 pub use ibkr::IBKRCollector;
 pub use massive::connector::MassiveConnector;
 pub use okx::connector::OkxConnector;
+pub use polygon::{PolygonConfig, PolygonConnector};
 pub use polymarket::PolymarketCollector;
 pub use twitter::TwitterCollector;
 pub mod jupiter;

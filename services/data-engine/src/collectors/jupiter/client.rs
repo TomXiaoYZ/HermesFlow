@@ -1,6 +1,6 @@
 use crate::collectors::jupiter::config::JupiterConfig;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::error::Error;
 use tracing::info;
@@ -18,12 +18,11 @@ pub struct JupiterPriceItem {
     pub price_type: Option<String>,
     #[serde(rename = "usdPrice")]
     pub price: f64, // V3 returns number
-    // extra fields ignored
+                    // extra fields ignored
 }
 
 // V3 returns HashMap<String, JupiterPriceItem> directly, no "data" wrapper
 // But let's check if we can deserialize directly into HashMap
-
 
 impl JupiterClient {
     pub fn new(config: JupiterConfig) -> Self {
@@ -31,7 +30,7 @@ impl JupiterClient {
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        
+
         if let Some(key) = &config.api_key {
             if let Ok(val) = HeaderValue::from_str(key) {
                 headers.insert("x-api-key", val);
@@ -56,10 +55,10 @@ impl JupiterClient {
             return Ok(HashMap::new());
         }
 
-        // Jupiter allows up to 100 IDs. We should batch them if sending more, 
+        // Jupiter allows up to 100 IDs. We should batch them if sending more,
         // but for now let's assume the caller handles batching or we do it here.
         // Let's keep it simple: the caller (Connector) does batching logic.
-        
+
         let ids_str = ids.join(",");
         let url = format!("{}?ids={}", self.config.api_url, ids_str);
 

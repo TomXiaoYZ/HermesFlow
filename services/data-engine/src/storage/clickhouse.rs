@@ -1,8 +1,59 @@
 use clickhouse::Client;
+use rust_decimal::prelude::ToPrimitive;
+use serde::Serialize;
 use std::time::{Duration, Instant};
+use time::OffsetDateTime;
 
 use crate::error::{DataError, Result};
 use crate::models::StandardMarketData;
+
+/// Row struct matching ClickHouse unified_ticks table schema.
+/// Uses clickhouse::Row derive for efficient serialization.
+#[derive(Debug, clickhouse::Row, Serialize)]
+struct TickRow {
+    source: String,
+    exchange: String,
+    symbol: String,
+    asset_type: String,
+    data_type: String,
+    #[serde(with = "clickhouse::serde::time::datetime")]
+    timestamp: OffsetDateTime,
+    price: f64,
+    quantity: f64,
+    bid: f64,
+    ask: f64,
+    high_24h: f64,
+    low_24h: f64,
+    volume_24h: f64,
+    funding_rate: f64,
+    raw_data: String,
+}
+
+impl TickRow {
+    fn from_market_data(data: &StandardMarketData) -> Self {
+        let ts_secs = data.timestamp / 1000;
+        let timestamp =
+            OffsetDateTime::from_unix_timestamp(ts_secs).unwrap_or(OffsetDateTime::now_utc());
+
+        Self {
+            source: data.source.as_str().to_string(),
+            exchange: data.exchange.clone(),
+            symbol: data.symbol.clone(),
+            asset_type: format!("{:?}", data.asset_type),
+            data_type: format!("{:?}", data.data_type),
+            timestamp,
+            price: data.price.to_f64().unwrap_or(0.0),
+            quantity: data.quantity.to_f64().unwrap_or(0.0),
+            bid: data.bid.and_then(|d| d.to_f64()).unwrap_or(0.0),
+            ask: data.ask.and_then(|d| d.to_f64()).unwrap_or(0.0),
+            high_24h: data.high_24h.and_then(|d| d.to_f64()).unwrap_or(0.0),
+            low_24h: data.low_24h.and_then(|d| d.to_f64()).unwrap_or(0.0),
+            volume_24h: data.volume_24h.and_then(|d| d.to_f64()).unwrap_or(0.0),
+            funding_rate: data.funding_rate.and_then(|d| d.to_f64()).unwrap_or(0.0),
+            raw_data: data.raw_data.clone(),
+        }
+    }
+}
 
 /// ClickHouse writer for batch inserting market data
 ///
@@ -19,13 +70,6 @@ pub struct ClickHouseWriter {
 
 impl ClickHouseWriter {
     /// Creates a new ClickHouse writer
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - ClickHouse connection URL (e.g., "tcp://localhost:9000")
-    /// * `database` - Database name
-    /// * `batch_size` - Number of rows to buffer before flushing
-    /// * `flush_interval_ms` - Maximum time between flushes in milliseconds
     pub fn new(
         url: &str,
         database: &str,
@@ -43,6 +87,11 @@ impl ClickHouseWriter {
         })
     }
 
+    /// Returns a reference to the underlying ClickHouse client
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Adds market data to the batch
     ///
     /// If the batch reaches the configured size, it will be automatically flushed.
@@ -57,8 +106,6 @@ impl ClickHouseWriter {
     }
 
     /// Flushes the current batch to ClickHouse
-    ///
-    /// This method performs the actual bulk insert operation.
     pub async fn flush(&mut self) -> Result<()> {
         if self.batch.is_empty() {
             return Ok(());
@@ -69,30 +116,37 @@ impl ClickHouseWriter {
 
         tracing::debug!("Flushing {} rows to ClickHouse", count);
 
-        // TODO: Implement actual ClickHouse insert
-        // For now, we'll just clear the batch and log
-        // In Sprint 3, we'll implement the actual Row serialization
+        let mut insert = self
+            .client
+            .insert("unified_ticks")
+            .map_err(|e| DataError::ClickHouseError(format!("Insert init failed: {}", e)))?;
+
         for data in self.batch.drain(..) {
-            tracing::trace!(
-                "Would insert row: symbol={}, price={}",
-                data.symbol,
-                data.price
-            );
+            let row = TickRow::from_market_data(&data);
+            insert
+                .write(&row)
+                .await
+                .map_err(|e| DataError::ClickHouseError(format!("Row write failed: {}", e)))?;
         }
+
+        insert
+            .end()
+            .await
+            .map_err(|e| DataError::ClickHouseError(format!("Insert end failed: {}", e)))?;
 
         let elapsed = start.elapsed();
         self.last_flush = Instant::now();
 
         tracing::info!(
-            "Flushed {} rows to ClickHouse in {:?} ({:.2} rows/sec)",
+            "Flushed {} rows to ClickHouse in {:?} ({:.0} rows/sec)",
             count,
             elapsed,
-            count as f64 / elapsed.as_secs_f64()
+            if elapsed.as_secs_f64() > 0.0 {
+                count as f64 / elapsed.as_secs_f64()
+            } else {
+                count as f64
+            }
         );
-
-        // Metrics will be updated when we implement the actual insertion
-        // For now, just log the successful flush
-        tracing::debug!("Batch flush completed successfully");
 
         Ok(())
     }
@@ -126,11 +180,8 @@ impl ClickHouseWriter {
     }
 
     /// Starts an automatic flush background task
-    ///
-    /// This task will periodically check if the batch should be flushed
-    /// based on the time interval.
     pub async fn start_auto_flush(mut self) {
-        let mut interval = tokio::time::interval(Duration::from_millis(1000)); // Check every second
+        let mut interval = tokio::time::interval(Duration::from_millis(1000));
 
         loop {
             interval.tick().await;
@@ -164,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_clickhouse_writer_creation() {
-        let writer = ClickHouseWriter::new("tcp://localhost:9000", "test_db", 1000, 5000);
+        let writer = ClickHouseWriter::new("http://localhost:8123", "test_db", 1000, 5000);
         assert!(writer.is_ok());
 
         let writer = writer.unwrap();
@@ -173,11 +224,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_clickhouse_writer_batch() {
-        let mut writer = ClickHouseWriter::new("tcp://localhost:9000", "test_db", 3, 5000).unwrap();
+        let mut writer =
+            ClickHouseWriter::new("http://localhost:8123", "test_db", 3, 5000).unwrap();
 
         assert_eq!(writer.batch_len(), 0);
 
-        // Add data to batch
         writer.write(create_test_data()).await.ok();
         assert_eq!(writer.batch_len(), 1);
 
@@ -188,7 +239,7 @@ mod tests {
     #[test]
     fn test_should_flush_time_based() {
         let writer = ClickHouseWriter::new(
-            "tcp://localhost:9000",
+            "http://localhost:8123",
             "test_db",
             1000,
             100, // 100ms
@@ -197,5 +248,14 @@ mod tests {
 
         // Empty batch should not flush
         assert!(!writer.should_flush());
+    }
+
+    #[test]
+    fn test_tick_row_conversion() {
+        let data = create_test_data();
+        let row = TickRow::from_market_data(&data);
+        assert_eq!(row.symbol, "BTCUSDT");
+        assert_eq!(row.exchange, "Binance");
+        assert!((row.price - 50000.0).abs() < 0.01);
     }
 }

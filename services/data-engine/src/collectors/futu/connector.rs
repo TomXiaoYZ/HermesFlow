@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tracing::warn;
 
+#[allow(dead_code)]
 pub struct FutuConnector {
     config: FutuConfig,
     client: FutuClient,
@@ -38,7 +39,7 @@ impl DataSourceConnector for FutuConnector {
 
     async fn connect(&mut self) -> Result<mpsc::Receiver<StandardMarketData>> {
         self.running = true;
-        let (tx, _rx) = mpsc::channel(100);
+        let (_tx, _rx) = mpsc::channel(100);
 
         // Placeholder loop: Try to connect but essentially do nothing for now
         // since we lack Protobuf definitions to decode actual messages.

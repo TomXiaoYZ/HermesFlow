@@ -1,0 +1,87 @@
+[workspace]
+members = [
+    "services/common",
+    "services/backtest-engine",
+    "services/data-engine",
+    "services/gateway",
+    "services/strategy-engine",
+    "services/strategy-generator",
+]
+# execution-engine excluded: Solana SDK pins tokio ~1.14 which conflicts with workspace tokio 1.35
+exclude = ["services/execution-engine"]
+resolver = "2"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+futures-util = "0.3"
+
+# Web framework
+axum = "0.7"
+hyper = "1.0"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Database & Cache
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager", "aio", "json", "tokio-rustls-comp"] }
+clickhouse = { version = "0.11", features = ["time"] }
+sqlx = { version = "0.7.4", features = ["runtime-tokio-rustls", "postgres", "chrono", "json", "rust_decimal", "uuid"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging & Metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+prometheus = "0.13"
+lazy_static = "1.4"
+
+# Time & ID
+chrono = { version = "0.4", features = ["serde"] }
+time = "0.3"
+uuid = { version = "1.0", features = ["serde", "v4"] }
+
+# Numeric
+rust_decimal = { version = "1.36", features = ["serde"] }
+rust_decimal_macros = "1.36"
+ndarray = { version = "0.15", features = ["approx-0_5"] }
+ndarray-stats = "0.5"
+
+# Misc
+rand = "0.8"
+clap = { version = "4.4", features = ["derive"] }
+base64 = "0.21"
+url = "2.5"
+dotenvy = "0.15"
+config = "0.14"
+toml = "0.8"
+strum = "0.24"
+strum_macros = "0.24"
+
+# Crypto signing
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# Scheduling
+tokio-cron-scheduler = "0.9"
+
+# WebSocket & Streaming
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio-stream = "0.1"
+
+# Internal crates
+common = { path = "services/common", default-features = false }
+backtest-engine = { path = "services/backtest-engine" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

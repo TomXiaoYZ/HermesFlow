@@ -59,11 +59,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(handlers::health_check))
         .route("/metrics", get(handlers::metrics))
         .route("/ws", get(handlers::ws_handler))
-        .route(
-            "/api/v1/market/:symbol/latest",
-            get(handlers::get_latest_price),
-        )
-        .route("/api/v1/market/:symbol/history", get(handlers::get_history))
+        .route("/api/v1/data/market/:symbol/latest", get(handlers::get_latest_price))
+        .route("/api/v1/data/market/tokens", get(handlers::get_active_tokens))
+        .route("/api/v1/data/market/:symbol/history", get(handlers::get_history))
         .route(
             "/api/v1/jobs/backfill",
             post(handlers::jobs::trigger_backfill_job),
@@ -84,11 +82,27 @@ pub fn create_router(state: AppState) -> Router {
         )
         // History & Status APIs
         .route("/api/v1/history/logs", get(handlers::history::get_logs))
-        .route("/api/v1/strategy/status", get(handlers::history::get_strategy_status))
+        .route(
+            "/api/v1/strategy/status",
+            get(handlers::history::get_strategy_status),
+        )
         .route(
             "/api/v1/strategy/population",
             get(handlers::get_strategy_population),
         )
+        // Data Discovery APIs
+        .route("/api/v1/data/quality", get(handlers::data::get_data_quality))
+        .route("/api/v1/data/tables", get(handlers::data::get_tables))
+        .route("/api/v1/data/query", post(handlers::data::query_data))
+        .route("/api/v1/data/tasks/discovery", post(handlers::data::trigger_token_discovery))
+        .route("/api/v1/data/tasks/aggregation", post(handlers::data::trigger_aggregation))
+        // Config APIs
+        .route("/api/v1/config/exchanges", get(handlers::config::get_exchange_config).post(handlers::config::update_exchange_config))
+        .route("/api/v1/watchlist", get(handlers::config::get_watchlist).post(handlers::config::add_to_watchlist).delete(handlers::config::remove_from_watchlist))
+        // Prediction Market APIs
+        .route("/api/v1/prediction/markets", get(handlers::prediction::list_prediction_markets))
+        .route("/api/v1/prediction/markets/:id", get(handlers::prediction::get_prediction_market))
+        .route("/api/v1/prediction/markets/:id/history", get(handlers::prediction::get_prediction_market_history))
         .with_state(state)
 }
 

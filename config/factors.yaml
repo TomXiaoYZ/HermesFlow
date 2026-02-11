@@ -1,0 +1,50 @@
+# Factor Configuration
+# Defines active factors for training strategies.
+# Current Mode: AlphaGPT Compatibility (6 factors)
+
+active_factors:
+  - id: 0
+    name: "return"
+    description: "Log return (normalized)"
+    normalization: "robust"
+    
+  - id: 1
+    name: "liquidity_health"
+    description: "Liquidity to FDV ratio (raw)"
+    normalization: "none"
+    
+  - id: 2
+    name: "buy_sell_pressure"
+    description: "Buy/sell imbalance (raw)"
+    normalization: "none"
+    
+  - id: 3
+    name: "fomo_acceleration"
+    description: "Volume acceleration (normalized)"
+    normalization: "robust"
+    
+  - id: 4
+    name: "pump_deviation"
+    description: "Deviation from MA (normalized)"
+    normalization: "robust"
+    
+  - id: 5
+    name: "log_volume"
+    description: "Log of volume (normalized)"
+    normalization: "robust"
+
+# Future Extension: Uncomment to enable 33-factor mode
+  - id: 6
+    name: "volatility_clustering"
+    description: "Volatility clustering (normalized)"
+    normalization: "robust"
+    
+  - id: 7
+    name: "momentum_reversal"
+    description: "Momentum reversal (normalized)"
+    normalization: "robust"
+
+  - id: 8
+    name: "relative_strength"
+    description: "RSI (14) (normalized)"
+    normalization: "robust"

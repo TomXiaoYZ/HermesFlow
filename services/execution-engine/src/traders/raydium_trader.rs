@@ -27,7 +27,7 @@ pub struct AmmInfo {
     pub reset_flag: u64,
     pub min_size: u64,
     pub vol_max_cut_ratio: u64,
-    
+
     /// Padding for intermediate u64/u128 fields (amount_wave, lot_sizes, fees, PnLs, swap amounts)
     /// Raydium V4 has ~256 bytes of params here before the first Pubkey.
     /// 256 bytes = 32 * u64
@@ -46,9 +46,9 @@ pub struct AmmInfo {
     pub temp_lp_token_account: Pubkey,
     pub amm_owner: Pubkey,
     pub amm_owner_lp_token_account: Pubkey, // pnl_owner
-    
+
     // Remaining fields (u64s)
-    pub pool_coin_total: u64, 
+    pub pool_coin_total: u64,
     pub pool_pc_total: u64,
 }
 
@@ -66,10 +66,22 @@ pub struct PoolInfo {
 // This will be populated with real Raydium pool addresses
 const KNOWN_POOLS: &[(&str, &str, &str)] = &[
     // (Base Token, Quote Token, Pool Address)
-    ("So11111111111111111111111111111111111111112", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2"), // SOL/USDC
-    ("So11111111111111111111111111111111111111112", "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", "ZfvDXXUhZDzDVsapffUyXHj9ByCoPjP4thL6YXcZ9ix"), // SOL/mSOL
-    ("So11111111111111111111111111111111111111112", "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", "Cz8hxuNmBTygnVDvt1YvPKmcWh5R3j1y3PnQ6YCkJkuA"), // SOL/BONK
-    // Add more major pairs as needed
+    (
+        "So11111111111111111111111111111111111111112",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+    ), // SOL/USDC
+    (
+        "So11111111111111111111111111111111111111112",
+        "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",
+        "ZfvDXXUhZDzDVsapffUyXHj9ByCoPjP4thL6YXcZ9ix",
+    ), // SOL/mSOL
+    (
+        "So11111111111111111111111111111111111111112",
+        "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+        "Cz8hxuNmBTygnVDvt1YvPKmcWh5R3j1y3PnQ6YCkJkuA",
+    ), // SOL/BONK
+       // Add more major pairs as needed
 ];
 
 /// Raydium on-chain trader
@@ -85,15 +97,8 @@ impl RaydiumTrader {
     }
 
     /// Find a Raydium pool for the given token pair
-    pub async fn find_pool(
-        &self,
-        input_mint: &Pubkey,
-        output_mint: &Pubkey,
-    ) -> Result<Pubkey> {
-        info!(
-            "Finding Raydium pool for {} -> {}",
-            input_mint, output_mint
-        );
+    pub async fn find_pool(&self, input_mint: &Pubkey, output_mint: &Pubkey) -> Result<Pubkey> {
+        info!("Finding Raydium pool for {} -> {}", input_mint, output_mint);
 
         // Search in known pools first (hardcoded for speed)
         let input_str = input_mint.to_string();
@@ -171,16 +176,16 @@ impl RaydiumTrader {
         minimum_amount_out: u64,
     ) -> Result<Instruction> {
         let program_id = Pubkey::from_str(RAYDIUM_AMM_PROGRAM_ID)?;
-        
+
         // Derive AMM authority PDA
-        let (amm_authority, _bump) = Pubkey::find_program_address(
-            &[b"amm authority".as_ref()],
-            &program_id,
-        );
+        let (amm_authority, _bump) =
+            Pubkey::find_program_address(&[b"amm authority".as_ref()], &program_id);
 
         // Fetch Serum Market Accounts
         // We need: Market, Bids, Asks, EventQueue, CoinVault, PCVault, VaultSigner
-        let market_info = self.get_market_accounts(&amm_info.market, &amm_info.serum_program_id).await?;
+        let market_info = self
+            .get_market_accounts(&amm_info.market, &amm_info.serum_program_id)
+            .await?;
 
         info!(
             "Building SwapBaseIn (Standard V4) instruction: {} -> {} tokens",
@@ -214,7 +219,7 @@ impl RaydiumTrader {
         // 15. User Source Token
         // 16. User Dest Token
         // 17. User Owner
-        
+
         let accounts = vec![
             // 0. Token Program
             AccountMeta::new_readonly(spl_token::id(), false),
@@ -290,23 +295,29 @@ impl RaydiumTrader {
         }
 
         // DEBUG: Print FULL bytes in hex to debug layout
-        let debug_hex: String = account.data.iter().take(100).map(|b| format!("{:02x}", b)).collect();
+        let debug_hex: String = account
+            .data
+            .iter()
+            .take(100)
+            .map(|b| format!("{:02x}", b))
+            .collect();
         info!("AMM Account Data Hex (First 100): {}", debug_hex);
 
         // Dynamic Parsing: Scan for USDC Mint to calibrate layout
         // Default layout assumption:
         // offset 400: coin_mint
         // offset 432: pc_mint (USDC)
-        
+
         let data = &account.data;
         if data.len() < 752 {
-             return Err(anyhow!("AMM Account data too short: {}", data.len()));
+            return Err(anyhow!("AMM Account data too short: {}", data.len()));
         }
 
         // Search for USDC Mint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
-        let usdc_mint_pubkey = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let usdc_mint_pubkey =
+            Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
         let usdc_bytes = usdc_mint_pubkey.to_bytes();
-        
+
         let pc_mint_offset = if let Some(offset) = data.windows(32).position(|w| w == usdc_bytes) {
             info!("Found USDC Mint at offset: {}", offset);
             offset
@@ -314,9 +325,9 @@ impl RaydiumTrader {
             warn!("USDC Mint not found in pool data. Assuming standard offset 432.");
             432
         };
-        
+
         // Calculate offsets relative to pc_mint
-        // Standard V4: 
+        // Standard V4:
         // coin_mint (offset - 32)
         // pc_mint (offset)
         // lp_mint (offset + 32)
@@ -330,36 +341,44 @@ impl RaydiumTrader {
         // amm_owner_lp_token_account (offset + 288)
 
         let coin_mint_offset = pc_mint_offset - 32;
-        let pool_pc_offset = coin_mint_offset - 32;   // pool_pc_token_account
+        let pool_pc_offset = coin_mint_offset - 32; // pool_pc_token_account
         let pool_coin_offset = pool_pc_offset - 32; // pool_coin_token_account
-        
+
         // Parse Pubkeys
-        let pool_coin_token_account = Pubkey::new_from_array(data[pool_coin_offset..pool_coin_offset+32].try_into()?);
-        let pool_pc_token_account = Pubkey::new_from_array(data[pool_pc_offset..pool_pc_offset+32].try_into()?);
-        let coin_mint = Pubkey::new_from_array(data[coin_mint_offset..coin_mint_offset+32].try_into()?);
-        let pc_mint = Pubkey::new_from_array(data[pc_mint_offset..pc_mint_offset+32].try_into()?);
-        
+        let pool_coin_token_account =
+            Pubkey::new_from_array(data[pool_coin_offset..pool_coin_offset + 32].try_into()?);
+        let pool_pc_token_account =
+            Pubkey::new_from_array(data[pool_pc_offset..pool_pc_offset + 32].try_into()?);
+        let coin_mint =
+            Pubkey::new_from_array(data[coin_mint_offset..coin_mint_offset + 32].try_into()?);
+        let pc_mint = Pubkey::new_from_array(data[pc_mint_offset..pc_mint_offset + 32].try_into()?);
+
         let open_orders_offset = pc_mint_offset + 64;
-        let open_orders = Pubkey::new_from_array(data[open_orders_offset..open_orders_offset+32].try_into()?);
-        
+        let open_orders =
+            Pubkey::new_from_array(data[open_orders_offset..open_orders_offset + 32].try_into()?);
+
         let market_offset = pc_mint_offset + 96;
-        let market = Pubkey::new_from_array(data[market_offset..market_offset+32].try_into()?);
-        
+        let market = Pubkey::new_from_array(data[market_offset..market_offset + 32].try_into()?);
+
         let serum_prog_offset = pc_mint_offset + 128;
-        let serum_program_id = Pubkey::new_from_array(data[serum_prog_offset..serum_prog_offset+32].try_into()?);
-        
+        let serum_program_id =
+            Pubkey::new_from_array(data[serum_prog_offset..serum_prog_offset + 32].try_into()?);
+
         let target_orders_offset = pc_mint_offset + 160;
-        let target_orders = Pubkey::new_from_array(data[target_orders_offset..target_orders_offset+32].try_into()?);
-        
+        let target_orders = Pubkey::new_from_array(
+            data[target_orders_offset..target_orders_offset + 32].try_into()?,
+        );
+
         let amm_owner_offset = pc_mint_offset + 256;
-        let amm_owner = Pubkey::new_from_array(data[amm_owner_offset..amm_owner_offset+32].try_into()?);
+        let amm_owner =
+            Pubkey::new_from_array(data[amm_owner_offset..amm_owner_offset + 32].try_into()?);
 
         // Parse Numerics (Header)
         // Status at 0, Coin Decimals at 32, Pc Decimals at 40
         let status = u64::from_le_bytes(data[0..8].try_into()?);
         let coin_decimals = u64::from_le_bytes(data[32..40].try_into()?);
         let pc_decimals = u64::from_le_bytes(data[40..48].try_into()?);
-        
+
         info!("Fetching real reserves from token accounts...");
         let base_reserve = self.get_token_balance(&pool_coin_token_account).await?;
         let quote_reserve = self.get_token_balance(&pool_pc_token_account).await?;
@@ -402,15 +421,25 @@ impl RaydiumTrader {
 
     /// Fetch Market Info (Bids, Asks, Queue, Vaults) from Serum Market account
     /// This is simplified for OpenBook/Serum V3 layout
-    pub async fn get_market_accounts(&self, market_address: &Pubkey, serum_program_id: &Pubkey) -> Result<MarketAccounts> {
+    pub async fn get_market_accounts(
+        &self,
+        market_address: &Pubkey,
+        serum_program_id: &Pubkey,
+    ) -> Result<MarketAccounts> {
         info!("Fetching Market account: {}", market_address);
-        let account = self.rpc_client.get_account(market_address)
+        let account = self
+            .rpc_client
+            .get_account(market_address)
             .map_err(|e| anyhow!("Failed to fetch market account: {}", e))?;
-            
+
         if &account.owner != serum_program_id {
-             return Err(anyhow!("Market owner mismatch! Expected {}, got {}", serum_program_id, account.owner));
+            return Err(anyhow!(
+                "Market owner mismatch! Expected {}, got {}",
+                serum_program_id,
+                account.owner
+            ));
         }
-        
+
         let data = account.data;
         // Serum V3 Layout (approximate offsets for key fields)
         // 0-5 blob: padding string "sem..." or header
@@ -427,26 +456,26 @@ impl RaydiumTrader {
         // bids: offset 285
         // asks: offset 317
         // event_queue: offset 349
-        
+
         // Safety check
         if data.len() < 380 {
-             return Err(anyhow!("Market account data too short"));
+            return Err(anyhow!("Market account data too short"));
         }
-        
+
         let base_vault = Pubkey::new_from_array(data[117..149].try_into()?);
         let quote_vault = Pubkey::new_from_array(data[165..197].try_into()?);
         let bids = Pubkey::new_from_array(data[285..317].try_into()?);
         let asks = Pubkey::new_from_array(data[317..349].try_into()?);
         let event_queue = Pubkey::new_from_array(data[349..381].try_into()?);
-        
+
         // Serum V3 Layout (approximate offsets for key fields)
         // vault_signer_nonce is u64 at offset 4
-        
+
         // Derive vault signer
         let nonce_u64 = u64::from_le_bytes(data[4..12].try_into()?);
         let (vault_signer, _) = Pubkey::find_program_address(
-            &[market_address.as_ref(), &nonce_u64.to_le_bytes()], 
-            serum_program_id
+            &[market_address.as_ref(), &nonce_u64.to_le_bytes()],
+            serum_program_id,
         );
 
         Ok(MarketAccounts {
@@ -470,7 +499,6 @@ pub struct MarketAccounts {
     pub coin_vault: Pubkey,
     pub pc_vault: Pubkey,
     pub vault_signer: Pubkey,
-
 }
 
 #[cfg(test)]
@@ -480,7 +508,9 @@ mod tests {
     #[test]
     fn test_calculate_swap_output() {
         let trader = RaydiumTrader {
-            rpc_client: Arc::new(RpcClient::new("https://api.mainnet-beta.solana.com".to_string())),
+            rpc_client: Arc::new(RpcClient::new(
+                "https://api.mainnet-beta.solana.com".to_string(),
+            )),
         };
 
         // Test with 1 SOL input, 10 SOL reserve, 5000 USDC reserve
@@ -508,7 +538,9 @@ mod tests {
     #[test]
     fn test_find_pool_sol_usdc() {
         let trader = RaydiumTrader {
-            rpc_client: Arc::new(RpcClient::new("https://api.mainnet-beta.solana.com".to_string())),
+            rpc_client: Arc::new(RpcClient::new(
+                "https://api.mainnet-beta.solana.com".to_string(),
+            )),
         };
 
         let sol_mint = Pubkey::from_str("So11111111111111111111111111111111111111112").unwrap();

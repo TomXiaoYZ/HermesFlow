@@ -1,16 +1,13 @@
-use super::config::BinanceConfig;
-use crate::error::{DataError, Result};
+use crate::error::Result;
 use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use serde_json::Value;
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::connect_async;
 use tracing::{error, info, warn};
-use url::Url;
 
 pub struct BinanceStreamer {
     url: String,
@@ -42,7 +39,7 @@ impl BinanceStreamer {
                     .map(|s| format!("{}@aggTrade", s.to_lowercase()))
                     .collect();
 
-                let stream_query = streams.join("/");
+                let _stream_query = streams.join("/");
                 // Using combined streams endpoint: wss://stream.binance.com:9443/stream?streams=...
                 // Only if url base ends with /stream, otherwise we assume /ws and send subscribe
 
@@ -94,7 +91,7 @@ impl BinanceStreamer {
 
                         backoff = 1;
 
-                        let (mut write, mut read) = ws_stream.split();
+                        let (_write, mut read) = ws_stream.split();
 
                         // Keep-alive/Ping is handled by tungstenite protocol level usually for ping/pong frames
                         // Binance requires PONG response to Ping?
@@ -156,7 +153,6 @@ impl BinanceStreamer {
             let qty_str = value.get("q")?.as_str()?;
             let timestamp = value.get("T")?.as_i64()?;
 
-            use rust_decimal::prelude::FromPrimitive;
             let price = Decimal::from_str_radix(price_str, 10).ok()?;
             let quantity = Decimal::from_str_radix(qty_str, 10).ok()?;
 

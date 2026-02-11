@@ -4,23 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.0", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-anyhow = "1.0"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-rand = "0.8"
-redis = { version = "0.23", features = ["tokio-comp"] }
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "rust_decimal"] }
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.0", features = ["serde", "v4"] }
-ndarray = "0.15"
-rust_decimal = "1.36"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rand = { workspace = true }
+redis = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+ndarray = { workspace = true }
+rust_decimal = { workspace = true }
+axum = { workspace = true }
+hyper = { workspace = true }
 
-# Internal dependencies
-backtest-engine = { path = "../backtest-engine" }
-common = { path = "../common" }
-axum = "0.7"
-hyper = "1.0"
-
+# Internal
+backtest-engine = { workspace = true }
+common = { workspace = true, features = ["health", "heartbeat"] }

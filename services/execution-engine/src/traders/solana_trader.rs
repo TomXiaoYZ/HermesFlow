@@ -1,14 +1,14 @@
-use solana_client::rpc_client::RpcClient;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
-use solana_sdk::transaction::Transaction;
-use solana_sdk::system_instruction;
-use spl_associated_token_account::get_associated_token_address;
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
+use solana_client::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Keypair;
+use solana_sdk::signer::Signer;
+use solana_sdk::system_instruction;
+use solana_sdk::transaction::Transaction;
+use spl_associated_token_account::get_associated_token_address;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -97,7 +97,10 @@ impl SolanaTrader {
         amount_sol: f64,
         slippage_bps: u16,
     ) -> Result<String> {
-        info!("[Jupiter] Executing BUY: {} SOL -> {}", amount_sol, token_address);
+        info!(
+            "[Jupiter] Executing BUY: {} SOL -> {}",
+            amount_sol, token_address
+        );
 
         let amount_lamports = (amount_sol * 1e9) as u64;
 
@@ -126,12 +129,15 @@ impl SolanaTrader {
         amount_sol: f64,
         slippage_bps: u16,
     ) -> Result<String> {
-        info!("[Raydium] Executing BUY: {} SOL -> {}", amount_sol, token_address);
+        info!(
+            "[Raydium] Executing BUY: {} SOL -> {}",
+            amount_sol, token_address
+        );
 
         // 1. Find pool
         let sol_mint = Pubkey::from_str(SOL_MINT)?;
         let token_mint = Pubkey::from_str(token_address)?;
-        
+
         let pool = self.raydium.find_pool(&sol_mint, &token_mint).await?;
         info!("[Raydium] Found pool: {}", pool);
 
@@ -165,14 +171,14 @@ impl SolanaTrader {
             amount_in,
             reserve_in,
             reserve_out,
-            25,     // 0.25% fee (Raydium standard)
+            25, // 0.25% fee (Raydium standard)
             10_000,
         )?;
-        
+
         // 5. Apply slippage protection
         let slippage_multiplier = 1.0 - (slippage_bps as f64 / 10_000.0);
         let minimum_amount_out = ((amount_out as f64) * slippage_multiplier) as u64;
-        
+
         info!(
             "[Raydium] Swap calculation: {} SOL -> {} tokens (min: {} with {}bps slippage)",
             amount_sol, amount_out, minimum_amount_out, slippage_bps
@@ -182,22 +188,23 @@ impl SolanaTrader {
         let wallet = self.keypair.pubkey();
         let user_wsol_ata = get_associated_token_address(&wallet, &wsol_mint);
         let user_token_ata = get_associated_token_address(&wallet, &token_mint);
-        
+
         info!("[Raydium] User wSOL ATA: {}", user_wsol_ata);
         info!("[Raydium] User token ATA: {}", user_token_ata);
 
         let mut instructions = vec![];
-        
+
         // 6a. Create wSOL ATA if not exists
         let wsol_ata_exists = self.rpc_client.get_account(&user_wsol_ata).is_ok();
         if !wsol_ata_exists {
             info!("[Raydium] Creating wSOL ATA");
-            let create_wsol_ata_ix = spl_associated_token_account::instruction::create_associated_token_account(
-                &wallet,
-                &wallet,
-                &wsol_mint,
-                &spl_token::id(),
-            );
+            let create_wsol_ata_ix =
+                spl_associated_token_account::instruction::create_associated_token_account(
+                    &wallet,
+                    &wallet,
+                    &wsol_mint,
+                    &spl_token::id(),
+                );
             instructions.push(create_wsol_ata_ix);
         } else {
             info!("[Raydium] wSOL ATA already exists");
@@ -206,11 +213,8 @@ impl SolanaTrader {
         // 6b. Transfer native SOL to wSOL ATA for wrapping
         // We need to transfer the amount we want to swap
         info!("[Raydium] Wrapping {} lamports of SOL to wSOL", amount_in);
-        let transfer_to_wsol_ix = solana_sdk::system_instruction::transfer(
-            &wallet,
-            &user_wsol_ata,
-            amount_in,
-        );
+        let transfer_to_wsol_ix =
+            solana_sdk::system_instruction::transfer(&wallet, &user_wsol_ata, amount_in);
         instructions.push(transfer_to_wsol_ix);
 
         // 6c. Sync native to update wSOL token balance
@@ -225,26 +229,30 @@ impl SolanaTrader {
             }
             Err(_) => {
                 info!("[Raydium] Creating token ATA");
-                let create_token_ata_ix = spl_associated_token_account::instruction::create_associated_token_account(
-                    &wallet,
-                    &wallet,
-                    &token_mint,
-                    &spl_token::id(),
-                );
+                let create_token_ata_ix =
+                    spl_associated_token_account::instruction::create_associated_token_account(
+                        &wallet,
+                        &wallet,
+                        &token_mint,
+                        &spl_token::id(),
+                    );
                 instructions.push(create_token_ata_ix);
             }
         }
 
         // 7. Build swap instruction
-        let swap_ix = self.raydium.build_swap_instruction(
-            &amm_info,
-            &pool,
-            &wallet,
-            &user_wsol_ata,
-            &user_token_ata,
-            amount_in,
-            minimum_amount_out,
-        ).await?;
+        let swap_ix = self
+            .raydium
+            .build_swap_instruction(
+                &amm_info,
+                &pool,
+                &wallet,
+                &user_wsol_ata,
+                &user_token_ata,
+                amount_in,
+                minimum_amount_out,
+            )
+            .await?;
         instructions.push(swap_ix);
 
         // 8. Close wSOL ATA after swap to get remaining SOL back
@@ -253,9 +261,9 @@ impl SolanaTrader {
         let close_wsol_ata_ix = spl_token::instruction::close_account(
             &spl_token::id(),
             &user_wsol_ata,
-            &wallet,        // destination for remaining SOL
-            &wallet,        // account authority
-            &[],            // no multisig
+            &wallet, // destination for remaining SOL
+            &wallet, // account authority
+            &[],     // no multisig
         )?;
         instructions.push(close_wsol_ata_ix);
 
@@ -268,7 +276,10 @@ impl SolanaTrader {
             recent_blockhash,
         );
 
-        info!("[Raydium] Sending transaction with {} instructions...", instructions.len());
+        info!(
+            "[Raydium] Sending transaction with {} instructions...",
+            instructions.len()
+        );
         let signature = self
             .rpc_client
             .send_and_confirm_transaction(&transaction)
@@ -294,21 +305,21 @@ impl SolanaTrader {
         // 1. Find pool
         let sol_mint = Pubkey::from_str(SOL_MINT)?;
         let token_mint = Pubkey::from_str(token_address)?;
-        
+
         let pool = self.raydium.find_pool(&sol_mint, &token_mint).await?;
         info!("[Raydium] Found pool: {}", pool);
 
         // 2. Get full AMM info
         let amm_info = self.raydium.get_amm_info(&pool).await?;
-        
+
         // 3. Determine reserves (Input = Token, Output = SOL)
         let wsol_mint = Pubkey::from_str(SOL_MINT)?;
-        
+
         // We are swapping Token -> wSOL
         // reserve_in = Token Reserve
         // reserve_out = SOL Reserve
         let (reserve_in, reserve_out) = if amm_info.coin_mint == wsol_mint {
-            // coin is SOL, pc is Token. 
+            // coin is SOL, pc is Token.
             // In: Token (pc), Out: SOL (coin)
             (amm_info.pool_pc_total, amm_info.pool_coin_total)
         } else if amm_info.pc_mint == wsol_mint {
@@ -324,7 +335,7 @@ impl SolanaTrader {
             amount_token,
             reserve_in,
             reserve_out,
-            25,     // 0.25% fee
+            25, // 0.25% fee
             10_000,
         )?;
 
@@ -341,7 +352,7 @@ impl SolanaTrader {
         let wallet = self.keypair.pubkey();
         let user_wsol_ata = get_associated_token_address(&wallet, &wsol_mint);
         let user_token_ata = get_associated_token_address(&wallet, &token_mint);
-        
+
         let mut instructions = vec![];
 
         // 6a. Create wSOL ATA (Destination) if NOT exists
@@ -349,12 +360,13 @@ impl SolanaTrader {
         let wsol_ata_exists = self.rpc_client.get_account(&user_wsol_ata).is_ok();
         if !wsol_ata_exists {
             info!("[Raydium] Creating wSOL ATA (destination for swap)");
-            let create_wsol_ata_ix = spl_associated_token_account::instruction::create_associated_token_account(
-                &wallet,
-                &wallet,
-                &wsol_mint,
-                &spl_token::id(),
-            );
+            let create_wsol_ata_ix =
+                spl_associated_token_account::instruction::create_associated_token_account(
+                    &wallet,
+                    &wallet,
+                    &wsol_mint,
+                    &spl_token::id(),
+                );
             instructions.push(create_wsol_ata_ix);
         }
 
@@ -364,15 +376,18 @@ impl SolanaTrader {
         }
 
         // 7. Swap Instruction (Source: Token ATA, Dest: wSOL ATA)
-        let swap_ix = self.raydium.build_swap_instruction(
-            &amm_info,
-            &pool,
-            &wallet,
-            &user_token_ata, // Source: Token
-            &user_wsol_ata,  // Dest: wSOL
-            amount_token,
-            minimum_amount_out,
-        ).await?;
+        let swap_ix = self
+            .raydium
+            .build_swap_instruction(
+                &amm_info,
+                &pool,
+                &wallet,
+                &user_token_ata, // Source: Token
+                &user_wsol_ata,  // Dest: wSOL
+                amount_token,
+                minimum_amount_out,
+            )
+            .await?;
         instructions.push(swap_ix);
 
         // 8. Close wSOL ATA (Unwrap to native SOL)
@@ -419,14 +434,18 @@ impl SolanaTrader {
         }
 
         // Try Raydium experimental first
-        match self.buy_raydium_experimental(token_address, amount_sol, slippage_bps).await {
+        match self
+            .buy_raydium_experimental(token_address, amount_sol, slippage_bps)
+            .await
+        {
             Ok(sig) => {
                 info!("[Raydium-MVP] Successfully executed via Raydium");
                 Ok(sig)
             }
             Err(e) => {
                 warn!("[Raydium-MVP] Failed: {}. Falling back to Jupiter", e);
-                self.buy_jupiter(token_address, amount_sol, slippage_bps).await
+                self.buy_jupiter(token_address, amount_sol, slippage_bps)
+                    .await
             }
         }
     }
@@ -470,10 +489,13 @@ impl SolanaTrader {
         }
 
         // 2. Try Raydium Sell First
-        match self.sell_raydium_experimental(token_address, amount_to_sell, slippage_bps).await {
+        match self
+            .sell_raydium_experimental(token_address, amount_to_sell, slippage_bps)
+            .await
+        {
             Ok(sig) => {
-                 info!("[Raydium-MVP] Sell successful via Raydium");
-                 return Ok(sig);
+                info!("[Raydium-MVP] Sell successful via Raydium");
+                return Ok(sig);
             }
             Err(e) => {
                 warn!("[Raydium-MVP] Sell failed: {}. Falling back to Jupiter.", e);
@@ -509,11 +531,7 @@ impl SolanaTrader {
             JUPITER_QUOTE_API, input_mint, output_mint, amount, slippage_bps
         );
 
-        let resp = self
-            .http_client
-            .get(&url)
-            .send()
-            .await?;
+        let resp = self.http_client.get(&url).send().await?;
 
         if !resp.status().is_success() {
             let text = resp.text().await?;

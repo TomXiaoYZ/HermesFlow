@@ -102,7 +102,7 @@ impl DataSourceType {
             DataSourceType::FutuStock => "Futu",
             DataSourceType::BitgetSpot | DataSourceType::BitgetFutures => "Bitget",
             DataSourceType::GmgnDex => "GMGN",
-    DataSourceType::UniswapV3 => "Uniswap",
+            DataSourceType::UniswapV3 => "Uniswap",
             DataSourceType::Birdeye => "Birdeye",
             DataSourceType::Helius => "Helius", // Added
             DataSourceType::IbkrStock | DataSourceType::IbkrOption => "IBKR",

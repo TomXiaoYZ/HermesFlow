@@ -1,32 +1,27 @@
 use backtest_engine::vm::vm::StackVM;
 use chrono::Utc;
-use common::events::{OrderSide, OrderType, StrategyLog, TradeSignal};
+use common::events::{OrderSide, OrderType, TradeSignal};
 use std::env;
 use strategy_engine::event_bus::EventBus;
 use strategy_engine::market_data_manager::MarketDataManager;
 use strategy_engine::risk::RiskEngine;
 use tracing::{error, info, warn};
-use redis::Commands;
-
-mod health;
 
 #[tokio::main]
+#[allow(unreachable_code)]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting Strategy Engine...");
 
     // Spawn health check server
-    tokio::spawn(async {
-        health::start_health_server().await;
-    });
-
+    tokio::spawn(common::health::start_health_server("strategy-engine", 8082));
 
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
     // 1. Setup Components
     let event_bus = EventBus::new(&redis_url)?;
     let mut market_manager = MarketDataManager::new();
-    let mut vm = StackVM::new(); // In real app, load this from config/DB
+    let vm = StackVM::new(); // In real app, load this from config/DB
     let mut risk_engine = RiskEngine::new();
     let mut portfolio_manager = strategy_engine::portfolio::PortfolioManager::new();
 
@@ -40,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     #[derive(Deserialize, Debug)]
+    #[allow(dead_code)]
     struct StrategyMeta {
         name: String,
         description: String,
@@ -49,16 +45,14 @@ async fn main() -> anyhow::Result<()> {
     // Try to load from file, otherwise use default
     let strategy_file = "best_meme_strategy.json";
     let (initial_formula, initial_name) = match std::fs::read_to_string(strategy_file) {
-        Ok(content) => {
-            match serde_json::from_str::<StrategyUpdate>(&content) {
-                Ok(update) => {
-                    info!("Loaded strategy from file: {}", update.meta.name);
-                    (update.formula, update.meta.name)
-                },
-                Err(e) => {
-                    error!("Failed to parse strategy file: {}", e);
-                    (vec![0, 19], "Volatility Breakout (Fallback)".to_string())
-                }
+        Ok(content) => match serde_json::from_str::<StrategyUpdate>(&content) {
+            Ok(update) => {
+                info!("Loaded strategy from file: {}", update.meta.name);
+                (update.formula, update.meta.name)
+            }
+            Err(e) => {
+                error!("Failed to parse strategy file: {}", e);
+                (vec![0, 19], "Volatility Breakout (Fallback)".to_string())
             }
         },
         Err(_) => {
@@ -73,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Strategy Engine Initialized. Connecting to Event Bus...");
 
     // 2.1 Spawn Thread to Listen for Formula Updates
-    let bus_clone = EventBus::new(&redis_url)?;
+    let _bus_clone = EventBus::new(&redis_url)?;
     let formula_clone = formula_tokens.clone();
     let name_clone = current_strategy_name.clone();
 
@@ -86,24 +80,9 @@ async fn main() -> anyhow::Result<()> {
         let _ = pubsub.subscribe("strategy_updates");
 
         info!("Evolution Listener: Connected to strategy_updates channel");
-        
-        // Spawn Heartbeat Loop (sub-task)
-        let redis_url_hb = redis_url.clone();
-        tokio::spawn(async move {
-            if let Ok(client) = redis::Client::open(redis_url_hb) {
-                if let Ok(mut con) = client.get_connection() {
-                    loop {
-                        let hb = serde_json::json!({
-                            "service": "strategy-engine",
-                            "status": "online",
-                            "timestamp": Utc::now().timestamp_millis()
-                        });
-                        let _: redis::RedisResult<()> = con.publish("system_heartbeat", hb.to_string());
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    }
-                }
-            }
-        });
+
+        // Spawn Heartbeat Loop
+        common::heartbeat::spawn_heartbeat("strategy-engine", &redis_url);
 
         loop {
             if let Ok(msg) = pubsub.get_message() {
@@ -131,7 +110,9 @@ async fn main() -> anyhow::Result<()> {
 
     // 3. Subscribe to Market Data & Portfolio Updates
     let mut market_rx = event_bus.subscribe_market_data("market_data").await?;
-    let mut portfolio_rx = event_bus.subscribe_portfolio_updates("portfolio_updates").await?;
+    let mut portfolio_rx = event_bus
+        .subscribe_portfolio_updates("portfolio_updates")
+        .await?;
 
     info!("Listening for Market Data and Portfolio Updates...");
 
@@ -208,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
 
                     if let Some(result) = vm.execute(&current_formula, &features) {
                         if let Some(last_val) = result.last() {
-                            let threshold = 0.001; 
+                            let threshold = 0.001;
 
                             if *last_val > threshold {
                                 // ENTRY SIGNAL
@@ -225,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
                                     strategy_id: strategy_name.clone(),
                                     symbol: msg.symbol.clone(),
                                     side: OrderSide::Buy,
-                                    quantity: amount_sol, 
+                                    quantity: amount_sol,
                                     price: Some(msg.price),
                                     order_type: OrderType::Market,
                                     timestamp: Utc::now(),
@@ -242,11 +223,11 @@ async fn main() -> anyhow::Result<()> {
                                     } else {
                                         // Optimistic Portfolio Update
                                         portfolio_manager.add_position(
-                                            msg.symbol.clone(), 
-                                            msg.symbol.clone(), 
-                                            msg.price,          
-                                            amount_sol / msg.price, 
-                                            msg.price,          
+                                            msg.symbol.clone(),
+                                            msg.symbol.clone(),
+                                            msg.price,
+                                            amount_sol / msg.price,
+                                            msg.price,
                                         );
                                     }
                                 }

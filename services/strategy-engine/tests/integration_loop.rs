@@ -1,8 +1,8 @@
-use common::events::{MarketDataUpdate, TradeSignal, OrderSide};
+use chrono::Utc;
+use common::events::{MarketDataUpdate, OrderSide, TradeSignal};
 use redis::Commands;
 use std::time::Duration;
 use uuid::Uuid;
-use chrono::Utc;
 
 #[tokio::test]
 async fn test_integration_loop() {
@@ -19,10 +19,10 @@ async fn test_integration_loop() {
         source: "IntegrationTest".to_string(),
         timestamp: Utc::now(),
     };
-    
+
     let json = serde_json::to_string(&market_update).unwrap();
     let _: () = con_pub.publish("market_data", json).unwrap();
-    
+
     println!("Published Market Data for {}", market_update.symbol);
 
     // 3. Listen for Signal (Simulate Execution Engine listening)
@@ -40,18 +40,18 @@ async fn test_integration_loop() {
         timestamp: Utc::now(),
         reason: "Test".to_string(),
     };
-    
+
     let sig_json = serde_json::to_string(&simulated_signal).unwrap();
     let _: () = con_pub.publish("trade_signals", sig_json).unwrap();
-    
+
     println!("Published Simulated Signal");
-    
+
     // Read back to verify round trip matches
-    let msg = pubsub.get_message(); 
+    let msg = pubsub.get_message();
     // This might block or return the message we just sent?
     // Redis PubSub echoes to publisher if subscribed? No, usually distinct connection needed.
     // But we are on same connection? "con" vs "pubsub".
-    
+
     // Let's keep it simple: Ensure we can serialize/deserialize our events correctly.
     assert!(serde_json::to_string(&market_update).is_ok());
     assert!(serde_json::to_string(&simulated_signal).is_ok());

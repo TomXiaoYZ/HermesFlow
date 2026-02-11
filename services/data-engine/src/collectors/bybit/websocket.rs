@@ -1,5 +1,4 @@
-use super::config::BybitConfig;
-use crate::error::{DataError, Result};
+use crate::error::Result;
 use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
 use futures::{SinkExt, StreamExt};
 use rust_decimal::Decimal;

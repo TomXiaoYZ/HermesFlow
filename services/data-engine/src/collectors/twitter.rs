@@ -1,8 +1,8 @@
 use crate::config::TwitterConfig;
 use crate::error::Result;
 use crate::models::SocialData;
-use std::sync::Arc;
 
+#[allow(dead_code)]
 pub struct TwitterCollector {
     config: TwitterConfig,
 }
@@ -14,14 +14,14 @@ impl TwitterCollector {
 
     pub async fn scrape_user_timeline(
         &self,
-        username: &str,
-        max_count: i32,
+        _username: &str,
+        _max_count: i32,
     ) -> Result<Vec<SocialData>> {
         // Stub implementation
         Ok(vec![])
     }
 
-    pub async fn scrape_search(&self, query: &str, max_count: i32) -> Result<Vec<SocialData>> {
+    pub async fn scrape_search(&self, _query: &str, _max_count: i32) -> Result<Vec<SocialData>> {
         // Stub implementation
         Ok(vec![])
     }

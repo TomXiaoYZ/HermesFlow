@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::info;
 
 // AlphaGPT Strategy Constants (Default)
 // In a production app, these should be loaded from a config file or env.

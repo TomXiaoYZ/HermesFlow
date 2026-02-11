@@ -85,6 +85,27 @@ lazy_static! {
         "data_engine_dq_low_liq_symbols",
         "Number of symbols with low liquidity"
     ).expect("Failed to create DQ_LOW_LIQ_SYMBOLS gauge");
+
+    /// BirdEye API Request Counter
+    pub static ref BIRDEYE_API_REQUESTS_TOTAL: Counter = Counter::new(
+        "data_engine_birdeye_requests_total",
+        "Total requests made to BirdEye API"
+    ).expect("Failed to create BIRDEYE_API_REQUESTS_TOTAL counter");
+
+    /// End-to-end ingest latency (source timestamp to DB write)
+    pub static ref INGEST_LATENCY: Histogram = Histogram::with_opts(
+        prometheus::HistogramOpts::new(
+            "data_engine_ingest_latency_seconds",
+            "End-to-end data ingest latency in seconds"
+        )
+        .buckets(vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0])
+    ).expect("Failed to create INGEST_LATENCY histogram");
+
+    /// Validation failures counter
+    pub static ref VALIDATION_FAILURES: Counter = Counter::new(
+        "data_engine_validation_failures_total",
+        "Total data validation failures"
+    ).expect("Failed to create VALIDATION_FAILURES counter");
 }
 
 /// Initializes Prometheus metrics by registering them with the registry
@@ -101,6 +122,9 @@ pub fn init_metrics() -> Result<(), prometheus::Error> {
     REGISTRY.register(Box::new(DQ_STALE_SYMBOLS.clone()))?;
     REGISTRY.register(Box::new(DQ_GAP_SYMBOLS.clone()))?;
     REGISTRY.register(Box::new(DQ_LOW_LIQ_SYMBOLS.clone()))?;
+    REGISTRY.register(Box::new(BIRDEYE_API_REQUESTS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(INGEST_LATENCY.clone()))?;
+    REGISTRY.register(Box::new(VALIDATION_FAILURES.clone()))?;
 
     // Set service as up initially
     SERVICE_UP.set(1);

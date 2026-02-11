@@ -1,0 +1,98 @@
+warning: unused imports: `Axis` and `s`
+ --> /Users/tomxiao/Desktop/Git/personal/HermesFlow/services/backtest-engine/src/factors/indicators.rs:2:15
+  |
+2 | use ndarray::{s, Array2, Axis};
+  |               ^          ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `crate::factors::moving_averages::MovingAverages`
+ --> /Users/tomxiao/Desktop/Git/personal/HermesFlow/services/backtest-engine/src/factors/vwap.rs:1:5
+  |
+1 | use crate::factors::moving_averages::MovingAverages;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::factors::moving_averages::MovingAverages`
+ --> /Users/tomxiao/Desktop/Git/personal/HermesFlow/services/backtest-engine/src/factors/mfi.rs:1:5
+  |
+1 | use crate::factors::moving_averages::MovingAverages;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `info` and `warn`
+ --> /Users/tomxiao/Desktop/Git/personal/HermesFlow/services/backtest-engine/src/backtest.rs:2:15
+  |
+2 | use tracing::{info, warn};
+  |               ^^^^  ^^^^
+
+warning: unused variable: `batch`
+  --> /Users/tomxiao/Desktop/Git/personal/HermesFlow/services/backtest-engine/src/backtest.rs:79:14
+   |
+79 |         let (batch, time) = position.dim();
+   |              ^^^^^ help: if this is intentional, prefix it with an underscore: `_batch`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: `backtest-engine` (lib) generated 5 warnings (run `cargo fix --lib -p backtest-engine` to apply 4 suggestions)
+    Checking strategy-generator v0.1.0 (/Users/tomxiao/Desktop/Git/personal/HermesFlow/services/strategy-generator)
+warning: unused import: `Axis`
+ --> src/backtest.rs:5:31
+  |
+5 | use ndarray::{Array2, Array3, Axis};
+  |                               ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unnecessary parentheses around assigned value
+   --> src/backtest.rs:295:36
+    |
+295 |                  current_equity *= (1.0 + pnl);
+    |                                    ^         ^
+    |
+    = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+    |
+295 -                  current_equity *= (1.0 + pnl);
+295 +                  current_equity *= 1.0 + pnl;
+    |
+
+warning: unused import: `Serialize`
+ --> src/api.rs:6:26
+  |
+6 | use serde::{Deserialize, Serialize};
+  |                          ^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> src/api.rs:9:5
+  |
+9 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `tokio::sync::Mutex`
+  --> src/api.rs:10:5
+   |
+10 | use tokio::sync::Mutex;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `data`
+   --> src/backtest.rs:246:21
+    |
+246 |         if let Some(data) = self.cache.get(symbol) {
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: field `time` is never read
+  --> src/backtest.rs:13:9
+   |
+12 | pub struct Candle {
+   |            ------ field in this struct
+13 |     pub time: DateTime<Utc>,
+   |         ^^^^
+   |
+   = note: `Candle` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` on by default
+
+warning: `strategy-generator` (bin "strategy-generator") generated 7 warnings (run `cargo fix --bin "strategy-generator"` to apply 5 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.84s
+warning: the following packages contain code that will be rejected by a future version of Rust: redis v0.23.3, sqlx-postgres v0.7.4
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`

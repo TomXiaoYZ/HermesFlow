@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::interval;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceHealth {
@@ -55,7 +54,7 @@ impl HealthChecker {
 
     pub async fn start_monitoring(self, redis_client: redis::Client) {
         let mut interval = interval(Duration::from_secs(5));
-        
+
         info!("Health checker started, polling every 5s");
 
         loop {
@@ -68,7 +67,8 @@ impl HealthChecker {
                         if let Ok(mut conn) = redis_client.get_connection() {
                             let key = format!("service:health:{}", service.name);
                             let value = serde_json::to_string(&health).unwrap();
-                            let _: redis::RedisResult<()> = redis::Commands::set_ex(&mut conn, key, value, 30);
+                            let _: redis::RedisResult<()> =
+                                redis::Commands::set_ex(&mut conn, key, value, 30);
                         }
 
                         // Publish heartbeat (for backward compatibility)
@@ -78,12 +78,16 @@ impl HealthChecker {
                                 "status": if health.status == "healthy" { "online" } else { "degraded" },
                                 "timestamp": chrono::Utc::now().timestamp_millis()
                             });
-                            let _: redis::RedisResult<()> = redis::Commands::publish(&mut conn, "system_heartbeat", hb.to_string());
+                            let _: redis::RedisResult<()> = redis::Commands::publish(
+                                &mut conn,
+                                "system_heartbeat",
+                                hb.to_string(),
+                            );
                         }
                     }
                     Err(e) => {
                         warn!("Health check failed for {}: {}", service.name, e);
-                        
+
                         // Publish offline status
                         if let Ok(mut conn) = redis_client.get_connection() {
                             let hb = serde_json::json!({
@@ -91,7 +95,11 @@ impl HealthChecker {
                                 "status": "offline",
                                 "timestamp": chrono::Utc::now().timestamp_millis()
                             });
-                            let _: redis::RedisResult<()> = redis::Commands::publish(&mut conn, "system_heartbeat", hb.to_string());
+                            let _: redis::RedisResult<()> = redis::Commands::publish(
+                                &mut conn,
+                                "system_heartbeat",
+                                hb.to_string(),
+                            );
                         }
                     }
                 }
@@ -99,14 +107,19 @@ impl HealthChecker {
         }
     }
 
-    async fn check_health(&self, service: &ServiceEndpoint) -> Result<ServiceHealth, reqwest::Error> {
+    async fn check_health(
+        &self,
+        service: &ServiceEndpoint,
+    ) -> Result<ServiceHealth, reqwest::Error> {
         let response = self.client.get(&service.url).send().await?;
-        
+
         if response.status().is_success() {
             let health: ServiceHealth = response.json().await?;
             Ok(health)
         } else {
-            Err(reqwest::Error::from(response.error_for_status().unwrap_err()))
+            Err(reqwest::Error::from(
+                response.error_for_status().unwrap_err(),
+            ))
         }
     }
 }

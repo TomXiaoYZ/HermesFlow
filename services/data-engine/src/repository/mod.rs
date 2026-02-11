@@ -13,8 +13,17 @@ pub trait MarketDataRepository: Send + Sync {
     async fn insert_snapshot(&self, data: &StandardMarketData) -> Result<(), DataEngineError>;
     /// store a historical/aggregated candle
     async fn insert_candle(&self, data: &Candle) -> Result<(), DataEngineError>;
+    /// store a batch of candles
+    async fn insert_candles(&self, data: &[Candle]) -> Result<(), DataEngineError>;
     /// fetch distinct symbols that have data (or are configured)
     async fn get_active_symbols(&self) -> Result<Vec<String>, DataEngineError>;
+    /// fetch the timestamp of the latest candle for a symbol/resolution
+    async fn get_latest_candle_time(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        resolution: &str,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, DataEngineError>;
 }
 
 #[async_trait]
@@ -43,6 +52,25 @@ pub trait PredictionRepository: Send + Sync {
         market_id: &str,
         outcome: &MarketOutcome,
     ) -> Result<(), DataEngineError>;
+    async fn list_markets(
+        &self,
+        active_only: bool,
+        category: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PredictionMarket>, DataEngineError>;
+    async fn get_market(&self, market_id: &str)
+        -> Result<Option<PredictionMarket>, DataEngineError>;
+    async fn get_outcome_history(
+        &self,
+        market_id: &str,
+        limit: i64,
+    ) -> Result<Vec<MarketOutcome>, DataEngineError>;
 }
+#[async_trait]
+pub trait MetricsRepository: Send + Sync {
+    async fn insert_api_usage(&self, provider: &str, count: i64) -> Result<(), DataEngineError>;
+}
+
 pub mod token;
 pub use token::{ActiveToken, TokenRepository};

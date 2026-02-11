@@ -7,66 +7,66 @@ description = "High-performance data collection and distribution engine"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.35", features = ["full"] }
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
-async-trait = "0.1"
-futures = "0.3"
-futures-util = "0.3"
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
 
 # HTTP server
-axum = { version = "0.7", features = ["ws", "macros"] }
+axum = { workspace = true, features = ["ws", "macros"] }
 
 # Database and cache
-redis = { version = "0.24", features = ["tokio-comp", "connection-manager", "aio", "tokio-rustls-comp"] }
-clickhouse = "0.11"
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "json", "rust_decimal", "uuid"] }
+redis = { workspace = true }
+clickhouse = { workspace = true }
+sqlx = { workspace = true }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-rust_decimal = { version = "1.33", features = ["serde"] }
-rust_decimal_macros = "1.33"
+serde = { workspace = true }
+serde_json = { workspace = true }
+rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }
 
 # Configuration
-config = "0.14"
-toml = "0.8"
-dotenvy = "0.15"
+config = { workspace = true }
+toml = { workspace = true }
+dotenvy = { workspace = true }
 
 # Logging and tracing
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-prometheus = "0.13"
-lazy_static = "1.4"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+prometheus = { workspace = true }
+lazy_static = { workspace = true }
 
 # Error handling
-thiserror = "1.0"
-anyhow = "1.0"
+thiserror = { workspace = true }
+anyhow = { workspace = true }
 
 # Time handling
-chrono = { version = "0.4", features = ["serde"] }
-time = "0.3"
-uuid = { version = "1.0", features = ["serde", "v4"] }
-rand = "0.8"
+chrono = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
 
 # URL parsing
-url = "2.5"
+url = { workspace = true }
 
 # HTTP client
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 
 # IBKR API
 ibapi = "2.5"
-clap = { version = "4.4", features = ["derive"] }
+clap = { workspace = true }
 
 # Crypto Exchange Signing
-hmac = "0.12"
-sha2 = "0.10"
-hex = "0.4"
-base64 = "0.21"
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
 
 # Task Scheduling
-common = { path = "../common" }
-tokio-cron-scheduler = "0.9"
+common = { workspace = true }
+tokio-cron-scheduler = { workspace = true }
 
 [dev-dependencies]
 mockall = "0.12"
@@ -81,8 +81,3 @@ harness = false
 [[bench]]
 name = "storage_benchmarks"
 harness = false
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1

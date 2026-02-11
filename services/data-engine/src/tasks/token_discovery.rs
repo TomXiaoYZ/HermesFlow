@@ -1,17 +1,20 @@
 use crate::collectors::birdeye::client::BirdeyeClient;
 use crate::collectors::birdeye::config::BirdeyeConfig;
-use crate::repository::token::ActiveToken;
-use crate::repository::TokenRepository;
-use chrono::Utc;
+use crate::collectors::BirdeyeConnector;
+use crate::repository::token::{ActiveToken, TokenRepository};
+use crate::repository::MarketDataRepository;
+
+use chrono::{Duration, Utc};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
 pub struct TokenDiscoveryTask {
     birdeye_client: BirdeyeClient,
+    config: BirdeyeConfig,
     token_repo: Arc<dyn TokenRepository>,
+    market_repo: Arc<dyn MarketDataRepository>,
     min_liquidity_usd: f64,
     min_fdv: f64,
     max_fdv: f64,
@@ -21,15 +24,18 @@ impl TokenDiscoveryTask {
     pub fn new(
         birdeye_config: BirdeyeConfig,
         token_repo: Arc<dyn TokenRepository>,
+        market_repo: Arc<dyn MarketDataRepository>,
         min_liquidity_usd: f64,
         min_fdv: f64,
         max_fdv: f64,
     ) -> Self {
-        let client = BirdeyeClient::new(birdeye_config);
+        let client = BirdeyeClient::new(birdeye_config.clone());
 
         Self {
             birdeye_client: client,
+            config: birdeye_config,
             token_repo,
+            market_repo,
             min_liquidity_usd,
             min_fdv,
             max_fdv,
@@ -89,13 +95,12 @@ impl TokenDiscoveryTask {
             all_trending.len()
         );
 
-        // Filter by liquidity and FDV (AlphaGPT exact logic)
+        // Filter by liquidity and FDV
         let mut filtered_tokens = Vec::new();
         for token in all_trending {
             let liq = token.liquidity.unwrap_or(0.0);
             let fdv = token.fdv.unwrap_or(0.0);
 
-            // AlphaGPT filtering thresholds
             if liq < self.min_liquidity_usd {
                 continue;
             }
@@ -109,24 +114,92 @@ impl TokenDiscoveryTask {
             filtered_tokens.push(token);
         }
 
-        info!(
-            "Filtered {} tokens (liq >${}, fdv ${}-${})",
-            filtered_tokens.len(),
-            self.min_liquidity_usd,
-            self.min_fdv,
-            if self.max_fdv.is_infinite() {
-                "inf".to_string()
-            } else {
-                format!("{}", self.max_fdv)
-            }
-        );
-
         if filtered_tokens.is_empty() {
             warn!("No tokens passed the filter criteria");
             return;
         }
 
-        // Map to ActiveToken struct
+        // ---------------------------------------------------------
+        // New Token Detection & Auto-Backfill Trigger
+        // ---------------------------------------------------------
+        let existing_addresses = match self.token_repo.get_active_addresses().await {
+            Ok(addrs) => addrs,
+            Err(e) => {
+                error!("Failed to fetch existing addresses: {}", e);
+                return;
+            }
+        };
+
+        // Identify new tokens
+        let new_tokens: Vec<_> = filtered_tokens
+            .iter()
+            .filter(|t| !existing_addresses.contains(&t.address))
+            .collect();
+
+        if !new_tokens.is_empty() {
+            info!(
+                "✨ Found {} NEW tokens. Triggering Auto-Backfill...",
+                new_tokens.len()
+            );
+
+            // Spawn background task for backfill
+            // We clone necessary data for the async block
+            let new_token_infos: Vec<(String, String)> = new_tokens
+                .iter()
+                .map(|t| (t.symbol.clone().unwrap_or_default(), t.address.clone()))
+                .collect();
+
+            let config_clone = self.config.clone();
+            let market_repo_clone = self.market_repo.clone();
+
+            tokio::spawn(async move {
+                let connector = BirdeyeConnector::new(config_clone);
+                let to_ts = Utc::now().timestamp();
+                // Backfill 365 days (1 year) - note: API might limit to 30d
+                let from_ts = Utc::now()
+                    .checked_sub_signed(Duration::days(365))
+                    .unwrap()
+                    .timestamp();
+
+                let resolutions = vec!["15m", "1H", "4H", "1D", "1W"];
+
+                for (symbol, _addr) in new_token_infos {
+                    for res in &resolutions {
+                        info!(
+                            "⏳ [Auto-Backfill] Fetching history for {} ({})...",
+                            symbol, res
+                        );
+
+                        match connector
+                            .fetch_history_candles(&symbol, res, from_ts, to_ts)
+                            .await
+                        {
+                            Ok(candles) => {
+                                let count = candles.len();
+                                let mut upserted = 0;
+                                for candle in candles {
+                                    if let Ok(_) = market_repo_clone.insert_candle(&candle).await {
+                                        upserted += 1;
+                                    }
+                                }
+                                info!(
+                                    "✅ [Auto-Backfill] Completed for {} ({}). Saved {}/{} candles.",
+                                    symbol, res, upserted, count
+                                );
+                            }
+                            Err(e) => {
+                                error!("❌ [Auto-Backfill] Failed for {} ({}): {}", symbol, res, e);
+                            }
+                        }
+
+                        // Tiny sleep to be nice to API
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    }
+                }
+            });
+        }
+
+        // Upsert to DB
         let tokens_to_upsert: Vec<ActiveToken> = filtered_tokens
             .iter()
             .map(|t| ActiveToken {
@@ -147,26 +220,13 @@ impl TokenDiscoveryTask {
             })
             .collect();
 
-        match self.token_repo.upsert_tokens(tokens_to_upsert).await {
-            Ok(_) => {
-                info!(
-                    "✅ Successfully upserted {} active tokens to DB",
-                    filtered_tokens.len()
-                );
-            }
-            Err(e) => {
-                error!("Failed to upsert tokens: {}", e);
-            }
+        if let Err(e) = self.token_repo.upsert_tokens(tokens_to_upsert).await {
+            error!("Failed to upsert tokens: {}", e);
         }
 
-        // Deactivate stale tokens (not updated in 24 hours)
-        match self.token_repo.deactivate_stale(24).await {
-            Ok(count) => {
-                info!("Deactivated {} stale tokens (>24h old)", count);
-            }
-            Err(e) => {
-                warn!("Failed to deactivate stale tokens: {}", e);
-            }
+        // Deactivate stale
+        if let Err(e) = self.token_repo.deactivate_stale(24).await {
+            warn!("Failed to deactivate stale tokens: {}", e);
         }
 
         info!("Token Discovery Task completed");

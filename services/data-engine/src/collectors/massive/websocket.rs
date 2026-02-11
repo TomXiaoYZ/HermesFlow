@@ -1,6 +1,5 @@
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -8,7 +7,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, info, warn};
 use url::Url;
 
-use crate::error::{DataError, Result};
+use crate::error::Result;
 use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
 
 pub struct MassiveStreamer {

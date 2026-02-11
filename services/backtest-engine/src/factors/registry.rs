@@ -1,6 +1,6 @@
 use super::traits::*;
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Registry of all available factor factories
 pub struct FactorRegistry {
@@ -12,7 +12,7 @@ impl FactorRegistry {
         let mut registry = Self {
             factories: HashMap::new(),
         };
-        
+
         // Register all 33 factors
         registry.register("log_returns", Box::new(LogReturnsFactory));
         registry.register("liquidity_health", Box::new(LiquidityHealthFactory));
@@ -47,18 +47,18 @@ impl FactorRegistry {
         registry.register("vol_trend", Box::new(VolumeTrendFactory));
         registry.register("momentum_10", Box::new(Momentum10Factory));
         registry.register("momentum_20", Box::new(Momentum20Factory));
-        
+
         registry
     }
-    
+
     fn register(&mut self, slug: &str, factory: Box<dyn FactorFactory>) {
         self.factories.insert(slug.to_string(), factory);
     }
-    
+
     pub fn create(&self, slug: &str, params: &Value) -> Option<Box<dyn Factor>> {
         self.factories.get(slug).map(|f| f.create(params))
     }
-    
+
     pub fn available_factors(&self) -> Vec<String> {
         self.factories.keys().cloned().collect()
     }
@@ -76,7 +76,7 @@ macro_rules! simple_factory {
                 Box::new(<$factor>::default())
             }
         }
-        
+
         impl Default for $factor {
             fn default() -> Self {
                 Self
@@ -85,13 +85,13 @@ macro_rules! simple_factory {
     };
 }
 
-
 macro_rules! param_factory {
     ($factory_name:ident, $factor_type:ty, $field:ident, $default:expr) => {
         pub struct $factory_name;
         impl FactorFactory for $factory_name {
             fn create(&self, params: &Value) -> Box<dyn Factor> {
-                let $field = params.get(stringify!($field))
+                let $field = params
+                    .get(stringify!($field))
                     .and_then(|v| v.as_i64())
                     .unwrap_or($default) as usize;
                 Box::new(<$factor_type>::new($field))
@@ -107,7 +107,12 @@ simple_factory!(BuySellPressureFactory, BuySellPressure);
 simple_factory!(FOMOFactory, FOMO);
 simple_factory!(LogVolumeFactory, LogVolume);
 param_factory!(PumpDeviationFactory, PumpDeviation, window, 20);
-param_factory!(VolatilityClusteringFactory, VolatilityClustering, window, 20);
+param_factory!(
+    VolatilityClusteringFactory,
+    VolatilityClustering,
+    window,
+    20
+);
 param_factory!(MomentumReversalFactory, MomentumReversal, window, 20);
 param_factory!(RSIFactory, RSI, period, 14);
 

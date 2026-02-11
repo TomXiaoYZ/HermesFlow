@@ -8,12 +8,14 @@ pub struct DexScreenerClient {
     config: DexScreenerConfig,
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct DexScreenerResponse {
     pub schemaVersion: Option<String>,
     pub pairs: Option<Vec<Pair>>,
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct Pair {
     pub chainId: String,

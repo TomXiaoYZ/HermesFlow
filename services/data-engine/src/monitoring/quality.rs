@@ -4,7 +4,6 @@ use crate::monitoring::metrics::{
 };
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
-use std::sync::Arc;
 use tracing::{error, info, warn};
 
 /// Configuration for Data Quality Checks
@@ -57,7 +56,6 @@ impl DataMonitor {
 
     async fn update_active_metrics(&self) -> Result<(), DataEngineError> {
         // Just count active tokens
-        use sqlx::Row;
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM active_tokens WHERE is_active = true")
                 .fetch_one(&self.pool)
@@ -81,12 +79,15 @@ impl DataMonitor {
 
         let stale_rows = sqlx::query(
             r#"
-            SELECT DISTINCT s.symbol, s.timestamp 
-            FROM mkt_equity_snapshots s
-            INNER JOIN active_tokens a ON s.symbol = a.address
-            WHERE a.is_active = true 
-            AND s.timestamp < $1
-            ORDER BY s.timestamp DESC
+            SELECT a.address as symbol, NULL::timestamptz as timestamp
+            FROM active_tokens a
+            WHERE a.is_active = true
+            AND NOT EXISTS (
+                SELECT 1 FROM mkt_equity_snapshots s
+                WHERE s.symbol = a.address
+                AND s.timestamp >= $1
+            )
+            LIMIT 100
             "#,
         )
         .bind(threshold)

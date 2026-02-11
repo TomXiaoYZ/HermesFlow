@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Database, CloudLightning, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Database, CloudLightning, AlertTriangle, CheckCircle2, Activity } from "lucide-react";
 
 export interface DataMetrics {
     heliusConnected: boolean;
@@ -9,6 +9,7 @@ export interface DataMetrics {
     staleSymbols: number;
     gapSymbols: number;
     lowLiqSymbols: number;
+    birdeyeRequests?: number;
 }
 
 export default function DataPipeline({ metrics }: { metrics: DataMetrics }) {
@@ -46,6 +47,12 @@ export default function DataPipeline({ metrics }: { metrics: DataMetrics }) {
                     status={`${metrics.activeTokens} tracked`}
                     icon={<Database className="w-4 h-4" />}
                     healthy={metrics.activeTokens > 0}
+                />
+                <StatusRow
+                    label="BirdEye API Usage"
+                    status={`${metrics.birdeyeRequests || 0} requests`}
+                    icon={<Activity className="w-4 h-4" />}
+                    healthy={true}
                 />
             </div>
 

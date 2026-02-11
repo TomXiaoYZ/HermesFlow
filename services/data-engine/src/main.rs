@@ -1,9 +1,8 @@
 use chrono::{TimeZone, Utc};
 use common::events::MarketDataUpdate;
-use redis::Commands;
 use data_engine::{
     collectors::{
-        AkShareCollector, BinanceConnector, BybitConnector, FutuConnector, IBKRCollector,
+        AkShareCollector, BybitConnector, FutuConnector,
         MassiveConnector, OkxConnector, PolymarketCollector, TwitterCollector,
     },
     config::{AppConfig, LoggingConfig},
@@ -16,10 +15,10 @@ use data_engine::{
     server::{create_router, AppState},
     storage::{ClickHouseWriter, RedisCache},
     tasks::TaskManager,
-    trading::ibkr_trader::IBKRTrader,
     traits::DataSourceConnector,
 };
 use futures::StreamExt;
+use redis::Commands;
 use rust_decimal::prelude::ToPrimitive;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -155,6 +154,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = tm.register_candle_aggregation_job().await {
                 tracing::warn!("Failed to register candle aggregation job: {}", e);
             }
+            // Register Polymarket discovery job
+            if let Err(e) = tm.register_polymarket_job().await {
+                tracing::warn!("Failed to register Polymarket job: {}", e);
+            }
             Some(tm)
         }
         Err(e) => {
@@ -182,14 +185,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     data_engine::server::handlers::spawn_metrics_updater(app_state.clone()).await;
 
     // Start Portfolio Update Listener (Redis Subs)
-    if let Some(r) = &redis {
+    if let Some(_r) = &redis {
         tracing::info!("Starting Portfolio Update Listener...");
         let redis_url = config.redis.url.clone();
         let tx_clone = broadcast_tx.clone();
 
         tokio::spawn(async move {
             let client = redis::Client::open(redis_url).expect("Invalid Redis URL");
-            let mut con = client
+            let con = client
                 .get_async_connection()
                 .await
                 .expect("Failed to connect to Redis PubSub");
@@ -219,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-            // Start Heartbeat Task
+    // Start Heartbeat Task
     tracing::info!("Starting Heartbeat Task...");
     let redis_url_hb = config.redis.url.clone();
     tokio::spawn(async move {
@@ -237,7 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             } else {
-                 tracing::error!("Failed to connect to Redis for Heartbeat");
+                tracing::error!("Failed to connect to Redis for Heartbeat");
             }
         }
     });
@@ -301,15 +304,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // Start Polymarket collector (if any) - simplified for brevity, check original code if needed
-    // Start Polymarket collector (if any) - simplified for brevity, check original code if needed
-    /*
+    // Start Polymarket collector if configured
     if let Some(polymarket_config) = config.polymarket.clone() {
-        let pc = Arc::new(PolymarketCollector::new(polymarket_config));
+        tracing::info!("Starting Polymarket collector");
+        let pc = Arc::new(PolymarketCollector::new(
+            polymarket_config,
+            postgres_repos.prediction.clone(),
+        ));
         let s_rx = shutdown_tx.subscribe();
-        tokio::spawn(async move { let _ = pc.start(s_rx).await; });
+        tokio::spawn(async move {
+            if let Err(e) = pc.start(s_rx).await {
+                tracing::error!("Polymarket collector error: {}", e);
+            }
+        });
     }
-    */
 
     // Start IBKR collector if configured
     /*
@@ -385,7 +393,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if birdeye_config.enabled {
             tracing::info!("Starting Birdeye collector");
             use data_engine::collectors::BirdeyeConnector;
-            let mut birdeye_collector = BirdeyeConnector::new(birdeye_config);
+            let birdeye_collector = BirdeyeConnector::new(birdeye_config.clone());
             let mut shutdown_rx = shutdown_tx.subscribe();
             let repos = Arc::clone(&postgres_repos);
 
@@ -396,6 +404,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             };
             let tx_clone = broadcast_tx.clone();
+
+            // Spawn Meta Collector (New)
+            if let Some(r) = &redis {
+                use data_engine::collectors::birdeye::meta_collector::BirdeyeMetaCollector;
+                let meta_collector = BirdeyeMetaCollector::new(
+                    birdeye_config.clone(),
+                    r.clone(),
+                    repos.token.clone(),
+                );
+                tokio::spawn(async move {
+                    meta_collector.run().await;
+                });
+                tracing::info!("Started Birdeye Meta Collector");
+            }
 
             tokio::spawn(async move {
                 loop {
@@ -414,7 +436,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                              price: msg.price.to_f64().unwrap_or_default(),
                                              volume: msg.quantity.to_f64().unwrap_or_default(),
                                              timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "birdeye".to_string(),
+                                             source: "Birdeye".to_string(),
                                          };
 
                                          if let Ok(json) = serde_json::to_string(&update) {
@@ -481,7 +503,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                              price: msg.price.to_f64().unwrap_or_default(),
                                              volume: msg.quantity.to_f64().unwrap_or_default(),
                                              timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "helius".to_string(),
+                                             source: "Helius".to_string(),
                                          };
 
                                          if let Ok(json) = serde_json::to_string(&update) {
@@ -516,7 +538,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if jupiter_config.enabled {
             tracing::info!("Starting Jupiter Price collector");
             use data_engine::collectors::JupiterPriceCollector;
-            let jupiter_collector = JupiterPriceCollector::new(jupiter_config);
+
+            let redis_cache_val = if let Some(r) = &redis {
+                Some(r.read().await.clone())
+            } else {
+                None
+            };
+
+            let jupiter_collector = JupiterPriceCollector::new(jupiter_config, redis_cache_val);
             let mut shutdown_rx = shutdown_tx.subscribe();
             let repos = Arc::clone(&postgres_repos);
 
@@ -538,14 +567,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                          if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
                                              tracing::warn!("Failed to store Jupiter snapshot: {}", e);
                                          }
-                                         
+
                                          // Map to Standard Event
                                          let update = MarketDataUpdate {
                                              symbol: msg.symbol.clone(),
                                              price: msg.price.to_f64().unwrap_or_default(),
                                              volume: msg.quantity.to_f64().unwrap_or_default(),
                                              timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "jupiter".to_string(),
+                                             source: "Jupiter".to_string(),
                                          };
 
                                          if let Ok(json) = serde_json::to_string(&update) {
@@ -703,7 +732,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                               price: msg.price.to_f64().unwrap_or_default(),
                                               volume: msg.quantity.to_f64().unwrap_or_default(),
                                               timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                              source: "binance".to_string(),
+                                              source: "Binance".to_string(),
                                           };
 
                                           if let Ok(json) = serde_json::to_string(&update) {
@@ -947,7 +976,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     health_monitor.check_redis(&mut *r_guard).await;
                 }
 
-                if let Some(_) = &clickhouse {
+                if clickhouse.is_some() {
                     health_monitor.check_clickhouse().await;
                 }
             }

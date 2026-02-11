@@ -7,6 +7,7 @@ use crate::traits::{ConnectorStats, DataSourceConnector};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+#[allow(dead_code)]
 pub struct BybitConnector {
     config: BybitConfig,
     client: BybitClient,

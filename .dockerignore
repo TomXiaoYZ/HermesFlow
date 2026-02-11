@@ -2,6 +2,9 @@ target/
 **/target/
 node_modules/
 **/node_modules/
+**/.git
+**/.git/
+.git
 .git/
 .venv/
 __pycache__/
@@ -13,13 +16,15 @@ __pycache__/
 .vscode/
 .next/
 **/.next/
-services/data-engine/target/
-services/strategy-engine/target/
-services/execution-engine/target/
-services/backtest-engine/target/
+.build_ctx/
 
-# Terraform state files
-*.tfstate
-*.tfstate.backup
-.terraform/
-infrastructure/terraform/
+# Large Infrastructure Data - Explicit ignores to avoid scanning parent
+# Large Infrastructure Data - Explicit ignores to avoid scanning parent
+infrastructure/database/clickhouse/data*
+infrastructure/database/clickhouse/logs*
+infrastructure/database/postgres/data*
+infrastructure/database/redis*
+
+
+# Explicitly ignore data inside services just in case
+services/*/target/

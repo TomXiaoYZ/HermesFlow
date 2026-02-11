@@ -115,6 +115,34 @@ pub fn op_max3(x: &Array2<f64>) -> Array2<f64> {
     out
 }
 
+/// Natural Logarithm: ln(|x|). Protected: if x approx 0 -> 0.
+pub fn op_log(x: &Array2<f64>) -> Array2<f64> {
+    x.mapv(|v| {
+        let abs_v = v.abs();
+        if abs_v < 1e-9 {
+            0.0
+        } else {
+            abs_v.ln()
+        }
+    })
+}
+
+/// Square Root: sqrt(|x|).
+pub fn op_sqrt(x: &Array2<f64>) -> Array2<f64> {
+    x.mapv(|v| v.abs().sqrt())
+}
+
+/// Inverse: 1/x. Protected: if x approx 0 -> 0.
+pub fn op_inv(x: &Array2<f64>) -> Array2<f64> {
+    x.mapv(|v| if v.abs() < 1e-9 { 0.0 } else { 1.0 / v })
+}
+
+/// Time-series Delta: x[t] - x[t-d]
+pub fn ts_delta(x: &Array2<f64>, d: usize) -> Array2<f64> {
+    let delayed = ts_delay(x, d);
+    x - &delayed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

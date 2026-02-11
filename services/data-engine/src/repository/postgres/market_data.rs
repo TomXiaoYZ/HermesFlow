@@ -6,7 +6,6 @@ use sqlx::PgPool;
 use crate::error::DataEngineError;
 use crate::models::{Candle, StandardMarketData};
 use crate::repository::MarketDataRepository;
-use chrono::{TimeZone, Utc};
 
 pub struct PostgresMarketDataRepository {
     pool: PgPool,
@@ -26,25 +25,16 @@ impl MarketDataRepository for PostgresMarketDataRepository {
             ((data.timestamp % 1000) * 1_000_000) as u32,
         )
         .unwrap_or(chrono::Utc::now());
-        tracing::info!(
-            "Inserting snapshot for {}: price={}, ts={:?}",
-            data.symbol,
-            data.price,
-            ts
-        );
+
+        // Debug logging decreased to trace or if specific criteria met
+        // tracing::info!("Insertion...");
 
         sqlx::query(
             r#"
             INSERT INTO mkt_equity_snapshots (
-                symbol, price, bid, ask, 
-                /* Note: bid_size/ask_size missing in StandardMarketData? Using None or mapped from raw? */
-                /* Assuming StandardMarketData volume is quantity (Decimal) but DB expects BIGINT? */
-                /* DB volume is BIGINT. StandardMarketData quantity is Decimal. Conversion needed. */
-                volume, 
-                vwap, high, low, 
-                /* open/prev_close missing in StandardMarketData? */
-                timestamp
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                exchange, symbol, price, bid, ask, 
+                volume, vwap, high, low, timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             "#
         )
         // Wait, I need to match the SQL parameters exactly to the table columns from postgres.rs
@@ -78,15 +68,16 @@ impl MarketDataRepository for PostgresMarketDataRepository {
         // If `main.rs` extracts fields from `StandardMarketData`, then `StandardMarketData` MUST have them.
         // If `StandardMarketData` lacks `open`, then `main.rs` can't insert it.
         // So I'll check `main.rs` logic.
-        .bind(&data.symbol)
-        .bind(data.price)
-        .bind(data.bid)
-        .bind(data.ask)
-        .bind(data.quantity.to_i64().unwrap_or(0)) // volume ($5)
-        .bind(None::<Decimal>) // vwap ($6)
-        .bind(data.high_24h) // high ($7)
-        .bind(data.low_24h) // low ($8)
-        .bind(ts) // timestamp ($9)
+        .bind(&data.exchange) // $1
+        .bind(&data.symbol)   // $2
+        .bind(data.price)     // $3
+        .bind(data.bid)       // $4
+        .bind(data.ask)       // $5
+        .bind(data.quantity.to_i64().unwrap_or(0)) // volume ($6)
+        .bind(None::<Decimal>) // vwap ($7)
+        .bind(data.high_24h) // high ($8)
+        .bind(data.low_24h) // low ($9)
+        .bind(ts) // timestamp ($10)
         .execute(&self.pool)
         .await
         .map_err(|e| DataEngineError::DatabaseError(format!("Failed to insert equity snapshot: {}", e)))?;
@@ -130,6 +121,57 @@ impl MarketDataRepository for PostgresMarketDataRepository {
         Ok(())
     }
 
+    async fn insert_candles(&self, candles: &[Candle]) -> Result<(), DataEngineError> {
+        if candles.is_empty() {
+            return Ok(());
+        }
+
+        for chunk in candles.chunks(1000) {
+            let mut query_builder = sqlx::QueryBuilder::new(
+                "INSERT INTO mkt_equity_candles (exchange, symbol, resolution, open, high, low, close, volume, amount, liquidity, fdv, metadata, time) "
+            );
+
+            query_builder.push_values(chunk, |mut b, candle| {
+                b.push_bind(&candle.exchange)
+                    .push_bind(&candle.symbol)
+                    .push_bind(&candle.resolution)
+                    .push_bind(candle.open)
+                    .push_bind(candle.high)
+                    .push_bind(candle.low)
+                    .push_bind(candle.close)
+                    .push_bind(candle.volume)
+                    .push_bind(candle.amount)
+                    .push_bind(candle.liquidity)
+                    .push_bind(candle.fdv)
+                    .push_bind(&candle.metadata)
+                    .push_bind(candle.time);
+            });
+
+            query_builder.push(
+                " ON CONFLICT (exchange, symbol, resolution, time) DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                amount = EXCLUDED.amount,
+                liquidity = EXCLUDED.liquidity,
+                fdv = EXCLUDED.fdv,
+                metadata = EXCLUDED.metadata",
+            );
+
+            query_builder
+                .build()
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    DataEngineError::DatabaseError(format!("Failed to batch insert candles: {}", e))
+                })?;
+        }
+
+        Ok(())
+    }
+
     async fn get_active_symbols(&self) -> Result<Vec<String>, DataEngineError> {
         let rows = sqlx::query(r#"SELECT DISTINCT symbol FROM mkt_equity_snapshots"#)
             .fetch_all(&self.pool)
@@ -138,12 +180,6 @@ impl MarketDataRepository for PostgresMarketDataRepository {
                 DataEngineError::DatabaseError(format!("Failed to fetch active symbols: {}", e))
             })?;
 
-        // Row is unlikely to be typed automatically with query(). Need to get by column name or index.
-        // Or use query_scalar if expecting 1 column.
-        // sqlx::query_scalar("SELECT DISTINCT symbol FROM mkt_equity_snapshots").fetch_all(...)
-        // returns Vec<String> directly if mapped.
-        // Let's use query_scalar for simplicity.
-
         Ok(rows
             .iter()
             .map(|row| {
@@ -151,5 +187,31 @@ impl MarketDataRepository for PostgresMarketDataRepository {
                 row.get::<String, _>("symbol")
             })
             .collect())
+    }
+
+    async fn get_latest_candle_time(
+        &self,
+        exchange: &str,
+        symbol: &str,
+        resolution: &str,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, DataEngineError> {
+        let row = sqlx::query(
+            r#"SELECT MAX(time) as max_time FROM mkt_equity_candles WHERE exchange = $1 AND symbol = $2 AND resolution = $3"#
+        )
+        .bind(exchange)
+        .bind(symbol)
+        .bind(resolution)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!("Failed to fetch latest candle time: {}", e))
+        })?;
+
+        if let Some(row) = row {
+            use sqlx::Row;
+            Ok(row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("max_time"))
+        } else {
+            Ok(None)
+        }
     }
 }

@@ -1,7 +1,5 @@
 use crate::collectors::dexscreener::client::{DexScreenerClient, Pair};
 use crate::collectors::dexscreener::config::DexScreenerConfig;
-use rust_decimal::prelude::FromPrimitive;
-use rust_decimal::Decimal;
 use std::error::Error;
 
 pub struct DexScreenerConnector {

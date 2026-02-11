@@ -1,13 +1,15 @@
-use redis::{AsyncCommands, Commands};
+use redis::AsyncCommands;
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
+mod api;
 mod backtest;
 mod genetic;
-mod health;
 
+use backtest_engine::config::FactorConfig; // Standard one for portfolio sim? No, wait.
+                                           // Backtester here is the local one.
 use backtest::Backtester;
 use genetic::GeneticAlgorithm;
 
@@ -18,15 +20,74 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting Strategy Generator (Evolutionary Optimizer)...");
 
     // Spawn health check server
-    tokio::spawn(async {
-        health::start_health_server().await;
-    });
-
+    tokio::spawn(common::health::start_health_server(
+        "strategy-generator",
+        8084,
+    ));
 
     // 2. Connect to Infrastructure
     let db_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:hermesflow@localhost:5432/hermesflow".to_string());
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+
+    // Load Factor Config
+    let config_path =
+        env::var("FACTOR_CONFIG").unwrap_or_else(|_| "config/factors.yaml".to_string());
+    info!("Loading factor configuration from: {}", config_path);
+
+    let factor_config = match FactorConfig::from_file(&config_path) {
+        Ok(cfg) => {
+            info!("Loaded {} active factors", cfg.active_factors.len());
+            cfg
+        }
+        Err(e) => {
+            warn!(
+                "Failed to load factor config: {}. Falling back to default AlphaGPT 6-factor mode.",
+                e
+            );
+            // Fallback to default 6 factors
+            FactorConfig {
+                active_factors: vec![
+                    backtest_engine::config::FactorDefinition {
+                        id: 0,
+                        name: "return".to_string(),
+                        description: "Return".to_string(),
+                        normalization: backtest_engine::config::NormalizationType::Robust,
+                    },
+                    backtest_engine::config::FactorDefinition {
+                        id: 1,
+                        name: "liquidity_health".to_string(),
+                        description: "Liquidity".to_string(),
+                        normalization: backtest_engine::config::NormalizationType::None,
+                    },
+                    backtest_engine::config::FactorDefinition {
+                        id: 2,
+                        name: "buy_sell_pressure".to_string(),
+                        description: "Pressure".to_string(),
+                        normalization: backtest_engine::config::NormalizationType::None,
+                    },
+                    backtest_engine::config::FactorDefinition {
+                        id: 3,
+                        name: "fomo_acceleration".to_string(),
+                        description: "FOMO".to_string(),
+                        normalization: backtest_engine::config::NormalizationType::Robust,
+                    },
+                    backtest_engine::config::FactorDefinition {
+                        id: 4,
+                        name: "pump_deviation".to_string(),
+                        description: "Deviation".to_string(),
+                        normalization: backtest_engine::config::NormalizationType::Robust,
+                    },
+                    backtest_engine::config::FactorDefinition {
+                        id: 5,
+                        name: "log_volume".to_string(),
+                        description: "LogVol".to_string(),
+                        normalization: backtest_engine::config::NormalizationType::Robust,
+                    },
+                ],
+            }
+        }
+    };
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -37,26 +98,17 @@ async fn main() -> anyhow::Result<()> {
     let mut redis_conn = client.get_async_connection().await?;
 
     // Start Heartbeat Task
-    let redis_url_hb = redis_url.clone();
+    common::heartbeat::spawn_heartbeat("strategy-generator", &redis_url);
+
+    // 2.1 Spawn API Server
+    let pool_api = pool.clone();
+    let config_api = factor_config.clone();
     tokio::spawn(async move {
-        if let Ok(client) = redis::Client::open(redis_url_hb) {
-             if let Ok(mut con) = client.get_connection() {
-                 loop {
-                     let hb = serde_json::json!({
-                         "service": "strategy-generator",
-                         "status": "online",
-                         "timestamp": chrono::Utc::now().timestamp_millis()
-                     });
-                     let _: redis::RedisResult<()> = con.publish("system_heartbeat", hb.to_string());
-                     tokio::time::sleep(Duration::from_secs(5)).await;
-                 }
-             }
-        }
+        api::start_api_server(pool_api, config_api).await;
     });
 
-
     // 3. Initialize Components
-    let mut backtester = Backtester::new(pool.clone());
+    let mut backtester = Backtester::new(pool.clone(), factor_config.clone());
     let mut ga = GeneticAlgorithm::new(100); // Population 100
 
     // 4. Load Data
@@ -78,7 +130,11 @@ async fn main() -> anyhow::Result<()> {
             "EKpQGSJmxSWojVRHgWN2EWH18dPBfJCs8J6QW2K2pump".to_string(), // PENGU
         ];
     } else {
-        info!("Fetched {} active symbols from DB", symbols.len());
+        info!(
+            "Fetched {} active symbols from DB: {:?}",
+            symbols.len(),
+            symbols
+        );
     }
 
     info!("Loading historical data for {} symbols...", symbols.len());
@@ -87,16 +143,32 @@ async fn main() -> anyhow::Result<()> {
         warn!("Backtester will have no data - all fitness will be 0.0");
     }
 
-    // 4.1 Load Strategy State
+    // 4.1 Load Strategy State (Generation & Population)
     // Check DB for last generation
-    let last_gen_row = sqlx::query("SELECT MAX(generation) as max_gen FROM strategy_generations")
-        .fetch_one(&pool)
-        .await;
+    let last_gen_row = sqlx::query(
+        "SELECT generation, best_genome FROM strategy_generations ORDER BY generation DESC LIMIT 1",
+    )
+    .fetch_optional(&pool)
+    .await;
 
-    if let Ok(row) = last_gen_row {
-        if let Some(max_gen) = row.try_get::<i32, _>("max_gen").ok() {
+    if let Ok(Some(row)) = last_gen_row {
+        if let Some(max_gen) = row.try_get::<i32, _>("generation").ok() {
             info!("Resuming evolution from generation {}", max_gen);
             ga.generation = max_gen as usize + 1;
+        }
+
+        // Load the best genome to preserve logic!
+        if let Some(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome").ok() {
+            info!("Restoring best genome from DB: {:?}", best_tokens);
+            // Replace the first random genome with the saved best one
+            // We need to cast i32 back to i32 (it matches).
+            // Genome struct expects Vec<i32> usually.
+            // Let's check Genome definition. Assuming it has `tokens: Vec<i32>`.
+            // Modify GA to accept injection? Or just direct access.
+            if !ga.population.is_empty() {
+                ga.population[0].tokens = best_tokens.into_iter().map(|x| x as usize).collect();
+                // Fitness will be re-evaluated in the loop
+            }
         }
     }
 
@@ -148,63 +220,111 @@ async fn main() -> anyhow::Result<()> {
                 .set("strategy:status", &payload_str)
                 .await
                 .unwrap_or(());
-            
+
             // 2.1 Publish Full Population (Leaderboard / Pool)
-            let population_view = ga.population.iter().map(|g| {
-                serde_json::json!({
-                    "fitness": g.fitness,
-                    "tokens": g.tokens,
-                    "generation": gen
+            let population_view = ga
+                .population
+                .iter()
+                .map(|g| {
+                    serde_json::json!({
+                        "fitness": g.fitness,
+                        "tokens": g.tokens,
+                        "generation": gen
+                    })
                 })
-            }).collect::<Vec<_>>();
-            
+                .collect::<Vec<_>>();
+
             let pop_payload = serde_json::to_string(&population_view).unwrap_or_default();
             let _: () = redis_conn
                 .set("strategy:population", &pop_payload)
                 .await
                 .unwrap_or(());
-            
+
             // 3. Persist to DB (Permanent History)
             let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
+            let strategy_id = format!("alphagpt_gen_{}", gen);
             let _ = sqlx::query(
-                "INSERT INTO strategy_generations (generation, fitness, best_genome, metadata) VALUES ($1, $2, $3, $4) ON CONFLICT (generation) DO NOTHING"
+                "INSERT INTO strategy_generations (generation, fitness, best_genome, metadata, strategy_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (generation) DO UPDATE SET strategy_id = $5"
             )
             .bind(gen as i32)
             .bind(best.fitness)
             .bind(&tokens_i32)
             .bind(&payload)
+            .bind(&strategy_id)
             .execute(&pool)
             .await
             .map_err(|e| error!("Failed to persist generation: {}", e));
 
-            // Publish Log every generation for visibility
-            if best.fitness > 0.0001 || gen % 1 == 0 {
-                let log_payload = serde_json::json!({
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                    "strategy_id": "EvolutionaryKernel",
-                    "symbol": "SYSTEM",
-                    "action": if best.fitness > 0.0 { "Discovery" } else { "Evolving" },
-                    "message": format!("Gen {}: Best Strategy Fitness: {:.4} (Evaluating...)", gen, best.fitness)
-                });
-                let log_str = log_payload.to_string();
+            // PubSub & Logging ...
 
-                // 1. PubSub
-                let _: () = redis_conn
-                    .publish("strategy_logs", &log_str)
-                    .await
-                    .unwrap_or(());
+            // 4. Persistence: Run Detailed Backtest & Save to backtest_results
+            if gen % 5 == 0 {
+                // Universal Portfolio Simulation
+                let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
 
-                // 2. Persist List (History)
-                let _: () = redis_conn
-                    .lpush("system:logs", &log_str)
+                match backtester.run_portfolio_simulation(&tokens_i32, 30).await {
+                    Ok(sim_result) => {
+                        // Extract metrics
+                        let metrics = sim_result["metrics"].as_object().unwrap();
+                        let total_ret = metrics["total_return"].as_f64().unwrap_or(0.0);
+                        let win_rate = metrics["win_rate"].as_f64().unwrap_or(0.0);
+                        let trades_count = metrics["total_trades"].as_i64().unwrap_or(0);
+                        let sharpe = metrics
+                            .get("sharpe_ratio")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let drawdown = metrics
+                            .get("max_drawdown")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let equity = &sim_result["equity_curve"];
+
+                        info!(
+                            "Portfolio simulation completed: PnL={:.4}%, Sharpe={:.2}, Trades={}",
+                            total_ret * 100.0,
+                            sharpe,
+                            trades_count
+                        );
+
+                        // Insert
+                        // handle genome array
+                        let _ = sqlx::query(
+                            r#"
+                               INSERT INTO backtest_results (
+                                   strategy_id, genome, token_address,
+                                   pnl_percent, win_rate, total_trades,
+                                   sharpe_ratio, max_drawdown,
+                                   equity_curve, created_at
+                               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                               "#,
+                        )
+                        .bind(&strategy_id)
+                        .bind(&tokens_i32)
+                        .bind(sim_result["symbol"].as_str().unwrap_or("UNIVERSAL"))
+                        .bind(total_ret)
+                        .bind(win_rate)
+                        .bind(trades_count as i32)
+                        .bind(sharpe)
+                        .bind(drawdown)
+                        .bind(equity)
+                        .execute(&pool)
+                        .await
+                        .map_err(|e| error!("Failed to insert backtest result: {}", e));
+                    }
+                    Err(e) => {
+                        error!("Detailed simulation failed for persistence: {}", e);
+                    }
+                }
+            }
+
+            // Cleanup old generations (Keep last 1000)
+            if gen % 10 == 0 && gen > 1000 {
+                let cutoff = gen as i32 - 1000;
+                let _ = sqlx::query("DELETE FROM strategy_generations WHERE generation < $1")
+                    .bind(cutoff)
+                    .execute(&pool)
                     .await
-                    .unwrap_or(());
-                
-                // Trim to 100
-                let _: () = redis_conn
-                    .ltrim("system:logs", 0, 99)
-                    .await
-                    .unwrap_or(());
+                    .map_err(|e| error!("Failed to cleanup old generations: {}", e));
             }
         }
 

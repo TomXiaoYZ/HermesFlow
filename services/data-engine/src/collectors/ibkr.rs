@@ -7,7 +7,6 @@ use crate::traits::{ConnectorStats, DataSourceConnector};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use ibapi::market_data::historical::{BarSize, Duration as IbDuration};
-use ibapi::market_data::MarketDataType as IbMarketDataType;
 use ibapi::prelude::*;
 use rust_decimal::Decimal;
 use std::sync::Arc;

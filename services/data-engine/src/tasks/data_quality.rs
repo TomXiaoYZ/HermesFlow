@@ -1,9 +1,7 @@
-use crate::error::DataEngineError;
 use crate::monitoring::quality::{DataMonitor, DataQualityConfig};
 use crate::repository::postgres::PostgresRepositories;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 pub struct DataQualityTask {
     monitor: DataMonitor,

@@ -19,6 +19,7 @@ pub struct AkShareCollector {
     running: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct AkShareSpotResponse {
     #[serde(rename = "代码")]
@@ -52,6 +53,7 @@ impl AkShareCollector {
         }
     }
 
+    #[allow(dead_code)]
     async fn fetch_snapshot(&self, client: &reqwest::Client) -> Result<Vec<StandardMarketData>> {
         let url = format!("{}/api/public/stock_zh_a_spot_em", self.config.aktools_url);
 
@@ -100,10 +102,10 @@ impl AkShareCollector {
                 let low = item
                     .low
                     .map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
-                let open = item
+                let _open = item
                     .open
                     .map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
-                let prev_close = item
+                let _prev_close = item
                     .prev_close
                     .map(|v| Decimal::from_f64_retain(v).unwrap_or_default());
 

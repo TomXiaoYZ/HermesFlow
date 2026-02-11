@@ -1,8 +1,7 @@
 use common::events::{OrderSide, TradeSignal};
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct RiskConfig {
@@ -16,8 +15,8 @@ pub struct RiskConfig {
 impl Default for RiskConfig {
     fn default() -> Self {
         Self {
-            min_liquidity_usd: 1.0, 
-            max_position_size_portion: 0.5, 
+            min_liquidity_usd: 1.0,
+            max_position_size_portion: 0.5,
             max_drawdown_limit: 0.20,
             entry_amount_sol: 0.02, // 0.02 SOL default testing
             check_honeypot: true,
@@ -33,12 +32,14 @@ pub struct RiskEngine {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct JupiterQuote {
     #[serde(rename = "outAmount")]
     out_amount: String,
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct RpcResponse<T> {
     result: Option<RpcResult<T>>,
     error: Option<serde_json::Value>,
@@ -52,7 +53,7 @@ struct RpcResult<T> {
 #[derive(Deserialize, Debug)]
 struct AccountInfo {
     data: [String; 2], // ["base64_data", "base64"]
-    // ... we just need data
+                       // ... we just need data
 }
 
 impl RiskEngine {
@@ -78,10 +79,10 @@ impl RiskEngine {
         let max_size = self.current_equity * self.config.max_position_size_portion;
         // Limit to configured entry amount or max size
         let size = self.config.entry_amount_sol.min(max_size);
-        
+
         if self.current_equity - size < 0.01 {
-             // Leave dust for fees
-             return 0.0;
+            // Leave dust for fees
+            return 0.0;
         }
         size
     }
@@ -91,7 +92,10 @@ impl RiskEngine {
         // 1. Check Liquidity
         if let Some(liq) = liquidity {
             if liq < self.config.min_liquidity_usd {
-                warn!("Risk Reject: Liquidity ${} < Min ${}", liq, self.config.min_liquidity_usd);
+                warn!(
+                    "Risk Reject: Liquidity ${} < Min ${}",
+                    liq, self.config.min_liquidity_usd
+                );
                 return false;
             }
         }
@@ -102,13 +106,16 @@ impl RiskEngine {
             warn!("Risk Reject: Daily Drawdown {:.2}% > Limit", dd * 100.0);
             return false;
         }
-        
+
         // 3. Honeypot Check (Sell Simulation)
         if self.config.check_honeypot && signal.side == OrderSide::Buy {
-             if !self.check_honeypot(&signal.symbol).await {
-                 warn!("Risk Reject: Honeypot detected/Simulation failed for {}", signal.symbol);
-                 return false;
-             }
+            if !self.check_honeypot(&signal.symbol).await {
+                warn!(
+                    "Risk Reject: Honeypot detected/Simulation failed for {}",
+                    signal.symbol
+                );
+                return false;
+            }
         }
 
         true
@@ -121,14 +128,14 @@ impl RiskEngine {
         }
 
         // Simulate selling 1000 tokens (arbitrary unit) -> SOL
-        // If route exists, likelihood of honeypot is lower (but not zero). 
+        // If route exists, likelihood of honeypot is lower (but not zero).
         // Real honeypot check involves simulation of transaction.
         // AlphaGPT used a "Quote Check" as a proxy.
         // URL: https://quote-api.jup.ag/v6/quote?inputMint=XXX&outputMint=SOL&amount=1000000&slippageBps=50
-        
+
         let sol_mint = "So11111111111111111111111111111111111111112";
         let amount = 1_000_000; // 1M atoms of token (assuming 6 decimals = 1 token, or just small dust)
-        
+
         let url = format!(
             "https://quote-api.jup.ag/v6/quote?inputMint={}&outputMint={}&amount={}&slippageBps=100",
             token_mint, sol_mint, amount
@@ -146,18 +153,21 @@ impl RiskEngine {
                         }
                     } else {
                         // 400/500 errors
-                         warn!("Honeypot check HTTP error: {}", resp.status());
+                        warn!("Honeypot check HTTP error: {}", resp.status());
                     }
                     // If we got a response but it wasn't valid, maybe don't retry immediately if it's 400.
                     // But if it's 500, retry.
-                    break; 
+                    break;
                 }
                 Err(e) => {
-                    warn!("Honeypot check network error (Attempt {}/3): {}", attempts, e);
+                    warn!(
+                        "Honeypot check network error (Attempt {}/3): {}",
+                        attempts, e
+                    );
                     if attempts >= 3 {
-                         // Fallback to RPC Check if API fails completely
-                         warn!("Jupiter API failed 3 times. Trying RPC Fallback...");
-                         return self.check_honeypot_rpc(token_mint).await;
+                        // Fallback to RPC Check if API fails completely
+                        warn!("Jupiter API failed 3 times. Trying RPC Fallback...");
+                        return self.check_honeypot_rpc(token_mint).await;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(500 * attempts)).await;
                 }
@@ -165,11 +175,11 @@ impl RiskEngine {
         }
         false
     }
-    
+
     async fn check_honeypot_rpc(&self, token_mint: &str) -> bool {
-         let rpc_url = std::env::var("SOLANA_RPC_URL")
+        let rpc_url = std::env::var("SOLANA_RPC_URL")
             .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
-        
+
         // JSON RPC Request
         let body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -186,39 +196,47 @@ impl RiskEngine {
         match self.http_client.post(&rpc_url).json(&body).send().await {
             Ok(resp) => {
                 if let Ok(rpc_resp) = resp.json::<RpcResponse<AccountInfo>>().await {
-                     if let Some(result) = rpc_resp.result {
-                         if let Some(base64_str) = result.value.data.get(0) {
-                             // Decode Base64
-                             use base64::{engine::general_purpose, Engine as _};
-                             if let Ok(data) = general_purpose::STANDARD.decode(base64_str) {
-                                 // SPL Token Mint Layout: 82 bytes
-                                 // Offset 46-49: Freeze Authority Option (u32)
-                                 // Offset 50-81: Freeze Authority Key (32 bytes)
-                                 
-                                 if data.len() >= 82 {
-                                     // Check offset 46 (Option tag)
-                                     // 0 = None, 1 = Some
-                                     let freeze_option = u32::from_le_bytes([data[46], data[47], data[48], data[49]]);
-                                     if freeze_option == 1 {
-                                         // FREEZE AUTHORITY EXISTS!
-                                         // Check if it's not null (sometimes it's 1 but key is zero? unlikely for standard SPL)
-                                         // But safe bet: If Freeze Auth is set, REJECT.
-                                         warn!("Risk Reject: Freeze Authority detected for {}", token_mint);
-                                         return false;
-                                     }
-                                     info!("RPC Check Passed: No Freeze Authority for {}", token_mint);
-                                     return true;
-                                 }
-                             }
-                         }
-                     }
+                    if let Some(result) = rpc_resp.result {
+                        if let Some(base64_str) = result.value.data.get(0) {
+                            // Decode Base64
+                            use base64::{engine::general_purpose, Engine as _};
+                            if let Ok(data) = general_purpose::STANDARD.decode(base64_str) {
+                                // SPL Token Mint Layout: 82 bytes
+                                // Offset 46-49: Freeze Authority Option (u32)
+                                // Offset 50-81: Freeze Authority Key (32 bytes)
+
+                                if data.len() >= 82 {
+                                    // Check offset 46 (Option tag)
+                                    // 0 = None, 1 = Some
+                                    let freeze_option = u32::from_le_bytes([
+                                        data[46], data[47], data[48], data[49],
+                                    ]);
+                                    if freeze_option == 1 {
+                                        // FREEZE AUTHORITY EXISTS!
+                                        // Check if it's not null (sometimes it's 1 but key is zero? unlikely for standard SPL)
+                                        // But safe bet: If Freeze Auth is set, REJECT.
+                                        warn!(
+                                            "Risk Reject: Freeze Authority detected for {}",
+                                            token_mint
+                                        );
+                                        return false;
+                                    }
+                                    info!(
+                                        "RPC Check Passed: No Freeze Authority for {}",
+                                        token_mint
+                                    );
+                                    return true;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Err(e) => {
                 warn!("RPC Check failed: {}", e);
             }
         }
-        
+
         // If RPC also fails, we default to reject (conservative) or accept?
         // Since network is bad, maybe reject to be safe.
         false
@@ -228,9 +246,9 @@ impl RiskEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::events::{OrderType};
-    use uuid::Uuid;
     use chrono::Utc;
+    use common::events::OrderType;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn test_position_sizing_logic() {
@@ -240,17 +258,17 @@ mod tests {
         // Entry default = 0.02 SOL
         // Min(0.25, 0.02) = 0.02
         // Remainder = 0.5 - 0.02 = 0.48 > 0.01. OK.
-        
+
         let size = engine.calculate_entry_size();
         assert_eq!(size, 0.02);
-        
+
         // Test Low Balance Cap
         engine.update_equity(0.015); // Very low
-        // Max portion = 0.015 * 0.5 = 0.0075
-        // Entry = 0.02
-        // Min = 0.0075
-        // Remainder = 0.015 - 0.0075 = 0.0075 < 0.01 (dust limit)
-        // Should return 0.0
+                                     // Max portion = 0.015 * 0.5 = 0.0075
+                                     // Entry = 0.02
+                                     // Min = 0.0075
+                                     // Remainder = 0.015 - 0.0075 = 0.0075 < 0.01 (dust limit)
+                                     // Should return 0.0
         let size = engine.calculate_entry_size();
         assert_eq!(size, 0.0);
     }
@@ -259,7 +277,7 @@ mod tests {
     async fn test_risk_check_liquidity() {
         let mut engine = RiskEngine::new();
         engine.set_check_honeypot(false); // Disable network call for unit test
-        
+
         let signal = TradeSignal {
             id: Uuid::new_v4(),
             strategy_id: "test".to_string(),
@@ -275,6 +293,6 @@ mod tests {
         // Pass
         assert!(engine.check(&signal, Some(1000.0)).await);
         // Fail
-        assert!(!engine.check(&signal, Some(0.5)).await); 
+        assert!(!engine.check(&signal, Some(0.5)).await);
     }
 }

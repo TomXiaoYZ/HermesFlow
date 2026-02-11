@@ -1,6 +1,6 @@
 use data_engine::collectors::{JupiterConfig, JupiterPriceCollector};
-use data_engine::repository::{ActiveToken, TokenRepository};
 use data_engine::error::DataEngineError;
+use data_engine::repository::{ActiveToken, TokenRepository};
 use std::sync::Arc;
 
 // Mock Token Repository
@@ -42,7 +42,7 @@ impl TokenRepository for MockRepo {
 async fn main() {
     // Setup logging
     tracing_subscriber::fmt::init();
-    
+
     tracing::info!("Starting Jupiter Verification Test...");
 
     // Configure Jupiter Collector
@@ -60,15 +60,18 @@ async fn main() {
     match collector.connect(repo).await {
         Ok(mut rx) => {
             tracing::info!("✅ Connected! Waiting for price updates...");
-            
+
             // Listen for a few updates
             let mut count = 0;
             while let Some(msg) = rx.recv().await {
                 tracing::info!(
-                    "[{}] Received Price: {} = ${} (Source: {:?})", 
-                    count, msg.symbol, msg.price, msg.source
+                    "[{}] Received Price: {} = ${} (Source: {:?})",
+                    count,
+                    msg.symbol,
+                    msg.price,
+                    msg.source
                 );
-                
+
                 count += 1;
                 if count >= 3 {
                     tracing::info!("✅ Verification Successful! Received 3 updates.");

@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::info;
 
 use super::client::{AggregateResult, MassiveClient};
 use crate::error::{DataError, Result};
@@ -22,7 +21,11 @@ pub struct MassiveConnector {
 impl MassiveConnector {
     pub fn new(config: MassiveConfig) -> Self {
         Self {
-            client: MassiveClient::new(config.api_key.clone(), config.rate_limit_per_min),
+            client: MassiveClient::new(
+                config.api_key.clone(),
+                config.rate_limit_per_min,
+                "https://api.polygon.io".to_string(),
+            ),
             stats: ConnectorStats::default(),
             source_type: DataSourceType::PolygonStock,
             config,

@@ -3,9 +3,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
-
-const BASE_URL: &str = "https://api.polygon.io";
+use tracing::{debug, warn};
 
 #[derive(Clone)]
 pub struct MassiveClient {
@@ -15,8 +13,10 @@ pub struct MassiveClient {
     last_request: std::sync::Arc<Mutex<Instant>>,
     // Minimum interval between requests (e.g. 12s for 5/min)
     min_interval: Duration,
+    base_url: String,
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct AggregatesResponse {
     pub ticker: String,
@@ -41,7 +41,7 @@ pub struct AggregateResult {
 }
 
 impl MassiveClient {
-    pub fn new(api_key: String, rate_limit_per_min: u64) -> Self {
+    pub fn new(api_key: String, rate_limit_per_min: u64, base_url: String) -> Self {
         let interval_secs = if rate_limit_per_min > 0 {
             60.0 / rate_limit_per_min as f64
         } else {
@@ -53,6 +53,7 @@ impl MassiveClient {
             api_key,
             last_request: std::sync::Arc::new(Mutex::new(Instant::now() - Duration::from_secs(60))),
             min_interval: Duration::from_secs_f64(interval_secs),
+            base_url,
         }
     }
 
@@ -87,7 +88,7 @@ impl MassiveClient {
 
         let url = format!(
             "{}/v2/aggs/ticker/{}/range/{}/{}/{}/{}",
-            BASE_URL, ticker, multiplier, timespan, from, to
+            self.base_url, ticker, multiplier, timespan, from, to
         );
 
         debug!("Fetching aggregates: {}", url);

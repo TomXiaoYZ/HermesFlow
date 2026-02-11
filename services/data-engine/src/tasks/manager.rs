@@ -34,7 +34,7 @@ impl TaskManager {
         // Check config first
         if let Some(birdeye_config) = &self.config.birdeye {
             if birdeye_config.enabled {
-                info!("Triggering Startup Backfill for Birdeye Symbols...");
+                info!("Triggering Startup Candle Collection Check for Birdeye Symbols...");
                 let task = crate::tasks::historical_sync::HistoricalSyncTask::new(
                     birdeye_config.clone(),
                     self.repos.clone(),
@@ -69,7 +69,6 @@ impl TaskManager {
                 use crate::models::Candle;
                 use crate::repository::MarketDataRepository;
                 use chrono::{TimeZone, Utc};
-                use rust_decimal::prelude::FromPrimitive;
                 use rust_decimal::Decimal;
                 use serde_json::Value;
 
@@ -174,10 +173,9 @@ impl TaskManager {
             info!("Starting background backfill for {}", symbol);
 
             use crate::collectors::{BirdeyeConnector, MassiveConnector};
-            use crate::models::{Candle, MarketDataType};
+            use crate::models::Candle;
             use crate::repository::MarketDataRepository; // Import Trait
             use chrono::{TimeZone, Utc};
-            use rust_decimal::prelude::FromPrimitive;
             use rust_decimal::Decimal;
             use serde_json::Value;
 
@@ -195,7 +193,7 @@ impl TaskManager {
                         .timestamp(); // Default 30 days? API needs explicit.
 
                     match connector
-                        .fetch_history_candles(&symbol, "1H", from_ts, to_ts)
+                        .fetch_history_candles(&symbol, "1h", from_ts, to_ts)
                         .await
                     {
                         Ok(candles) => {
@@ -301,9 +299,34 @@ impl TaskManager {
         Ok(())
     }
 
+    pub async fn trigger_discovery(&self) -> Result<(), Box<dyn std::error::Error>> {
+        info!("🔍 Manually Triggering Token Discovery...");
+        let repos = self.repos.clone();
+        let config = self.config.clone();
+
+        tokio::spawn(async move {
+            if let Some(birdeye_cfg) = config.birdeye {
+                use crate::tasks::token_discovery::TokenDiscoveryTask;
+
+                let task = TokenDiscoveryTask::new(
+                    birdeye_cfg.clone(),
+                    repos.token.clone(),
+                    repos.market_data.clone(),
+                    500_000.0,     // min_liquidity_usd: $500k
+                    10_000_000.0,  // min_fdv: $10M
+                    f64::INFINITY, // max_fdv: unlimited
+                );
+
+                task.run().await;
+            } else {
+                info!("Birdeye not configured, skipping token discovery");
+            }
+        });
+        Ok(())
+    }
+
     pub async fn register_token_discovery_job(&self) -> Result<(), Box<dyn std::error::Error>> {
         info!("Registering Token Discovery Job (Every 15 min)...");
-
         let repos_clone = self.repos.clone();
         let config_clone = self.config.clone();
 
@@ -311,31 +334,61 @@ impl TaskManager {
         let job = Job::new_async("0 0 * * * *", move |_uuid, _l| {
             let repos = repos_clone.clone();
             let config = config_clone.clone();
-
             Box::pin(async move {
                 info!("🔍 Executing Scheduled Token Discovery...");
-
                 if let Some(birdeye_cfg) = config.birdeye {
                     use crate::tasks::token_discovery::TokenDiscoveryTask;
-
                     let task = TokenDiscoveryTask::new(
                         birdeye_cfg.clone(),
                         repos.token.clone(),
-                        500_000.0,     // min_liquidity_usd: $500k
-                        10_000_000.0,  // min_fdv: $10M
-                        f64::INFINITY, // max_fdv: unlimited
+                        repos.market_data.clone(),
+                        500_000.0,
+                        10_000_000.0,
+                        f64::INFINITY,
                     );
-
                     task.run().await;
-                } else {
-                    info!("Birdeye not configured, skipping token discovery");
                 }
             })
         })?;
 
         let scheduler = self.scheduler.write().await;
         scheduler.add(job).await?;
+        Ok(())
+    }
 
+    pub async fn trigger_aggregation(&self) -> Result<(), Box<dyn std::error::Error>> {
+        info!("Manually Triggering Candle Aggregation...");
+        let pool = self.repos.pool.clone();
+
+        tokio::spawn(async move {
+            let mut aggregator = crate::tasks::candle_aggregation::CandleAggregator::new(pool);
+            // 1. 1m Candles
+            if let Err(e) = aggregator.aggregate_candles(20, "1m", 1).await {
+                error!("Agg 1m failed: {}", e);
+            }
+            // 2. 15m Candles
+            if let Err(e) = aggregator.aggregate_candles(30, "15m", 15).await {
+                error!("Agg 15m failed: {}", e);
+            }
+            // 3. 1H Candles
+            if let Err(e) = aggregator.aggregate_candles(120, "1h", 60).await {
+                error!("Agg 1h failed: {}", e);
+            }
+            // 4. 4H Candles
+            if let Err(e) = aggregator.aggregate_candles(300, "4h", 240).await {
+                error!("Agg 4h failed: {}", e);
+            }
+            // 5. 1D Candles
+            if let Err(e) = aggregator.aggregate_candles(1500, "1d", 1440).await {
+                error!("Agg 1d failed: {}", e);
+            }
+            // 6. 1W Candles
+            if let Err(e) = aggregator.aggregate_candles(11520, "1w", 10080).await {
+                error!("Agg 1w failed: {}", e);
+            }
+
+            info!("Manual Aggregation Completed.");
+        });
         Ok(())
     }
 
@@ -344,7 +397,6 @@ impl TaskManager {
 
         let repos_clone = self.repos.clone();
 
-        // Every hour at minute 0: 0 0 * * * *
         // Every hour at minute 0: 0 0 * * * *
         let job = Job::new_async("0 0 * * * *", move |_uuid, _l| {
             let repos = repos_clone.clone();
@@ -380,31 +432,82 @@ impl TaskManager {
         info!("🚀 Running ONE-TIME historical candle backfill (48 hours)...");
         let pool_startup = pool.clone();
         tokio::spawn(async move {
-            let mut aggregator = crate::tasks::candle_aggregation::CandleAggregator::new(pool_startup);
-            if let Err(e) = aggregator.aggregate_candles(48 * 60).await {  // 48 hours in minutes
+            let mut aggregator =
+                crate::tasks::candle_aggregation::CandleAggregator::new(pool_startup);
+            if let Err(e) = aggregator.aggregate_candles(48 * 60, "15m", 15).await {
                 error!("Historical backfill failed: {}", e);
             } else {
                 info!("✅ Historical candle backfill completed successfully");
             }
         });
 
-        // Schedule: Every 5 minutes
-        let job = Job::new_async("0 */5 * * * *", move |_uuid, _l| {
+        // Schedule: Every 1 minute
+        let job = Job::new_async("0 * * * * *", move |_uuid, _l| {
             let pool_clone = pool.clone();
             Box::pin(async move {
                 info!("Running Candle Aggregation Task...");
-                let mut aggregator = crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
-                
-                // Aggregate last 20 minutes of snapshots (overlap to ensure no gaps)
-                if let Err(e) = aggregator.aggregate_candles(20).await {
-                    error!("Candle Aggregation Task failed: {}", e);
-                } else {
-                    info!("Candle Aggregation Task completed successfully");
+                let mut aggregator =
+                    crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
+
+                if let Err(e) = aggregator.aggregate_candles(20, "1m", 1).await {
+                    error!("Agg 1m failed: {}", e);
+                }
+                if let Err(e) = aggregator.aggregate_candles(30, "15m", 15).await {
+                    error!("Agg 15m failed: {}", e);
+                }
+                if let Err(e) = aggregator.aggregate_candles(120, "1h", 60).await {
+                    error!("Agg 1h failed: {}", e);
+                }
+                if let Err(e) = aggregator.aggregate_candles(300, "4h", 240).await {
+                    error!("Agg 4h failed: {}", e);
+                }
+                if let Err(e) = aggregator.aggregate_candles(1500, "1d", 1440).await {
+                    error!("Agg 1d failed: {}", e);
+                }
+                if let Err(e) = aggregator.aggregate_candles(11520, "1w", 10080).await {
+                    error!("Agg 1w failed: {}", e);
+                }
+
+                info!("All resolutions aggregated.");
+            })
+        })?;
+
+        let scheduler = self.scheduler.write().await;
+        scheduler.add(job).await?;
+
+        Ok(())
+    }
+
+    pub async fn register_polymarket_job(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.config.polymarket.is_none() {
+            info!("Polymarket not configured, skipping scheduled jobs");
+            return Ok(());
+        }
+
+        info!("Registering Polymarket Discovery Job (Every hour)...");
+        let repos_clone = self.repos.clone();
+        let config_clone = self.config.clone();
+
+        // Full discovery every hour: 0 0 * * * *
+        let job = Job::new_async("0 0 * * * *", move |_uuid, _l| {
+            let repos = repos_clone.clone();
+            let config = config_clone.clone();
+            Box::pin(async move {
+                info!("Executing Scheduled Polymarket Discovery...");
+                if let Some(pm_config) = config.polymarket {
+                    let collector = crate::collectors::PolymarketCollector::new(
+                        pm_config,
+                        repos.prediction.clone(),
+                    );
+                    match collector.discover_markets().await {
+                        Ok(count) => info!("Polymarket discovery: upserted {} markets", count),
+                        Err(e) => error!("Polymarket discovery failed: {}", e),
+                    }
                 }
             })
         })?;
 
-        let mut scheduler = self.scheduler.write().await;
+        let scheduler = self.scheduler.write().await;
         scheduler.add(job).await?;
 
         Ok(())

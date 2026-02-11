@@ -1,10 +1,9 @@
 use crate::collectors::birdeye::config::BirdeyeConfig;
+use crate::monitoring::metrics::BIRDEYE_API_REQUESTS_TOTAL;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE};
-use rust_decimal::Decimal;
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
-use tracing::info;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct BirdeyeClient {
@@ -59,7 +58,7 @@ struct HistoryData {
     items: Vec<OhlcvItem>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrendingToken {
     pub address: String,
     pub symbol: Option<String>,
@@ -106,6 +105,7 @@ impl BirdeyeClient {
             "{}/defi/token_overview?address={}",
             self.config.base_url, address
         );
+        BIRDEYE_API_REQUESTS_TOTAL.inc();
         let resp = self
             .client
             .get(&url)
@@ -147,6 +147,7 @@ impl BirdeyeClient {
         let type_param = match resolution {
             "1d" => "1D",
             "1h" => "1H",
+            "15m" => "15m",
             "1m" => "1m",
             _ => "1D",
         };
@@ -156,6 +157,7 @@ impl BirdeyeClient {
             self.config.base_url, address, type_param, time_from, time_to
         );
 
+        BIRDEYE_API_REQUESTS_TOTAL.inc();
         let resp = self
             .client
             .get(&url)
@@ -166,6 +168,7 @@ impl BirdeyeClient {
             .text()
             .await
             .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
+        tracing::info!("[Birdeye Raw] {}", &text[0..std::cmp::min(200, text.len())]);
         // Note: Response format might be data: { items: [...] }
         let result: BirdeyeResponse<HistoryData> =
             serde_json::from_str(&text).map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
@@ -173,7 +176,15 @@ impl BirdeyeClient {
         if result.success {
             if let Some(data) = result.data {
                 let mut items = data.items;
-                for item in &mut items {
+                for (i, item) in items.iter_mut().enumerate() {
+                    if i < 3 {
+                        tracing::info!(
+                            "Parsed Item: Time={}, Vol={}, Close={}",
+                            item.unix_time,
+                            item.volume,
+                            item.close
+                        );
+                    }
                     item.address = address.to_string();
                 }
                 Ok(items)
@@ -196,35 +207,61 @@ impl BirdeyeClient {
             self.config.base_url, offset, limit
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
+        let mut attempts = 0;
+        let max_attempts = 3;
+        loop {
+            attempts += 1;
+            BIRDEYE_API_REQUESTS_TOTAL.inc();
+            match self.client.get(&url).send().await {
+                Ok(resp) => {
+                    if resp.status() == 429 {
+                        warn!(
+                            "[Birdeye] Rate limited (Attempt {}/{})",
+                            attempts, max_attempts
+                        );
+                        if attempts >= max_attempts {
+                            return Err("Rate limited".into());
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2 * attempts as u64))
+                            .await;
+                        continue;
+                    }
 
-        if resp.status() == 429 {
-            return Err("Rate limited".into());
-        }
+                    match resp.text().await {
+                        Ok(text) => {
+                            let result: BirdeyeResponse<TrendingData> = serde_json::from_str(&text)
+                                .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
 
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
-        let result: BirdeyeResponse<TrendingData> =
-            serde_json::from_str(&text).map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
-
-        if result.success {
-            if let Some(data) = result.data {
-                Ok(data.tokens)
-            } else {
-                Ok(Vec::new())
+                            if result.success {
+                                if let Some(data) = result.data {
+                                    return Ok(data.tokens);
+                                } else {
+                                    return Ok(Vec::new());
+                                }
+                            } else {
+                                return Err(result
+                                    .message
+                                    .unwrap_or("Failed to fetch trending tokens".into())
+                                    .into());
+                            }
+                        }
+                        Err(e) => {
+                            warn!("[Birdeye] Failed to read text: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "[Birdeye] Network error (Attempt {}/{}): {}",
+                        attempts, max_attempts, e
+                    );
+                }
             }
-        } else {
-            Err(result
-                .message
-                .unwrap_or("Failed to fetch trending tokens".into())
-                .into())
+
+            if attempts >= max_attempts {
+                return Err("Failed after max retries".into());
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempts as u64)).await;
         }
     }
 }

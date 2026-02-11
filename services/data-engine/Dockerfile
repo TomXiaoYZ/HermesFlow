@@ -9,35 +9,41 @@ ENV CARGO_NET_RETRY=10
 # Install build dependencies
 RUN apt-get update && apt-get install -y pkg-config libssl-dev g++ make && rm -rf /var/lib/apt/lists/*
 
-# Optimize Build Cache: Copy manifests only
-COPY services/data-engine/Cargo.toml services/data-engine/Cargo.lock* ./services/data-engine/
+# Copy workspace root manifest, lockfile, and all member Cargo.toml files
+COPY Cargo.toml Cargo.lock ./
+COPY services/common/Cargo.toml ./services/common/Cargo.toml
+COPY services/backtest-engine/Cargo.toml ./services/backtest-engine/Cargo.toml
+COPY services/data-engine/Cargo.toml ./services/data-engine/Cargo.toml
+COPY services/gateway/Cargo.toml ./services/gateway/Cargo.toml
+COPY services/strategy-engine/Cargo.toml ./services/strategy-engine/Cargo.toml
+COPY services/strategy-generator/Cargo.toml ./services/strategy-generator/Cargo.toml
+
+# Create dummy source files for all workspace members (dependency caching)
+RUN mkdir -p services/common/src && echo "pub fn dummy() {}" > services/common/src/lib.rs && \
+    mkdir -p services/backtest-engine/src && echo "pub fn dummy() {}" > services/backtest-engine/src/lib.rs && \
+    mkdir -p services/data-engine/src && echo "fn main() {}" > services/data-engine/src/main.rs && \
+    mkdir -p services/data-engine/src/bin && echo "fn main() {}" > services/data-engine/src/bin/backfill.rs && echo "fn main() {}" > services/data-engine/src/bin/sync-market.rs && \
+    mkdir -p services/data-engine/benches && echo "fn main() {}" > services/data-engine/benches/parser_benchmarks.rs && echo "fn main() {}" > services/data-engine/benches/storage_benchmarks.rs && \
+    mkdir -p services/gateway/src && echo "fn main() {}" > services/gateway/src/main.rs && \
+    mkdir -p services/strategy-engine/src && echo "fn main() {}" > services/strategy-engine/src/main.rs && \
+    mkdir -p services/strategy-generator/src && echo "fn main() {}" > services/strategy-generator/src/main.rs
+
+# Build dependencies only (caches layer)
+RUN cargo build --release -p data-engine 2>/dev/null || true
+
+# Remove dummy files and cached artifacts for path dependencies
+RUN rm -rf services/data-engine/src services/data-engine/benches services/common/src && \
+    rm -rf target/release/.fingerprint/common-* target/release/.fingerprint/data_engine-* && \
+    rm -rf target/release/deps/libcommon* target/release/deps/data_engine*
+
+# Copy actual source code
 COPY services/common ./services/common
-
-
-# Switch to component directory
-WORKDIR /app/services/data-engine
-
-# Create dummy main.rs to cache dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-# Create dummy benchmark files to satisfy Cargo.toml
-RUN mkdir benches && \
-  echo "fn main() {}" > benches/parser_benchmarks.rs && \
-  echo "fn main() {}" > benches/storage_benchmarks.rs
-
-# Build dependencies only
-RUN cargo build --release
-
-# Remove dummy files
-RUN rm -rf src benches target/release/deps/data_engine*
-
-# Copy actual source code AND Infrastructure (for migrations)
-WORKDIR /app
-COPY infrastructure ./infrastructure
 COPY services/data-engine ./services/data-engine
+COPY infrastructure ./infrastructure
 
 # Build the application
-WORKDIR /app/services/data-engine
-RUN cargo build --release
+RUN find /app -name ".git" -type d -prune -exec rm -rf {} + || true
+RUN cargo build --release -p data-engine --bin data-engine
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -61,7 +67,7 @@ RUN set -eux; \
 ENV CHROME_PATH=/usr/bin/chromium
 
 # Copy the binary from builder
-COPY --from=builder /app/services/data-engine/target/release/data-engine /usr/local/bin/
+COPY --from=builder /app/target/release/data-engine /usr/local/bin/
 
 # Copy config directory
 COPY --from=builder /app/services/data-engine/config /app/config

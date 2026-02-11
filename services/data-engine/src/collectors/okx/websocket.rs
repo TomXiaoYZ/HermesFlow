@@ -1,5 +1,4 @@
-use super::config::OkxConfig;
-use crate::error::{DataError, Result};
+use crate::error::Result;
 use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
 use futures::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
@@ -7,7 +6,6 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
-use url::Url;
 
 pub struct OkxStreamer {
     url: String,

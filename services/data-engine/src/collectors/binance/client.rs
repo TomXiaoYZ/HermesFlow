@@ -2,11 +2,10 @@ use super::config::BinanceConfig;
 use crate::error::{DataError, Result};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
-use reqwest::{Client, Method, RequestBuilder};
+use reqwest::{Client, Method};
 use serde::de::DeserializeOwned;
 use sha2::Sha256;
 use std::collections::BTreeMap;
-use time::OffsetDateTime;
 
 type HmacSha256 = Hmac<Sha256>;
 

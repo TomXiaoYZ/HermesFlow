@@ -1,5 +1,7 @@
 use super::ops::*;
+use crate::config::FactorConfig;
 use ndarray::{Array2, Array3};
+use std::env;
 
 #[derive(Debug, Clone)]
 pub struct StackVM {
@@ -8,15 +10,26 @@ pub struct StackVM {
 
 impl Default for StackVM {
     fn default() -> Self {
-        Self {
-            feat_offset: 14, // Matches 9 Expert + 5 Raw = 14 dims
-        }
+        let config_path =
+            env::var("FACTOR_CONFIG").unwrap_or_else(|_| "config/factors.yaml".to_string());
+
+        let feat_offset = FactorConfig::from_file(&config_path)
+            .map(|c| c.feat_offset())
+            .unwrap_or(6); // Fallback to 6 if config missing
+
+        Self { feat_offset }
     }
 }
 
 impl StackVM {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn from_config(config: &FactorConfig) -> Self {
+        Self {
+            feat_offset: config.feat_offset(),
+        }
     }
 
     /// Execute a formula on the given feature tensor.
@@ -199,6 +212,42 @@ impl StackVM {
                         }
                         let x = stack.pop()?;
                         stack.push(cs_mean(&x));
+                    }
+                    19 => {
+                        // LOG
+                        if stack.len() < 1 {
+                            return None;
+                        }
+                        let x = stack.pop()?;
+                        stack.push(op_log(&x));
+                    }
+                    20 => {
+                        // SQRT
+                        if stack.len() < 1 {
+                            return None;
+                        }
+                        let x = stack.pop()?;
+                        stack.push(op_sqrt(&x));
+                    }
+                    21 => {
+                        // INV
+                        if stack.len() < 1 {
+                            return None;
+                        }
+                        let x = stack.pop()?;
+                        stack.push(op_inv(&x));
+                    }
+                    22 => {
+                        // TS_DELTA
+                        if stack.len() < 1 {
+                            return None;
+                        }
+                        let x = stack.pop()?;
+                        stack.push(ts_delta(&x, 1)); // Default delta=1? Or specific. Let's assume 1 for basic op.
+                                                     // Actually gplearn delta usually takes a parameter.
+                                                     // In our RPN, parameters are hardcoded ops (TS_DELTA_1, TS_DELTA_5) or we pop parameter?
+                                                     // For simplicity, let's make 22 = ts_delta(1).
+                                                     // We can add TS_DELTA_5 as 23 later if needed.
                     }
                     _ => return None, // Unknown operator
                 }

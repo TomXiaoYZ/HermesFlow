@@ -2,7 +2,7 @@ use super::config::OkxConfig;
 use crate::error::{DataError, Result};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
-use reqwest::{Client, Method, RequestBuilder};
+use reqwest::{Client, Method};
 use serde::de::DeserializeOwned;
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -39,7 +39,8 @@ impl OkxClient {
             .map_err(|e| DataError::ConfigurationError(format!("Invalid secret key: {}", e)))?;
         mac.update(payload.as_bytes());
         let result = mac.finalize();
-        Ok(base64::encode(result.into_bytes()))
+        use base64::Engine;
+        Ok(base64::engine::general_purpose::STANDARD.encode(result.into_bytes()))
     }
 
     pub async fn request<T: DeserializeOwned>(
@@ -52,7 +53,7 @@ impl OkxClient {
         let mut url = format!("{}{}", self.config.base_url, endpoint);
 
         // Append query to URL if GET, strictly following OKX signature rules which include query params in path
-        if let Some(mut q) = query {
+        if let Some(q) = query {
             // If query exists, append to url
             let query_str = q
                 .iter()
@@ -65,7 +66,7 @@ impl OkxClient {
         }
 
         // Just the path part for signature
-        let path = if let Some(idx) = url.find(self.config.base_url.as_str()) {
+        let path = if let Some(_idx) = url.find(self.config.base_url.as_str()) {
             // This is hacky, better parse URL
             // Assuming base_url is strictly the prefix.
             // Or just recreate path+query manually

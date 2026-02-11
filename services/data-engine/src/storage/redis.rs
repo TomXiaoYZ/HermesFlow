@@ -1,7 +1,7 @@
 use redis::{aio::ConnectionManager, AsyncCommands, Client};
 
 use crate::error::{DataError, Result};
-use crate::models::StandardMarketData;
+use crate::models::{StandardMarketData, TokenMetadata};
 
 /// Redis cache for storing latest market data
 ///
@@ -110,6 +110,35 @@ impl RedisCache {
         conn.del::<_, ()>(&key).await?;
 
         Ok(())
+    }
+
+    /// Stores token metadata
+    pub async fn store_token_metadata(&mut self, meta: &TokenMetadata) -> Result<()> {
+        let key = format!("token:meta:{}", meta.symbol);
+        let json = serde_json::to_string(meta)?;
+
+        let mut conn = self.connection.clone();
+        // Set TTL (e.g. 24h, or use config TTL. Metadata is slow moving but valid longer)
+        // Using same TTL for simplicity
+        conn.set_ex::<_, _, ()>(&key, json, self.ttl_secs).await?;
+
+        tracing::trace!("Cached metadata for {} in Redis", meta.symbol);
+        Ok(())
+    }
+
+    /// Retrieves token metadata
+    pub async fn get_token_metadata(&mut self, symbol: &str) -> Result<Option<TokenMetadata>> {
+        let key = format!("token:meta:{}", symbol);
+        let mut conn = self.connection.clone();
+        let result: Option<String> = conn.get(&key).await?;
+
+        match result {
+            Some(json) => {
+                let data: TokenMetadata = serde_json::from_str(&json)?;
+                Ok(Some(data))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Sets the TTL for cached data

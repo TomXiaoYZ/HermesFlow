@@ -2,16 +2,13 @@ use super::client::BinanceClient;
 use super::config::BinanceConfig;
 use super::websocket::BinanceStreamer;
 use crate::error::Result;
-use crate::models::{AssetType, Candle, DataSourceType, StandardMarketData};
+use crate::models::{AssetType, DataSourceType, StandardMarketData};
 use crate::traits::{ConnectorStats, DataSourceConnector};
 use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
-use reqwest::Method;
+use chrono::Utc;
 use rust_decimal::Decimal;
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
 
 pub struct BinanceConnector {
     config: BinanceConfig,
@@ -80,7 +77,6 @@ impl BinanceConnector {
 
         let mut results = Vec::new();
 
-        use rust_decimal::prelude::FromPrimitive;
         use rust_decimal::prelude::FromStr;
 
         for kline in raw_klines {
@@ -89,7 +85,7 @@ impl BinanceConnector {
             }
 
             let open_time = kline[0].as_i64().unwrap_or_default();
-            let open = kline[1].as_str().unwrap_or("0");
+            let _open = kline[1].as_str().unwrap_or("0");
             let high = kline[2].as_str().unwrap_or("0");
             let low = kline[3].as_str().unwrap_or("0");
             let close = kline[4].as_str().unwrap_or("0");

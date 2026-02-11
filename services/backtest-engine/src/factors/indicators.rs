@@ -1,5 +1,5 @@
 use crate::vm::ops::ts_delay;
-use ndarray::{s, Array2, Axis};
+use ndarray::Array2;
 
 pub struct MemeIndicators;
 

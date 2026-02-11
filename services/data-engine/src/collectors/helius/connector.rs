@@ -1,41 +1,42 @@
 use crate::collectors::helius::client::HeliusClient;
 use crate::collectors::helius::config::HeliusConfig;
-use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
-use chrono::Utc;
+use crate::models::StandardMarketData;
 use futures_util::{SinkExt, StreamExt};
-use rust_decimal::prelude::FromPrimitive;
-use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::error::Error;
 use std::time::Duration;
-use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-use tracing::{error, info, warn};
+use tokio_tungstenite::connect_async;
+use tracing::{error, info};
 
+#[allow(dead_code)]
 pub struct HeliusConnector {
     config: HeliusConfig,
     client: HeliusClient,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct HeliusWsResponse {
     method: Option<String>,
     params: Option<HeliusParams>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct HeliusParams {
     result: Option<HeliusResult>,
     subscription: Option<u64>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct HeliusResult {
     context: Option<serde_json::Value>,
     value: Option<HeliusValue>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct HeliusValue {
     data: Option<Vec<String>>,
@@ -50,7 +51,7 @@ impl HeliusConnector {
     pub async fn connect(
         &self,
     ) -> Result<tokio::sync::mpsc::Receiver<StandardMarketData>, Box<dyn Error + Send + Sync>> {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let (_tx, rx) = tokio::sync::mpsc::channel(100);
         let config = self.config.clone();
 
         tokio::spawn(async move {
@@ -91,7 +92,9 @@ impl HeliusConnector {
                             continue;
                         }
 
-                        info!("📡 Subscribed to Helius slot updates (and generating synthetic data)");
+                        info!(
+                            "📡 Subscribed to Helius slot updates (and generating synthetic data)"
+                        );
 
                         while let Some(msg) = ws_stream.next().await {
                             match msg {

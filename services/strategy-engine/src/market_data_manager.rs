@@ -8,6 +8,7 @@ use std::collections::HashMap;
 const WINDOW_SIZE: usize = 1000; // Keep enough history for long windows
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct SymbolBuffer {
     symbol: String,
     // Columns (using Vec for easy append, convert to Array2 for feature engineering)

@@ -2,7 +2,7 @@ use super::config::BybitConfig;
 use crate::error::{DataError, Result};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
-use reqwest::{Client, Method, RequestBuilder};
+use reqwest::{Client, Method};
 use serde::de::DeserializeOwned;
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -53,7 +53,7 @@ impl BybitClient {
         let mut params_str = String::new();
 
         if method == Method::GET {
-            if let Some(mut q) = query {
+            if let Some(q) = query {
                 let query_str = q
                     .iter()
                     .map(|(k, v)| format!("{}={}", k, v))

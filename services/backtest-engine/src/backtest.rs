@@ -1,10 +1,9 @@
 use ndarray::{Array2, Axis};
-use tracing::{info, warn};
 
 pub struct BacktestConfig {
     pub trade_size_usd: f64,
     pub min_liquidity_usd: f64,
-    pub base_fee_pct: f64, // e.g. 0.0060 (0.6%)
+    pub base_fee_pct: f64,        // e.g. 0.0060 (0.6%)
     pub impact_slippage_max: f64, // e.g. 0.05 (5%)
 }
 
@@ -44,20 +43,20 @@ impl BacktestRunner {
 
         // 2. Safety Mask
         // is_safe = (liquidity > min_liq)
-        let is_safe = liquidity.mapv(|l| if l > self.config.min_liquidity_usd { 1.0 } else { 0.0 });
-        
+        let is_safe = liquidity.mapv(|l| {
+            if l > self.config.min_liquidity_usd {
+                1.0
+            } else {
+                0.0
+            }
+        });
+
         // 3. Position Logic
         // position = (signal > 0.85) * is_safe
         // Note: Python used float math. We do the same.
         let position = ndarray::Zip::from(&signal)
             .and(&is_safe)
-            .map_collect(|&s, &safe| {
-                if s > 0.85 && safe > 0.0 {
-                    1.0
-                } else {
-                    0.0
-                }
-            });
+            .map_collect(|&s, &safe| if s > 0.85 && safe > 0.0 { 1.0 } else { 0.0 });
 
         // 4. Transaction Costs
         // Impact = trade_size / (liquidity + epsilon)
@@ -73,14 +72,14 @@ impl BacktestRunner {
         // Need to shift position manually since no roll op in ndarray easy
         // We can iterate columns or just use a loop.
         // For array2 (batch, time), we iterate time.
-        
+
         let mut turnover = Array2::zeros(position.dim());
         // prev_pos starts at 0
-        let (batch, time) = position.dim();
-        
+        let (_batch, time) = position.dim();
+
         // Col 0: turnover = abs(pos[0] - 0) = pos[0]
         // Col t: turnover = abs(pos[t] - pos[t-1])
-        
+
         for t in 0..time {
             if t == 0 {
                 let col = position.index_axis(Axis(1), t);
@@ -89,7 +88,7 @@ impl BacktestRunner {
             } else {
                 let col = position.index_axis(Axis(1), t);
                 let prev = position.index_axis(Axis(1), t - 1);
-                
+
                 let mut out_col = turnover.index_axis_mut(Axis(1), t);
                 // abs(col - prev)
                 // ndarray doesn't support easy abs diff on views directly without creating new array usually,
@@ -98,8 +97,8 @@ impl BacktestRunner {
                     .and(&col)
                     .and(&prev)
                     .for_each(|o, &c, &p| {
-                         let diff: f64 = c - p;
-                         *o = diff.abs();
+                        let diff: f64 = c - p;
+                        *o = diff.abs();
                     });
             }
         }
@@ -121,7 +120,7 @@ impl BacktestRunner {
         // Drawdowns: count times net_pnl < -0.05
         // (big_drawdowns = (net_pnl < -0.05).float().sum(dim=1))
         let big_drawdowns = net_pnl.map_axis(Axis(1), |row| {
-             row.iter().filter(|&&r| r < -0.05).count() as f64
+            row.iter().filter(|&&r| r < -0.05).count() as f64
         });
 
         // Score = CumRet - (BigDD * 2.0)
@@ -130,27 +129,21 @@ impl BacktestRunner {
         // Activity Check
         // if activity < 5: score = -10.0
         let activity = position.sum_axis(Axis(1));
-        
+
         let final_scores = ndarray::Zip::from(&score)
             .and(&activity)
-            .map_collect(|&s, &act| {
-                if act < 5.0 {
-                    -10.0
-                } else {
-                    s
-                }
-            });
+            .map_collect(|&s, &act| if act < 5.0 { -10.0 } else { s });
 
         // Median Score
         // Sort and pick median
         let mut scores_vec: Vec<f64> = final_scores.to_vec();
         scores_vec.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        
+
         let median_score = if scores_vec.is_empty() {
             0.0
         } else {
             let mid = scores_vec.len() / 2;
-             if scores_vec.len() % 2 == 0 {
+            if scores_vec.len() % 2 == 0 {
                 (scores_vec[mid - 1] + scores_vec[mid]) / 2.0
             } else {
                 scores_vec[mid]
@@ -166,8 +159,8 @@ impl BacktestRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::arr2;
     use approx::assert_abs_diff_eq;
+    use ndarray::arr2;
 
     #[test]
     fn test_backtest_logic() {
@@ -178,18 +171,18 @@ mod tests {
             impact_slippage_max: 0.1,
         };
         let runner = BacktestRunner::new(config);
-        
+
         // Factors: [5.0, -5.0, 5.0]
         // Liquidity: [100.0, 100.0, 100.0]
         // TargetRet: [0.10, -0.05, 0.20]
-        let factors = arr2(&[[5.0, -5.0, 5.0]]); 
+        let factors = arr2(&[[5.0, -5.0, 5.0]]);
         let liquidity = arr2(&[[100.0, 100.0, 100.0]]);
         let target_ret = arr2(&[[0.10, -0.05, 0.20]]);
 
         let (score, ret) = runner.evaluate(&factors, &liquidity, &target_ret);
-        
+
         println!("Score: {}, Ret: {}", score, ret);
-        assert_abs_diff_eq!(score, -10.0, epsilon=1e-6);
-        assert_abs_diff_eq!(ret, -0.03, epsilon=1e-6);
+        assert_abs_diff_eq!(score, -10.0, epsilon = 1e-6);
+        assert_abs_diff_eq!(ret, -0.03, epsilon = 1e-6);
     }
 }

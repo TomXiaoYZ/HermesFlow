@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Activity, TrendingUp, Database, Zap, AlertCircle } from "lucide-react";
+import { Activity, TrendingUp, Database, Zap, AlertCircle, LogOut, LayoutDashboard, Beaker, Search, Server, Settings } from "lucide-react";
+import { useRouter } from "next/navigation";
 import StrategyMonitor from "@/components/StrategyMonitor";
 import DataPipeline, { DataMetrics } from "@/components/DataPipeline";
 import TradeExecutionPanel from "@/components/TradeExecutionPanel";
@@ -9,6 +10,20 @@ import SystemLogs, { LogEntry } from "@/components/SystemLogs";
 import StrategyLab from "@/components/StrategyLab";
 import { cn } from "@/lib/utils";
 import SystemStatus from "@/components/SystemStatus";
+import DataDiscovery from "@/components/DataDiscovery";
+import dynamic from 'next/dynamic';
+// Dynamic import to prevent SSR hydration issues with lightweight-charts
+const MarketOverview = dynamic(() => import('@/components/MarketOverview'), {
+    ssr: false,
+    loading: () => (
+        <div className="flex items-center justify-center h-full">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+        </div>
+    )
+});
+
+// Settings Component
+const ExchangeConfig = dynamic(() => import('@/components/Settings/ExchangeConfig'), { ssr: false });
 
 // Types
 interface TradeSignal {
@@ -22,9 +37,10 @@ interface TradeSignal {
 }
 
 export default function Dashboard() {
+    const router = useRouter();
     const [wsConnected, setWsConnected] = useState(false);
     const [systemHealth, setSystemHealth] = useState<"healthy" | "degraded" | "offline">("offline");
-    const [activeTab, setActiveTab] = useState<"overview" | "strategy-lab" | "system">("overview");
+    const [activeTab, setActiveTab] = useState<"overview" | "market" | "strategy-lab" | "system" | "data-discovery" | "settings">("overview");
 
     // Centralized State
     const [signals, setSignals] = useState<TradeSignal[]>([]);
@@ -113,7 +129,11 @@ export default function Dashboard() {
 
                 if (type === "metrics") {
                     if (data.active_tokens !== undefined) {
-                        setMetrics(prev => ({ ...prev, activeTokens: data.active_tokens }));
+                        setMetrics(prev => ({
+                            ...prev,
+                            activeTokens: data.active_tokens,
+                            birdeyeRequests: data.birdeye_requests
+                        }));
                     }
                 }
 
@@ -144,128 +164,250 @@ export default function Dashboard() {
         return () => ws.close();
     }, []);
 
+    const handleLogout = () => {
+        localStorage.removeItem("token");
+        localStorage.removeItem("lastActivity");
+        router.push("/login");
+    };
+
     return (
-        <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-[#030712] to-[#030712] text-white selection:bg-indigo-500/30">
-            {/* Header */}
-            <header className="border-b border-white/5 backdrop-blur-md bg-slate-950/50 sticky top-0 z-50">
-                <div className="container mx-auto px-6 h-16 flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                        <div className="relative group">
-                            <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg blur opacity-25 group-hover:opacity-75 transition duration-1000 group-hover:duration-200"></div>
-                            <div className="relative w-10 h-10 rounded-lg bg-slate-900 flex items-center justify-center border border-white/10">
-                                <Zap className="w-5 h-5 text-indigo-400" />
-                            </div>
-                        </div>
-                        <div>
-                            <h1 className="text-xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
-                                HermesFlow
-                            </h1>
-                            <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Autonomous Trading System</p>
+        <div className="flex h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-[#030712] to-[#030712] text-white selection:bg-indigo-500/30 overflow-hidden">
+            {/* Sidebar */}
+            <aside className="w-64 bg-slate-950/50 backdrop-blur-xl border-r border-white/10 flex flex-col shadow-2xl z-50">
+                {/* Logo Area */}
+                <div className="h-16 flex items-center gap-3 px-6 border-b border-white/5 bg-slate-900/50">
+                    <div className="relative group">
+                        <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg blur opacity-25 group-hover:opacity-75 transition duration-1000 group-hover:duration-200"></div>
+                        <div className="relative w-8 h-8 rounded-lg bg-slate-900 flex items-center justify-center border border-white/10">
+                            <Zap className="w-4 h-4 text-indigo-400" />
                         </div>
                     </div>
-
-                    {/* Navigation Tabs (Centered) */}
-                    <div className="hidden md:flex bg-white/5 rounded-full p-1 border border-white/5 backdrop-blur">
-                        <button
-                            onClick={() => setActiveTab("overview")}
-                            className={cn(
-                                "px-6 py-1.5 rounded-full text-sm font-medium transition-all duration-300",
-                                activeTab === "overview"
-                                    ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/20"
-                                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                            )}
-                        >
-                            Overview
-                        </button>
-                        <button
-                            onClick={() => setActiveTab("strategy-lab")}
-                            className={cn(
-                                "px-6 py-1.5 rounded-full text-sm font-medium transition-all duration-300",
-                                activeTab === "strategy-lab"
-                                    ? "bg-purple-600 text-white shadow-lg shadow-purple-600/20"
-                                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                            )}
-                        >
-                            Strategy Lab
-                        </button>
-                        <button
-                            onClick={() => setActiveTab("system")}
-                            className={cn(
-                                "px-6 py-1.5 rounded-full text-sm font-medium transition-all duration-300",
-                                activeTab === "system"
-                                    ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/20"
-                                    : "text-slate-400 hover:text-white hover:bg-white/5"
-                            )}
-                        >
-                            System Status
-                        </button>
-                    </div>
-
-                    {/* System Status */}
-                    <div className="flex items-center gap-4">
-                        <StatusBadge
-                            label="Data Engine"
-                            status={wsConnected ? "online" : "offline"}
-                            icon={<Database className="w-3.5 h-3.5" />}
-                        />
-                        <StatusBadge
-                            label="System Health"
-                            status={systemHealth}
-                            icon={<Activity className="w-3.5 h-3.5" />}
-                        />
+                    <div>
+                        <h1 className="text-lg font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+                            HermesFlow
+                        </h1>
                     </div>
                 </div>
-            </header>
 
-            {/* Main Content */}
-            <main className="container mx-auto px-6 py-8">
-                {activeTab === "overview" && (
-                    <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        {/* Left Column: Strategy Monitor */}
-                        <div className="col-span-12 lg:col-span-4 space-y-6">
-                            <StrategyMonitor
-                                currentGen={currentGen}
-                                currentFitness={currentFitness}
-                                bestFormula={bestFormula}
-                                fitnessHistory={fitnessHistory}
-                                evolutionRate={0} // TODO: calc rate
-                                isEvolving={currentGen > 0}
+                {/* Navigation Items */}
+                <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+                    <NavItem
+                        active={activeTab === "overview"}
+                        onClick={() => setActiveTab("overview")}
+                        icon={<LayoutDashboard className="w-5 h-5" />}
+                        label="Overview"
+                        color="indigo"
+                    />
+                    <NavItem
+                        active={activeTab === "market"}
+                        onClick={() => setActiveTab("market")}
+                        icon={<TrendingUp className="w-5 h-5" />}
+                        label="Market"
+                        color="cyan"
+                    />
+                    <NavItem
+                        active={activeTab === "strategy-lab"}
+                        onClick={() => setActiveTab("strategy-lab")}
+                        icon={<Beaker className="w-5 h-5" />}
+                        label="Strategy Lab"
+                        color="purple"
+                    />
+                    <NavItem
+                        active={activeTab === "data-discovery"}
+                        onClick={() => setActiveTab("data-discovery")}
+                        icon={<Search className="w-5 h-5" />}
+                        label="Data Discovery"
+                        color="blue"
+                    />
+                    <NavItem
+                        active={activeTab === "system"}
+                        onClick={() => setActiveTab("system")}
+                        icon={<Server className="w-5 h-5" />}
+
+                        label="System Status"
+                        color="emerald"
+                    />
+                    <div className="my-2 border-t border-white/5 mx-4"></div>
+                    <NavItem
+                        active={activeTab === "settings"}
+                        onClick={() => setActiveTab("settings")}
+                        icon={<Settings className="w-5 h-5" />}
+                        label="Settings"
+                        color="slate"
+                    />
+                </nav>
+
+                {/* Logout Area */}
+                <div className="p-4 border-t border-white/5 bg-slate-900/30">
+                    <button
+                        onClick={handleLogout}
+                        className="flex items-center gap-3 w-full px-4 py-3 rounded-lg text-slate-400 hover:text-white hover:bg-red-500/10 hover:border-red-500/20 border border-transparent transition-all duration-200 group"
+                    >
+                        <LogOut className="w-5 h-5 group-hover:text-red-400 transition-colors" />
+                        <span className="font-medium group-hover:text-red-100">Logout</span>
+                        <span className="ml-auto text-xs bg-white/5 px-2 py-0.5 rounded text-slate-500 group-hover:text-red-300">Exit</span>
+                    </button>
+                </div>
+            </aside>
+
+            {/* Main Content Area */}
+            <div className="flex-1 flex flex-col overflow-hidden relative">
+                {/* Top Bar (Status) */}
+                <div className="h-16 flex items-center justify-end gap-4 px-8 border-b border-white/5 bg-slate-950/30 backdrop-blur-sm">
+                    <StatusBadge
+                        label="Data Engine"
+                        status={wsConnected ? "online" : "offline"}
+                        icon={<Database className="w-3.5 h-3.5" />}
+                    />
+                    <StatusBadge
+                        label="System Health"
+                        status={systemHealth}
+                        icon={<Activity className="w-3.5 h-3.5" />}
+                    />
+                </div>
+
+                {/* Content Scrollable */}
+                <main className="flex-1 overflow-y-auto p-8 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                    {/* Header Title for Context - Hide on Market tab (custom header inside) */}
+                    {activeTab !== "market" && (
+                        <div className="mb-8">
+                            <h2 className="text-2xl font-bold text-white tracking-tight">
+                                {activeTab === "overview" && "Mission Control"}
+                                {activeTab === "strategy-lab" && "Alpha Strategy Lab"}
+                                {activeTab === "data-discovery" && "Data Intelligence"}
+                                {activeTab === "system" && "System Operations"}
+                            </h2>
+                            <p className="text-slate-400 mt-1">
+                                {activeTab === "overview" && "Real-time market surveillance and execution monitoring."}
+                                {activeTab === "strategy-lab" && "Design, backtest, and optimize trading strategies."}
+                                {activeTab === "data-discovery" && "Explore market data, active tokens, and quality metrics."}
+                                {activeTab === "data-discovery" && "Explore market data, active tokens, and quality metrics."}
+                                {activeTab === "system" && "Monitor infrastructure health and system logs."}
+                                {activeTab === "settings" && "Configure external exchange connections and data preferences."}
+                            </p>
+                        </div>
+                    )}
+
+                    {activeTab === "overview" && (
+                        <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            {/* Left Column: Strategy Monitor */}
+                            <div className="col-span-12 xl:col-span-4 space-y-6">
+                                <StrategyMonitor
+                                    currentGen={currentGen}
+                                    currentFitness={currentFitness}
+                                    bestFormula={bestFormula}
+                                    fitnessHistory={fitnessHistory}
+                                    evolutionRate={0} // TODO: calc rate
+                                    isEvolving={currentGen > 0}
+                                />
+                            </div>
+
+                            {/* Middle Column: Data Pipeline + Execution (Expanded) */}
+                            <div className="col-span-12 xl:col-span-8 space-y-6">
+                                <DataPipeline metrics={metrics} />
+                                <TradeExecutionPanel
+                                    signals={signals}
+                                    portfolioValue={portfolioValue}
+                                    pnl24h={pnl24h}
+                                />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Market Tab - Always mounted to prevent chart destruction */}
+                    <div className={cn(
+                        "animate-in fade-in slide-in-from-bottom-4 duration-500 h-full",
+                        activeTab !== "market" && "hidden"
+                    )}>
+                        <MarketOverview />
+                    </div>
+
+                    {activeTab === "strategy-lab" && (
+                        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 h-full">
+                            <StrategyLab />
+                        </div>
+                    )}
+
+                    {activeTab === "data-discovery" && (
+                        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            <DataDiscovery />
+                        </div>
+                    )}
+
+                    {activeTab === "system" && (
+                        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            <SystemStatus
+                                logs={logs}
+                                heartbeats={heartbeats}
+                                metrics={{
+                                    activeTokens: metrics.activeTokens,
+                                    heliusConnected: metrics.heliusConnected,
+                                    wsConnected: wsConnected
+                                }}
                             />
                         </div>
+                    )}
 
-                        {/* Middle Column: Data Pipeline + Execution (Expanded) */}
-                        <div className="col-span-12 lg:col-span-8 space-y-6">
-                            <DataPipeline metrics={metrics} />
-                            <TradeExecutionPanel
-                                signals={signals}
-                                portfolioValue={portfolioValue}
-                                pnl24h={pnl24h}
-                            />
+                    {activeTab === "settings" && (
+                        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            <ExchangeConfig />
                         </div>
-                    </div>
-                )}
-
-                {activeTab === "strategy-lab" && (
-                    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        <StrategyLab />
-                    </div>
-                )}
-
-                {activeTab === "system" && (
-                    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        <SystemStatus
-                            logs={logs}
-                            heartbeats={heartbeats}
-                            metrics={{
-                                activeTokens: metrics.activeTokens,
-                                heliusConnected: metrics.heliusConnected,
-                                wsConnected: wsConnected
-                            }}
-                        />
-                    </div>
-                )}
-            </main>
+                    )}
+                </main>
+            </div>
         </div>
+    );
+}
+
+// Subcomponents
+
+function NavItem({ active, onClick, icon, label, color }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; color: string }) {
+    const colorStyles: Record<string, string> = {
+        indigo: "text-indigo-400 group-hover:text-indigo-300",
+        purple: "text-purple-400 group-hover:text-purple-300",
+        blue: "text-blue-400 group-hover:text-blue-300",
+        emerald: "text-emerald-400 group-hover:text-emerald-300",
+        cyan: "text-cyan-400 group-hover:text-cyan-300",
+        slate: "text-slate-400 group-hover:text-slate-300",
+    };
+
+    const activeBg: Record<string, string> = {
+        indigo: "bg-indigo-500/10 border-indigo-500/50 text-white",
+        purple: "bg-purple-500/10 border-purple-500/50 text-white",
+        blue: "bg-blue-500/10 border-blue-500/50 text-white",
+        emerald: "bg-emerald-500/10 border-emerald-500/50 text-white",
+        cyan: "bg-cyan-500/10 border-cyan-500/50 text-white",
+        slate: "bg-slate-500/10 border-slate-500/50 text-white",
+    };
+
+    const activeIndicator: Record<string, string> = {
+        indigo: "bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.5)]",
+        purple: "bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.5)]",
+        blue: "bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]",
+        emerald: "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]",
+        cyan: "bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.5)]",
+        slate: "bg-slate-500 shadow-[0_0_10px_rgba(100,116,139,0.5)]",
+    };
+
+    return (
+        <button
+            onClick={onClick}
+            className={cn(
+                "flex items-center gap-3 w-full px-4 py-3 rounded-xl font-medium transition-all duration-300 border group relative overflow-hidden",
+                active
+                    ? activeBg[color] || "bg-slate-800 border-white/20 text-white"
+                    : "border-transparent text-slate-400 hover:text-white hover:bg-white/5"
+            )}
+        >
+            {active && (
+                <div className={cn("absolute left-0 top-1/2 -translate-y-1/2 w-1 h-3/5 rounded-r-full", activeIndicator[color])}></div>
+            )}
+
+            <span className={cn("transition-colors relative z-10", active ? "text-white" : colorStyles[color])}>
+                {icon}
+            </span>
+            <span className="relative z-10">{label}</span>
+        </button>
     );
 }
 

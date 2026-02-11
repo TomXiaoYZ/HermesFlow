@@ -5,56 +5,84 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use futures::{sink::SinkExt, stream::StreamExt};
+use sqlx::Row;
 use serde::{Deserialize, Serialize};
 
 use crate::monitoring::metrics::export_metrics;
-use crate::monitoring::{DependencyStatus, HealthStatus, metrics::ACTIVE_SYMBOLS_COUNT};
+use crate::monitoring::metrics::{ACTIVE_SYMBOLS_COUNT, BIRDEYE_API_REQUESTS_TOTAL};
+use crate::monitoring::{DependencyStatus, HealthStatus};
 use std::time::Duration;
 
 pub mod agent;
-pub mod jobs;
-pub mod trading;
+pub mod config;
+pub mod data;
 pub mod history;
+pub mod jobs;
+pub mod prediction;
+pub mod trading;
 
 // ... metrics background updater ...
 pub async fn spawn_metrics_updater(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10)); // Increased frequency to 10s
+        let mut _ticks: u64 = 0;
+        let mut last_birdeye_reqs = BIRDEYE_API_REQUESTS_TOTAL.get();
+
         loop {
             interval.tick().await;
-            
+            _ticks += 1;
+
             // Query DB count
             let pool = &state.postgres.pool;
-            let count_res: Result<i64, _> = sqlx::query_scalar("SELECT count(*) FROM active_tokens WHERE is_active = true")
-                .fetch_one(pool)
-                .await;
+            let count_res: Result<i64, _> =
+                sqlx::query_scalar("SELECT count(*) FROM active_tokens WHERE is_active = true")
+                    .fetch_one(pool)
+                    .await;
 
             if let Ok(count) = count_res {
                 ACTIVE_SYMBOLS_COUNT.set(count);
-                
+
                 // Publish to Redis
                 if let Some(redis_lock) = &state.redis {
                     let redis = redis_lock.read().await;
-                    // We need a raw connection or use publisher if available.
-                    // RedisCache might not expose raw publish easily.
-                    // Let's create a new client or use what's available.
-                    // Ideally verify RedisCache has publish. Assuming it does or we can get connection.
-                    // Actually, let's just use the connection string from config if possible, 
-                    // or better, use the RedisCache's internal mechanism if I knew it.
-                    // Since I don't check RedisCache source, let's try to get a connection from the lock?
-                    // "get_connection" is likely on RedisCache based on `get_strategy_population`.
-                    
                     let mut conn = redis.get_connection();
                     use redis::AsyncCommands;
-                    
+
+                    let birdeye_reqs = BIRDEYE_API_REQUESTS_TOTAL.get();
+
                     let payload = serde_json::json!({
                         "active_tokens": count,
+                        "birdeye_requests": birdeye_reqs,
                         "timestamp": chrono::Utc::now().to_rfc3339()
-                    }).to_string();
+                    })
+                    .to_string();
 
                     if let Err(e) = conn.publish::<_, _, ()>("system_metrics", payload).await {
                         tracing::error!("Failed to publish system_metrics: {}", e);
+                    }
+                }
+            }
+
+            // Persist to DB every 60 seconds (6 ticks)
+            if _ticks % 6 == 0 {
+                let current_birdeye_reqs = BIRDEYE_API_REQUESTS_TOTAL.get();
+                let delta = if current_birdeye_reqs >= last_birdeye_reqs {
+                    current_birdeye_reqs - last_birdeye_reqs
+                } else {
+                    current_birdeye_reqs // Should not happen in same process, but fail-safe
+                };
+
+                if delta > 0.0 {
+                    use crate::repository::MetricsRepository;
+                    if let Err(e) = state
+                        .postgres
+                        .metrics
+                        .insert_api_usage("BirdEye", delta as i64)
+                        .await
+                    {
+                        tracing::error!("Failed to persist API usage: {}", e);
+                    } else {
+                        last_birdeye_reqs = current_birdeye_reqs;
                     }
                 }
             }
@@ -95,6 +123,8 @@ pub struct LatestPriceResponse {
 pub struct HistoryQuery {
     pub start: Option<i64>,
     pub end: Option<i64>,
+    pub resolution: Option<String>,
+    pub exchange: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
@@ -114,9 +144,29 @@ pub struct HistoryResponse {
 #[derive(Serialize)]
 pub struct MarketDataPoint {
     pub timestamp: i64,
-    pub price: String,
-    pub quantity: String,
-    pub source: String,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+}
+
+/// Active Token Summary
+#[derive(Serialize)]
+pub struct TokenSummary {
+    pub address: String,
+    pub symbol: String,
+    pub name: Option<String>,
+    pub price: Option<f64>,
+    pub volume_24h: Option<f64>,
+    pub change_24h: Option<f64>,
+    pub token_type: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct TokenListResponse {
+    pub tokens: Vec<TokenSummary>,
+    pub count: usize,
 }
 
 /// Health check endpoint
@@ -225,32 +275,242 @@ pub async fn get_latest_price(
 }
 
 /// Get historical data for a symbol
-/// GET /api/v1/market/:symbol/history?start=<timestamp>&end=<timestamp>&limit=1000
+/// GET /api/v1/market/:symbol/history?start=<timestamp>&end=<timestamp>&limit=1000&resolution=1m
 pub async fn get_history(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(symbol): Path<String>,
     Query(params): Query<HistoryQuery>,
 ) -> Response {
-    // Validate limit
-    let limit = params.limit.min(10000); // Max 10000 records
+    let pool = &state.postgres.pool;
+    let resolution = params.resolution.unwrap_or_else(|| "1h".to_string());
+    let limit = params.limit.min(10000) as i64;
 
-    // In a real implementation, query ClickHouse here
-    // For now, return a placeholder response
-    tracing::debug!(
-        "History query: symbol={}, start={:?}, end={:?}, limit={}",
+    // Default to last 24h if no start
+    let end_ts = params
+        .end
+        .map(|ts| chrono::DateTime::from_timestamp(ts / 1000, 0).unwrap_or(chrono::Utc::now()))
+        .unwrap_or(chrono::Utc::now());
+    let start_ts = params
+        .start
+        .map(|ts| {
+            chrono::DateTime::from_timestamp(ts / 1000, 0)
+                .unwrap_or(end_ts - chrono::Duration::hours(24))
+        })
+        .unwrap_or(end_ts - chrono::Duration::days(7)); // Default 7 days if not provided
+
+    let exchange = params
+        .exchange
+        .clone()
+        .unwrap_or_else(|| "Birdeye".to_string());
+
+    let query = "
+        SELECT time, open, high, low, close, volume 
+        FROM mkt_equity_candles 
+        WHERE symbol = $1 AND resolution = $2 AND time >= $3 AND time <= $4 AND exchange = $5
+        ORDER BY time ASC
+        LIMIT $6
+    ";
+
+    tracing::info!(
+        "[History API] symbol={}, resolution={}, start={}, end={}, exchange={}, limit={}",
         symbol,
-        params.start,
-        params.end,
+        resolution,
+        start_ts,
+        end_ts,
+        exchange,
         limit
     );
 
-    let response = HistoryResponse {
-        symbol: symbol.clone(),
-        data: vec![], // Would be populated from ClickHouse
-        count: 0,
-    };
+    let rows_res = sqlx::query(query)
+        .bind(&symbol)
+        .bind(&resolution)
+        .bind(start_ts)
+        .bind(end_ts)
+        .bind(exchange)
+        .bind(limit)
+        .fetch_all(pool)
+        .await;
 
-    (StatusCode::OK, Json(response)).into_response()
+    match rows_res {
+        Ok(rows) => {
+            let data: Vec<MarketDataPoint> = rows
+                .into_iter()
+                .map(|row| {
+                    let time: chrono::DateTime<chrono::Utc> = row.get("time");
+                    use rust_decimal::prelude::ToPrimitive;
+                    let open: rust_decimal::Decimal = row.get("open");
+                    let high: rust_decimal::Decimal = row.get("high");
+                    let low: rust_decimal::Decimal = row.get("low");
+                    let close: rust_decimal::Decimal = row.get("close");
+                    let volume: rust_decimal::Decimal = row.get("volume");
+
+                    MarketDataPoint {
+                        timestamp: time.timestamp_millis(),
+                        open: open.to_f64().unwrap_or(0.0),
+                        high: high.to_f64().unwrap_or(0.0),
+                        low: low.to_f64().unwrap_or(0.0),
+                        close: close.to_f64().unwrap_or(0.0),
+                        volume: volume.to_f64().unwrap_or(0.0),
+                    }
+                })
+                .collect();
+
+            (
+                StatusCode::OK,
+                Json(HistoryResponse {
+                    symbol,
+                    count: data.len(),
+                    data,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch history: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Get active tokens list
+/// GET /api/v1/market/tokens
+pub async fn get_active_tokens(State(state): State<AppState>) -> Response {
+    let pool = &state.postgres.pool;
+
+    // 1. Fetch data from Postgres (Crypto with prices, Stocks with 0.0 placeholders)
+    // We cannot join with ClickHouse tables in Postgres, so we fetch standard data here
+    let query = "
+        WITH LatestPrices AS (
+            SELECT DISTINCT ON (symbol) symbol, price, volume, timestamp
+            FROM mkt_equity_snapshots
+            ORDER BY symbol, timestamp DESC
+        )
+        SELECT 
+            t.address, 
+            t.symbol, 
+            t.name, 
+            COALESCE(lp.price, 0.0) as price, 
+            COALESCE(lp.volume, t.volume_24h) as volume_24h, 
+            t.price_change_24h,
+            'crypto' as asset_type
+        FROM active_tokens t
+        LEFT JOIN LatestPrices lp ON t.address = lp.symbol
+        WHERE t.is_active = true 
+        
+        UNION ALL
+
+        SELECT 
+            w.symbol as address,
+            w.symbol,
+            w.name as name,
+            0.0 as price, 
+            0.0 as volume_24h, 
+            0.0 as price_change_24h,
+            'stock' as asset_type
+        FROM market_watchlist w
+        WHERE w.is_active = true
+        
+        ORDER BY asset_type DESC, volume_24h DESC 
+        LIMIT 200
+    ";
+
+    let rows_res = sqlx::query(query).fetch_all(pool).await;
+
+    match rows_res {
+        Ok(rows) => {
+            let mut tokens: Vec<TokenSummary> = rows
+                .into_iter()
+                .map(|row| {
+                    use rust_decimal::prelude::ToPrimitive;
+                    let price: Option<rust_decimal::Decimal> = row.try_get("price").ok();
+                    let vol: Option<rust_decimal::Decimal> = row.try_get("volume_24h").ok();
+                    let change: Option<rust_decimal::Decimal> =
+                        row.try_get("price_change_24h").ok();
+
+                    TokenSummary {
+                        address: row.get("address"),
+                        symbol: row.get("symbol"),
+                        name: row.try_get("name").ok(),
+                        price: price.and_then(|d| d.to_f64()),
+                        volume_24h: vol.and_then(|d| d.to_f64()),
+                        change_24h: change.and_then(|d| d.to_f64()),
+                        token_type: row.try_get("asset_type").ok(),
+                    }
+                })
+                .collect();
+
+            // 2. Hydrate Stock prices from ClickHouse if available
+            if let Some(ch_lock) = &state.clickhouse {
+                let stock_symbols: Vec<String> = tokens
+                    .iter()
+                    .filter(|t| t.token_type.as_deref() == Some("stock"))
+                    .map(|t| t.symbol.clone())
+                    .collect();
+
+                if !stock_symbols.is_empty() {
+                    let ch = ch_lock.read().await;
+                    let client = ch.client();
+
+                    // Helper struct for ClickHouse result
+                    #[derive(clickhouse::Row, Deserialize)]
+                    struct PriceRow {
+                        symbol: String,
+                        price: f64,
+                    }
+
+                    let symbols_formatted = stock_symbols
+                        .iter()
+                        .map(|s| format!("'{}'", s))
+                        .collect::<Vec<_>>()
+                        .join(",");
+
+                    let ch_query = format!(
+                         "SELECT symbol, argMax(close, time) as price FROM mkt_equity_ohlcv WHERE symbol IN ({}) GROUP BY symbol", 
+                         symbols_formatted
+                     );
+
+                    match client.query(&ch_query).fetch_all::<PriceRow>().await {
+                        Ok(prices) => {
+                            let price_map: std::collections::HashMap<String, f64> =
+                                prices.into_iter().map(|r| (r.symbol, r.price)).collect();
+
+                            for token in &mut tokens {
+                                if token.token_type.as_deref() == Some("stock") {
+                                    if let Some(price) = price_map.get(&token.symbol) {
+                                        token.price = Some(*price);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to fetch stock prices from ClickHouse: {}", e);
+                        }
+                    }
+                }
+            }
+
+            (
+                StatusCode::OK,
+                Json(TokenListResponse {
+                    count: tokens.len(),
+                    tokens,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch tokens: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// WebSocket handler for real-time market data
@@ -268,7 +528,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     loop {
         match rx.recv().await {
             Ok(msg) => {
-                if let Err(e) = socket.send(Message::Text(msg)).await {
+                if let Err(_e) = socket.send(Message::Text(msg)).await {
                     // Client disconnected
                     break;
                 }
@@ -304,16 +564,17 @@ pub async fn get_strategy_population(State(state): State<AppState>) -> Response 
     // Fetch raw JSON string from Redis
     // We import AsyncCommands at the top of file to use .get()
     use redis::AsyncCommands;
-    
+
     let result: Result<Option<String>, _> = conn.get("strategy:population").await;
 
     match result {
         Ok(Some(json_str)) => {
             // It's already JSON string, return it directly with application/json content type
-            // But Axum Json() expects a serializable object. 
+            // But Axum Json() expects a serializable object.
             // We can deserialize to Value and re-serialize, OR just return string with header.
             // Let's deserialize to Value to be safe and standard.
-            let val: serde_json::Value = serde_json::from_str(&json_str).unwrap_or(serde_json::json!([]));
+            let val: serde_json::Value =
+                serde_json::from_str(&json_str).unwrap_or(serde_json::json!([]));
             (StatusCode::OK, Json(val)).into_response()
         }
         Ok(None) => (StatusCode::OK, Json(serde_json::json!([]))).into_response(),
@@ -374,19 +635,12 @@ mod tests {
 
     #[test]
     fn test_history_query_deserialization() {
-        let json = r#"{"start":1000,"end":2000,"limit":500}"#;
+        let json = r#"{"start":1000,"end":2000,"limit":500, "resolution": "15m"}"#;
         let query: HistoryQuery = serde_json::from_str(json).unwrap();
 
         assert_eq!(query.start, Some(1000));
         assert_eq!(query.end, Some(2000));
         assert_eq!(query.limit, 500);
-    }
-
-    #[test]
-    fn test_history_query_default_limit() {
-        let json = r#"{"start":1000}"#;
-        let query: HistoryQuery = serde_json::from_str(json).unwrap();
-
-        assert_eq!(query.limit, 1000);
+        assert_eq!(query.resolution, Some("15m".to_string()));
     }
 }

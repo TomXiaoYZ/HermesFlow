@@ -1,4 +1,4 @@
-use common::events::{MarketDataUpdate, StrategyLog, TradeSignal, PortfolioUpdate};
+use common::events::{MarketDataUpdate, PortfolioUpdate, StrategyLog, TradeSignal};
 
 use anyhow::Result;
 use redis::Commands;
@@ -107,41 +107,40 @@ impl EventBus {
         let client = self.client.clone();
         let channel_name = channel_name.to_string();
 
-        thread::spawn(move || {
-            match client.get_connection() {
-                Ok(mut conn) => {
-                    let mut pubsub = conn.as_pubsub();
-                    if let Err(e) = pubsub.subscribe(&channel_name) {
-                        tracing::error!("Failed to subscribe to {}: {}", channel_name, e);
-                        return;
-                    }
+        thread::spawn(move || match client.get_connection() {
+            Ok(mut conn) => {
+                let mut pubsub = conn.as_pubsub();
+                if let Err(e) = pubsub.subscribe(&channel_name) {
+                    tracing::error!("Failed to subscribe to {}: {}", channel_name, e);
+                    return;
+                }
 
-                    loop {
-                        match pubsub.get_message() {
-                            Ok(msg) => {
-                                match msg.get_payload::<String>() {
-                                    Ok(payload) => {
-                                        match serde_json::from_str::<PortfolioUpdate>(&payload) {
-                                            Ok(data) => {
-                                                if let Err(_) = tx.blocking_send(data) {
-                                                    break;
-                                                }
-                                            }
-                                            Err(e) => tracing::error!("Failed to deserialize portfolio data: {}", e),
+                loop {
+                    match pubsub.get_message() {
+                        Ok(msg) => match msg.get_payload::<String>() {
+                            Ok(payload) => {
+                                match serde_json::from_str::<PortfolioUpdate>(&payload) {
+                                    Ok(data) => {
+                                        if let Err(_) = tx.blocking_send(data) {
+                                            break;
                                         }
                                     }
-                                    Err(e) => tracing::error!("Failed to get payload: {}", e),
+                                    Err(e) => tracing::error!(
+                                        "Failed to deserialize portfolio data: {}",
+                                        e
+                                    ),
                                 }
                             }
-                            Err(e) => {
-                                tracing::error!("Redis subscription error: {}", e);
-                                break;
-                            }
+                            Err(e) => tracing::error!("Failed to get payload: {}", e),
+                        },
+                        Err(e) => {
+                            tracing::error!("Redis subscription error: {}", e);
+                            break;
                         }
                     }
                 }
-                Err(e) => tracing::error!("Failed to connect to Redis for subscription: {}", e),
             }
+            Err(e) => tracing::error!("Failed to connect to Redis for subscription: {}", e),
         });
 
         Ok(rx)

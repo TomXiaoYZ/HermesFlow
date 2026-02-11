@@ -1,8 +1,8 @@
 use super::config::FutuConfig;
 use crate::error::{DataError, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tracing::{error, info, warn};
+use tracing::info;
 
 // Placeholder for Protobuf types
 // In a real implementation, you would have `mod proto { include!(concat!(env!("OUT_DIR"), "/futu_api.rs")); }`

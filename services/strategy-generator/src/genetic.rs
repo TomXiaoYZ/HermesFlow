@@ -33,9 +33,24 @@ fn generate_random_rpn(max_depth: usize) -> Vec<usize> {
     // Offset 14.
     // Arity 1: NEG(4), ABS(5), SIGN(6), JUMP(8), DECAY(9), DELAY(10), MAX3(11)
     //          TS_MEAN(12), TS_STD(13), TS_RANK(14), TS_SUM(15), CS_RANK(17), CS_MEAN(18)
+    //          New: LOG(19), SQRT(20), INV(21), TS_DELTA(22)
     let ops_1: Vec<usize> = vec![
-        18, 19, 20, 22, 23, 24, 25, // Basic
-        26, 27, 28, 29, 31, 32, // Time-series & Cross-section
+        18, 19, 20, 22, 23, 24,
+        25, // Basic (Note: indices in genetic.rs were: 4->18, 5->19... wait, offset=14)
+        // vm.rs dispatch: 4=NEG. But in RPN token = 4 + 14 = 18.
+        // So existing 18=NEG, 19=ABS, 20=SIGN.
+        // 8=JUMP -> 8+14=22. 9=DECAY -> 23. 10=DELAY -> 24. 11=MAX3 -> 25.
+        // 12=TS_MEAN -> 26. 13=TS_STD -> 27. 14=TS_RANK -> 28. 15=TS_SUM -> 29.
+        // 17=CS_RANK -> 31. 18=CS_MEAN -> 32.
+
+        // New Ops indices in VM:
+        // 19=LOG -> 19+14=33
+        // 20=SQRT -> 20+14=34
+        // 21=INV -> 21+14=35
+        // 22=TS_DELTA -> 22+14=36
+        18, 19, 20, 22, 23, 24, 25, // Basic: NEG..MAX3
+        26, 27, 28, 29, 31, 32, // TS/CS ops
+        33, 34, 35, 36, // New: LOG, SQRT, INV, DELAY
     ];
 
     // Arity 2: ADD(0), SUB(1), MUL(2), DIV(3), TS_CORR(16)

@@ -8,6 +8,7 @@ use std::sync::Arc;
 // use tokio::sync::Mutex; // Removed unused import
 use tracing::{info, warn};
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct IBKRTrader {
     client: Arc<Client>,

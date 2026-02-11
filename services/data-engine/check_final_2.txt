@@ -1,0 +1,795 @@
+warning: unused import: `RequestBuilder`
+ --> src/collectors/binance/client.rs:5:31
+  |
+5 | use reqwest::{Client, Method, RequestBuilder};
+  |                               ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `time::OffsetDateTime`
+ --> src/collectors/binance/client.rs:9:5
+  |
+9 | use time::OffsetDateTime;
+  |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Candle`
+ --> src/collectors/binance/connector.rs:5:32
+  |
+5 | use crate::models::{AssetType, Candle, DataSourceType, StandardMarketData};
+  |                                ^^^^^^
+
+warning: unused import: `DateTime`
+ --> src/collectors/binance/connector.rs:8:14
+  |
+8 | use chrono::{DateTime, TimeZone, Utc};
+  |              ^^^^^^^^
+
+warning: unused import: `reqwest::Method`
+ --> src/collectors/binance/connector.rs:9:5
+  |
+9 | use reqwest::Method;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `serde::Deserialize`
+  --> src/collectors/binance/connector.rs:11:5
+   |
+11 | use serde::Deserialize;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `info` and `warn`
+  --> src/collectors/binance/connector.rs:14:15
+   |
+14 | use tracing::{info, warn};
+   |               ^^^^  ^^^^
+
+warning: unused import: `rust_decimal::prelude::FromPrimitive`
+  --> src/collectors/binance/connector.rs:83:13
+   |
+83 |         use rust_decimal::prelude::FromPrimitive;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::config::BinanceConfig`
+ --> src/collectors/binance/websocket.rs:1:5
+  |
+1 | use super::config::BinanceConfig;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `DataError`
+ --> src/collectors/binance/websocket.rs:2:20
+  |
+2 | use crate::error::{DataError, Result};
+  |                    ^^^^^^^^^
+
+warning: unused import: `tokio::net::TcpStream`
+ --> src/collectors/binance/websocket.rs:8:5
+  |
+8 | use tokio::net::TcpStream;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `MaybeTlsStream` and `WebSocketStream`
+  --> src/collectors/binance/websocket.rs:11:40
+   |
+11 | use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+   |                                        ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `url::Url`
+  --> src/collectors/binance/websocket.rs:13:5
+   |
+13 | use url::Url;
+   |     ^^^^^^^^
+
+warning: unused import: `rust_decimal::prelude::FromPrimitive`
+   --> src/collectors/binance/websocket.rs:159:17
+    |
+159 |             use rust_decimal::prelude::FromPrimitive;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `rust_decimal::Decimal`
+ --> src/collectors/birdeye/client.rs:3:5
+  |
+3 | use rust_decimal::Decimal;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `serde_json::Value`
+ --> src/collectors/birdeye/client.rs:5:5
+  |
+5 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `info`
+ --> src/collectors/birdeye/client.rs:7:15
+  |
+7 | use tracing::{info, warn};
+  |               ^^^^
+
+warning: unused imports: `error` and `warn`
+  --> src/collectors/birdeye/connector.rs:10:15
+   |
+10 | use tracing::{error, info, warn};
+   |               ^^^^^        ^^^^
+
+warning: unused import: `RequestBuilder`
+ --> src/collectors/bybit/client.rs:5:31
+  |
+5 | use reqwest::{Client, Method, RequestBuilder};
+  |                               ^^^^^^^^^^^^^^
+
+warning: unused import: `super::config::BybitConfig`
+ --> src/collectors/bybit/websocket.rs:1:5
+  |
+1 | use super::config::BybitConfig;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `DataError`
+ --> src/collectors/bybit/websocket.rs:2:20
+  |
+2 | use crate::error::{DataError, Result};
+  |                    ^^^^^^^^^
+
+warning: unused import: `rust_decimal::prelude::FromPrimitive`
+ --> src/collectors/dexscreener/connector.rs:3:5
+  |
+3 | use rust_decimal::prelude::FromPrimitive;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `rust_decimal::Decimal`
+ --> src/collectors/dexscreener/connector.rs:4:5
+  |
+4 | use rust_decimal::Decimal;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `AsyncReadExt`
+ --> src/collectors/futu/client.rs:3:17
+  |
+3 | use tokio::io::{AsyncReadExt, AsyncWriteExt};
+  |                 ^^^^^^^^^^^^
+
+warning: unused imports: `error` and `warn`
+ --> src/collectors/futu/client.rs:5:15
+  |
+5 | use tracing::{error, info, warn};
+  |               ^^^^^        ^^^^
+
+warning: unused import: `std::error::Error`
+ --> src/collectors/helius/client.rs:2:5
+  |
+2 | use std::error::Error;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AssetType`, `DataSourceType`, and `MarketDataType`
+ --> src/collectors/helius/connector.rs:3:21
+  |
+3 | use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
+  |                     ^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused import: `chrono::Utc`
+ --> src/collectors/helius/connector.rs:4:5
+  |
+4 | use chrono::Utc;
+  |     ^^^^^^^^^^^
+
+warning: unused import: `rust_decimal::prelude::FromPrimitive`
+ --> src/collectors/helius/connector.rs:6:5
+  |
+6 | use rust_decimal::prelude::FromPrimitive;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `rust_decimal::Decimal`
+ --> src/collectors/helius/connector.rs:7:5
+  |
+7 | use rust_decimal::Decimal;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Serialize`
+ --> src/collectors/helius/connector.rs:8:26
+  |
+8 | use serde::{Deserialize, Serialize};
+  |                          ^^^^^^^^^
+
+warning: unused import: `tokio::net::TcpStream`
+  --> src/collectors/helius/connector.rs:12:5
+   |
+12 | use tokio::net::TcpStream;
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `MaybeTlsStream` and `WebSocketStream`
+  --> src/collectors/helius/connector.rs:13:40
+   |
+13 | use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+   |                                        ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `warn`
+  --> src/collectors/helius/connector.rs:14:28
+   |
+14 | use tracing::{error, info, warn};
+   |                            ^^^^
+
+warning: unused import: `ibapi::market_data::MarketDataType as IbMarketDataType`
+  --> src/collectors/ibkr.rs:10:5
+   |
+10 | use ibapi::market_data::MarketDataType as IbMarketDataType;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `info`
+ --> src/collectors/massive/client.rs:6:22
+  |
+6 | use tracing::{debug, info, warn};
+  |                      ^^^^
+
+warning: unused import: `rust_decimal_macros::dec`
+ --> src/collectors/massive/connector.rs:3:5
+  |
+3 | use rust_decimal_macros::dec;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `error` and `warn`
+ --> src/collectors/massive/connector.rs:5:15
+  |
+5 | use tracing::{error, info, warn};
+  |               ^^^^^        ^^^^
+
+warning: unused import: `DateTime`
+ --> src/collectors/massive/websocket.rs:1:14
+  |
+1 | use chrono::{DateTime, TimeZone, Utc};
+  |              ^^^^^^^^
+
+warning: unused import: `rust_decimal::prelude::FromPrimitive`
+ --> src/collectors/massive/websocket.rs:3:5
+  |
+3 | use rust_decimal::prelude::FromPrimitive;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `DataError`
+  --> src/collectors/massive/websocket.rs:11:20
+   |
+11 | use crate::error::{DataError, Result};
+   |                    ^^^^^^^^^
+
+warning: unused import: `RequestBuilder`
+ --> src/collectors/okx/client.rs:5:31
+  |
+5 | use reqwest::{Client, Method, RequestBuilder};
+  |                               ^^^^^^^^^^^^^^
+
+warning: unused import: `super::config::OkxConfig`
+ --> src/collectors/okx/websocket.rs:1:5
+  |
+1 | use super::config::OkxConfig;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `DataError`
+ --> src/collectors/okx/websocket.rs:2:20
+  |
+2 | use crate::error::{DataError, Result};
+  |                    ^^^^^^^^^
+
+warning: unused import: `url::Url`
+  --> src/collectors/okx/websocket.rs:10:5
+   |
+10 | use url::Url;
+   |     ^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> src/collectors/twitter.rs:4:5
+  |
+4 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `Serialize`
+ --> src/collectors/jupiter/client.rs:3:26
+  |
+3 | use serde::{Deserialize, Serialize};
+  |                          ^^^^^^^^^
+
+warning: unused import: `self`
+  --> src/config.rs:10:17
+   |
+10 | use serde::de::{self, SeqAccess, Visitor};
+   |                 ^^^^
+
+warning: unused import: `std::sync::Arc`
+ --> src/monitoring/quality.rs:7:5
+  |
+7 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `sqlx::Row`
+  --> src/monitoring/quality.rs:60:13
+   |
+60 |         use sqlx::Row;
+   |             ^^^^^^^^^
+
+warning: unused import: `Utc`
+ --> src/repository/postgres/market_data.rs:9:24
+  |
+9 | use chrono::{TimeZone, Utc};
+  |                        ^^^
+
+warning: unused import: `warn`
+ --> src/repository/postgres/migration.rs:3:21
+  |
+3 | use tracing::{info, warn};
+  |                     ^^^^
+
+warning: unused import: `Query`
+ --> src/server/handlers/history.rs:2:15
+  |
+2 |     extract::{Query, State},
+  |               ^^^^^
+
+warning: unused import: `rust_decimal::prelude::FromPrimitive`
+  --> src/tasks/manager.rs:72:21
+   |
+72 |                 use rust_decimal::prelude::FromPrimitive;
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `MarketDataType`
+   --> src/tasks/manager.rs:177:41
+    |
+177 |             use crate::models::{Candle, MarketDataType};
+    |                                         ^^^^^^^^^^^^^^
+
+warning: unused import: `rust_decimal::prelude::FromPrimitive`
+   --> src/tasks/manager.rs:180:17
+    |
+180 |             use rust_decimal::prelude::FromPrimitive;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Duration` and `sleep`
+ --> src/tasks/token_discovery.rs:9:19
+  |
+9 | use tokio::time::{sleep, Duration};
+  |                   ^^^^^  ^^^^^^^^
+
+warning: unused import: `crate::error::DataEngineError`
+ --> src/tasks/data_quality.rs:1:5
+  |
+1 | use crate::error::DataEngineError;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Duration` and `sleep`
+ --> src/tasks/data_quality.rs:5:19
+  |
+5 | use tokio::time::{sleep, Duration};
+  |                   ^^^^^  ^^^^^^^^
+
+warning: unused import: `warn`
+ --> src/tasks/data_quality.rs:6:28
+  |
+6 | use tracing::{error, info, warn};
+  |                            ^^^^
+
+warning: use of deprecated function `base64::encode`: Use Engine::encode
+  --> src/collectors/okx/client.rs:42:20
+   |
+42 |         Ok(base64::encode(result.into_bytes()))
+   |                    ^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `open`
+   --> src/collectors/akshare.rs:103:21
+    |
+103 |                 let open = item
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_open`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `prev_close`
+   --> src/collectors/akshare.rs:106:21
+    |
+106 |                 let prev_close = item
+    |                     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_prev_close`
+
+warning: unused variable: `open`
+  --> src/collectors/binance/connector.rs:92:17
+   |
+92 |             let open = kline[1].as_str().unwrap_or("0");
+   |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_open`
+
+warning: unused variable: `stream_query`
+  --> src/collectors/binance/websocket.rs:45:21
+   |
+45 |                 let stream_query = streams.join("/");
+   |                     ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_stream_query`
+
+warning: unused variable: `write`
+  --> src/collectors/binance/websocket.rs:97:34
+   |
+97 |                         let (mut write, mut read) = ws_stream.split();
+   |                                  ^^^^^ help: if this is intentional, prefix it with an underscore: `_write`
+
+warning: variable does not need to be mutable
+  --> src/collectors/binance/websocket.rs:97:30
+   |
+97 |                         let (mut write, mut read) = ws_stream.split();
+   |                              ----^^^^^
+   |                              |
+   |                              help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+  --> src/collectors/bybit/client.rs:56:25
+   |
+56 |             if let Some(mut q) = query {
+   |                         ----^
+   |                         |
+   |                         help: remove this `mut`
+
+warning: unused variable: `tx`
+  --> src/collectors/helius/connector.rs:53:14
+   |
+53 |         let (tx, rx) = tokio::sync::mpsc::channel(100);
+   |              ^^ help: if this is intentional, prefix it with an underscore: `_tx`
+
+warning: unused variable: `idx`
+  --> src/collectors/okx/client.rs:68:32
+   |
+68 |         let path = if let Some(idx) = url.find(self.config.base_url.as_str()) {
+   |                                ^^^ help: if this is intentional, prefix it with an underscore: `_idx`
+
+warning: variable does not need to be mutable
+  --> src/collectors/okx/client.rs:55:21
+   |
+55 |         if let Some(mut q) = query {
+   |                     ----^
+   |                     |
+   |                     help: remove this `mut`
+
+warning: unused variable: `username`
+  --> src/collectors/twitter.rs:17:9
+   |
+17 |         username: &str,
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_username`
+
+warning: unused variable: `max_count`
+  --> src/collectors/twitter.rs:18:9
+   |
+18 |         max_count: i32,
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_count`
+
+warning: unused variable: `query`
+  --> src/collectors/twitter.rs:24:39
+   |
+24 |     pub async fn scrape_search(&self, query: &str, max_count: i32) -> Result<Vec<SocialData>> {
+   |                                       ^^^^^ help: if this is intentional, prefix it with an underscore: `_query`
+
+warning: unused variable: `max_count`
+  --> src/collectors/twitter.rs:24:52
+   |
+24 |     pub async fn scrape_search(&self, query: &str, max_count: i32) -> Result<Vec<SocialData>> {
+   |                                                    ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_count`
+
+warning: unused variable: `state`
+  --> src/server/handlers/agent.rs:22:43
+   |
+22 | pub async fn start_agent_monitoring(State(state): State<AppState>) -> Response {
+   |                                           ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+
+warning: unused variable: `e`
+   --> src/server/handlers/mod.rs:271:28
+    |
+271 |                 if let Err(e) = socket.send(Message::Text(msg)).await {
+    |                            ^ help: if this is intentional, prefix it with an underscore: `_e`
+
+warning: variable does not need to be mutable
+   --> src/tasks/manager.rs:407:13
+    |
+407 |         let mut scheduler = self.scheduler.write().await;
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused import: `TimeZone`
+ --> src/collectors/binance/connector.rs:8:24
+  |
+8 | use chrono::{DateTime, TimeZone, Utc};
+  |                        ^^^^^^^^
+
+warning: unused import: `TimeZone`
+ --> src/collectors/massive/websocket.rs:1:24
+  |
+1 | use chrono::{DateTime, TimeZone, Utc};
+  |                        ^^^^^^^^
+
+warning: unused import: `TimeZone`
+ --> src/repository/postgres/market_data.rs:9:14
+  |
+9 | use chrono::{TimeZone, Utc};
+  |              ^^^^^^^^
+
+warning: unused import: `stream::StreamExt`
+ --> src/server/handlers/mod.rs:8:30
+  |
+8 | use futures::{sink::SinkExt, stream::StreamExt};
+  |                              ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `sink::SinkExt`
+ --> src/server/handlers/mod.rs:8:15
+  |
+8 | use futures::{sink::SinkExt, stream::StreamExt};
+  |               ^^^^^^^^^^^^^
+
+warning: unused variable: `tx`
+  --> src/collectors/futu/connector.rs:41:14
+   |
+41 |         let (tx, _rx) = mpsc::channel(100);
+   |              ^^ help: if this is intentional, prefix it with an underscore: `_tx`
+
+warning: fields `change_percent`, `turnover`, `open`, and `prev_close` are never read
+  --> src/collectors/akshare.rs:31:5
+   |
+23 | struct AkShareSpotResponse {
+   |        ------------------- fields in this struct
+...
+31 |     change_percent: Option<f64>,
+   |     ^^^^^^^^^^^^^^
+...
+35 |     turnover: Option<f64>,
+   |     ^^^^^^^^
+...
+41 |     open: Option<f64>,
+   |     ^^^^
+42 |     #[serde(rename = "昨收")]
+43 |     prev_close: Option<f64>,
+   |     ^^^^^^^^^^
+   |
+   = note: `AkShareSpotResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` on by default
+
+warning: method `fetch_snapshot` is never used
+  --> src/collectors/akshare.rs:55:14
+   |
+46 | impl AkShareCollector {
+   | --------------------- method in this implementation
+...
+55 |     async fn fetch_snapshot(&self, client: &reqwest::Client) -> Result<Vec<StandardMarketData>> {
+   |              ^^^^^^^^^^^^^^
+
+warning: field `client` is never read
+  --> src/collectors/bybit/connector.rs:12:5
+   |
+10 | pub struct BybitConnector {
+   |            -------------- field in this struct
+11 |     config: BybitConfig,
+12 |     client: BybitClient,
+   |     ^^^^^^
+
+warning: field `config` is never read
+  --> src/collectors/futu/connector.rs:11:5
+   |
+10 | pub struct FutuConnector {
+   |            ------------- field in this struct
+11 |     config: FutuConfig,
+   |     ^^^^^^
+
+warning: field `client` is never read
+ --> src/collectors/helius/client.rs:8:5
+  |
+6 | pub struct HeliusClient {
+  |            ------------ field in this struct
+7 |     pub config: HeliusConfig,
+8 |     client: reqwest::Client,
+  |     ^^^^^^
+  |
+  = note: `HeliusClient` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `client` is never read
+  --> src/collectors/helius/connector.rs:18:5
+   |
+16 | pub struct HeliusConnector {
+   |            --------------- field in this struct
+17 |     config: HeliusConfig,
+18 |     client: HeliusClient,
+   |     ^^^^^^
+
+warning: struct `HeliusWsResponse` is never constructed
+  --> src/collectors/helius/connector.rs:22:8
+   |
+22 | struct HeliusWsResponse {
+   |        ^^^^^^^^^^^^^^^^
+
+warning: struct `HeliusParams` is never constructed
+  --> src/collectors/helius/connector.rs:28:8
+   |
+28 | struct HeliusParams {
+   |        ^^^^^^^^^^^^
+
+warning: struct `HeliusResult` is never constructed
+  --> src/collectors/helius/connector.rs:34:8
+   |
+34 | struct HeliusResult {
+   |        ^^^^^^^^^^^^
+
+warning: struct `HeliusValue` is never constructed
+  --> src/collectors/helius/connector.rs:40:8
+   |
+40 | struct HeliusValue {
+   |        ^^^^^^^^^^^
+
+warning: field `client` is never read
+  --> src/collectors/okx/connector.rs:12:5
+   |
+10 | pub struct OkxConnector {
+   |            ------------ field in this struct
+11 |     config: OkxConfig,
+12 |     client: OkxClient,
+   |     ^^^^^^
+
+warning: field `config` is never read
+ --> src/collectors/polymarket.rs:6:5
+  |
+5 | pub struct PolymarketCollector {
+  |            ------------------- field in this struct
+6 |     config: PolymarketConfig,
+  |     ^^^^^^
+
+warning: field `config` is never read
+ --> src/collectors/twitter.rs:7:5
+  |
+6 | pub struct TwitterCollector {
+  |            ---------------- field in this struct
+7 |     config: TwitterConfig,
+  |     ^^^^^^
+
+warning: field `time` is never read
+   --> src/tasks/candle_aggregation.rs:113:5
+    |
+112 | struct CandleBuilder {
+    |        ------------- field in this struct
+113 |     time: DateTime<Utc>,
+    |     ^^^^
+
+warning: field `account_id` is never read
+  --> src/trading/ibkr_trader.rs:14:5
+   |
+12 | pub struct IBKRTrader {
+   |            ---------- field in this struct
+13 |     client: Arc<Client>,
+14 |     account_id: String,
+   |     ^^^^^^^^^^
+   |
+   = note: `IBKRTrader` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: structure field `schemaVersion` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:13:9
+   |
+13 |     pub schemaVersion: Option<String>,
+   |         ^^^^^^^^^^^^^ help: convert the identifier to snake case: `schema_version`
+   |
+   = note: `#[warn(non_snake_case)]` on by default
+
+warning: structure field `chainId` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:19:9
+   |
+19 |     pub chainId: String,
+   |         ^^^^^^^ help: convert the identifier to snake case: `chain_id`
+
+warning: structure field `dexId` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:20:9
+   |
+20 |     pub dexId: String,
+   |         ^^^^^ help: convert the identifier to snake case: `dex_id`
+
+warning: structure field `pairAddress` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:22:9
+   |
+22 |     pub pairAddress: String,
+   |         ^^^^^^^^^^^ help: convert the identifier to snake case: `pair_address`
+
+warning: structure field `baseToken` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:23:9
+   |
+23 |     pub baseToken: Token,
+   |         ^^^^^^^^^ help: convert the identifier to snake case: `base_token`
+
+warning: structure field `quoteToken` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:24:9
+   |
+24 |     pub quoteToken: Token,
+   |         ^^^^^^^^^^ help: convert the identifier to snake case: `quote_token`
+
+warning: structure field `priceNative` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:25:9
+   |
+25 |     pub priceNative: String,
+   |         ^^^^^^^^^^^ help: convert the identifier to snake case: `price_native`
+
+warning: structure field `priceUsd` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:26:9
+   |
+26 |     pub priceUsd: Option<String>,
+   |         ^^^^^^^^ help: convert the identifier to snake case: `price_usd`
+
+warning: structure field `priceChange` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:29:9
+   |
+29 |     pub priceChange: PriceChange,
+   |         ^^^^^^^^^^^ help: convert the identifier to snake case: `price_change`
+
+warning: structure field `pairCreatedAt` should have a snake case name
+  --> src/collectors/dexscreener/client.rs:32:9
+   |
+32 |     pub pairCreatedAt: Option<i64>,
+   |         ^^^^^^^^^^^^^ help: convert the identifier to snake case: `pair_created_at`
+
+warning: structure field `queryCount` should have a snake case name
+  --> src/collectors/massive/client.rs:24:9
+   |
+24 |     pub queryCount: Option<i64>,
+   |         ^^^^^^^^^^ help: convert the identifier to snake case: `query_count`
+
+warning: structure field `resultsCount` should have a snake case name
+  --> src/collectors/massive/client.rs:25:9
+   |
+25 |     pub resultsCount: Option<i64>,
+   |         ^^^^^^^^^^^^ help: convert the identifier to snake case: `results_count`
+
+warning: `data-engine` (lib) generated 111 warnings (run `cargo fix --lib -p data-engine` to apply 64 suggestions)
+    Checking data-engine v0.1.0 (/Users/tomxiao/Desktop/Git/personal/HermesFlow/services/data-engine)
+warning: unused imports: `MarketDataType` and `StandardMarketData`
+ --> src/bin/backfill.rs:5:22
+  |
+5 |     models::{Candle, MarketDataType, StandardMarketData},
+  |                      ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `std::sync::Arc`
+ --> src/bin/backfill.rs:8:5
+  |
+8 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `warn`
+ --> src/bin/backfill.rs:9:28
+  |
+9 | use tracing::{error, info, warn};
+  |                            ^^^^
+
+warning: `data-engine` (bin "backfill") generated 3 warnings (run `cargo fix --bin "backfill"` to apply 3 suggestions)
+warning: unused imports: `BinanceConnector`, `IBKRCollector`, `PolymarketCollector`, and `trading::ibkr_trader::IBKRTrader`
+  --> src/main.rs:6:27
+   |
+ 6 |         AkShareCollector, BinanceConnector, BybitConnector, FutuConnector, IBKRCollector,
+   |                           ^^^^^^^^^^^^^^^^                                 ^^^^^^^^^^^^^
+ 7 |         MassiveConnector, OkxConnector, PolymarketCollector, TwitterCollector,
+   |                                         ^^^^^^^^^^^^^^^^^^^
+...
+19 |     trading::ibkr_trader::IBKRTrader,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `r`
+   --> src/main.rs:185:17
+    |
+185 |     if let Some(r) = &redis {
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_r`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: variable does not need to be mutable
+   --> src/main.rs:192:17
+    |
+192 |             let mut con = client
+    |                 ----^^^
+    |                 |
+    |                 help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+   --> src/main.rs:388:17
+    |
+388 |             let mut birdeye_collector = BirdeyeConnector::new(birdeye_config.clone());
+    |                 ----^^^^^^^^^^^^^^^^^
+    |                 |
+    |                 help: remove this `mut`
+
+warning: `data-engine` (bin "data-engine") generated 4 warnings (run `cargo fix --bin "data-engine"` to apply 3 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.40s
+warning: the following packages contain code that will be rejected by a future version of Rust: redis v0.24.0, sqlx-postgres v0.7.4
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

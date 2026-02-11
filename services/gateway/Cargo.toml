@@ -4,17 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.7", features = ["ws"] }
-tokio = { version = "1.35", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
-redis = { version = "0.24", features = ["tokio-comp", "json"] }
-clickhouse = { version = "0.11", features = ["time"] }
-futures = "0.3"
-tokio-stream = "0.1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-chrono = "0.4"
+axum = { workspace = true, features = ["ws"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tower-http = { workspace = true }
+redis = { workspace = true }
+clickhouse = { workspace = true }
+futures = { workspace = true }
+tokio-stream = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
 
+# HTTP client (0.12 with streaming support)
+reqwest = { version = "0.12", features = ["json", "stream"] }

@@ -8,28 +8,35 @@ tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
+async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+uuid = { version = "1.0", features = ["serde", "v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.21"
+clap = { version = "4.4", features = ["derive"] }
+axum = "0.7"
+hyper = "1.0"
+redis = { version = "0.24", features = ["tokio-comp"] }
+
+# HTTP client
 reqwest = { version = "0.11", features = ["json"] }
+
+# IBKR (0.1 — will upgrade to 2.5 in Phase 5)
+ibapi = "0.1"
+
+# Solana
 solana-client = "1.16"
 solana-sdk = "1.16"
 solana-program = "1.16"
 solana-transaction-status = "1.16"
-bs58 = "0.4"
-base64 = "0.21"
-ibapi = "0.1"
-bincode = "1.3"
-common = { path = "../common" }
-redis = "0.23"
-uuid = { version = "1.0", features = ["serde", "v4"] }
-chrono = { version = "0.4", features = ["serde"] }
 spl-token = "3.5"
 spl-associated-token-account = "1.1"
+bs58 = "0.4"
 borsh = "0.10"
-clap = { version = "4.4", features = ["derive"] }
-axum = "0.7"
-hyper = "1.0"
+bincode = "1.3"
 
-
+# Internal
+common = { path = "../common", features = ["health", "heartbeat"] }
 
 [dev-dependencies]

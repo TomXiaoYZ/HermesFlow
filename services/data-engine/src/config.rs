@@ -4,10 +4,10 @@ use crate::collectors::bybit::BybitConfig;
 use crate::collectors::dexscreener::DexScreenerConfig;
 use crate::collectors::futu::FutuConfig;
 use crate::collectors::helius::HeliusConfig;
-use crate::collectors::okx::OkxConfig;
 use crate::collectors::jupiter::JupiterConfig;
+use crate::collectors::okx::OkxConfig;
 use config::{Config, ConfigError, Environment, File};
-use serde::de::{self, SeqAccess, Visitor};
+use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::fmt;
 
@@ -345,7 +345,7 @@ impl Default for RedisConfig {
         Self {
             url: "redis://localhost:6379".to_string(),
             pool_size: 10,
-            ttl_secs: 86400, // 24 hours
+            ttl_secs: 300, // 5 minutes for price data freshness
         }
     }
 }
@@ -371,7 +371,7 @@ impl Default for PostgresConfig {
             database: "hermesflow".to_string(),
             username: "postgres".to_string(),
             password: String::new(),
-            max_connections: 10,
+            max_connections: 25,
         }
     }
 }

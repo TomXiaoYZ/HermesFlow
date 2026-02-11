@@ -1,45 +1,74 @@
-
-export const FEATURE_MAP: Record<number, string> = {
+// Dynamic Maps - Populated by loadFactorConfig()
+export let FEATURE_MAP: Record<number, string> = {
+    // Basic Fallbacks (AlphaGPT compatible)
     0: "Return",
     1: "Liquidity",
     2: "Pressure",
     3: "FOMO",
     4: "Deviation",
     5: "LogVol",
-    6: "VolCluster",
-    7: "MomRev",
-    8: "RSI",
-    9: "ln(Open)",
-    10: "ln(High)",
-    11: "ln(Low)",
-    12: "ln(Close)",
-    13: "ln(Vol)",
 };
 
-export const OP_MAP: Record<number, { name: string; arity: number }> = {
-    // Arity 2
-    14: { name: "+", arity: 2 },
-    15: { name: "-", arity: 2 },
-    16: { name: "*", arity: 2 },
-    17: { name: "/", arity: 2 },
-    30: { name: "Corr", arity: 2 },
-    // Arity 1
-    18: { name: "Neg", arity: 1 },
-    19: { name: "Abs", arity: 1 },
-    20: { name: "Sign", arity: 1 },
-    22: { name: "Jump", arity: 1 },
-    23: { name: "Decay", arity: 1 },
-    24: { name: "Delay", arity: 1 },
-    25: { name: "Max3", arity: 1 },
-    26: { name: "TsMean", arity: 1 },
-    27: { name: "TsStd", arity: 1 },
-    28: { name: "TsRank", arity: 1 },
-    29: { name: "TsSum", arity: 1 },
-    31: { name: "CsRank", arity: 1 },
-    32: { name: "CsMean", arity: 1 },
-    // Arity 3
-    21: { name: "Gate", arity: 3 },
+let OP_OFFSET = 6; // Dynamically updated
+
+export let OP_MAP: Record<number, { name: string; arity: number }> = {
+    // Will be re-mapped based on OP_OFFSET
 };
+
+// Initialize operators based on offset
+function initOperators(offset: number) {
+    OP_OFFSET = offset;
+    OP_MAP = {
+        // Arity 2
+        [offset + 0]: { name: "+", arity: 2 },
+        [offset + 1]: { name: "-", arity: 2 },
+        [offset + 2]: { name: "*", arity: 2 },
+        [offset + 3]: { name: "/", arity: 2 },
+        // Arity 1
+        [offset + 4]: { name: "Neg", arity: 1 },
+        [offset + 5]: { name: "Abs", arity: 1 },
+        [offset + 6]: { name: "Sign", arity: 1 },
+        [offset + 7]: { name: "Gate", arity: 3 },
+        [offset + 8]: { name: "Jump", arity: 1 },
+        [offset + 9]: { name: "Decay", arity: 1 },
+        [offset + 10]: { name: "Delay", arity: 1 },
+        [offset + 11]: { name: "Max3", arity: 1 },
+        [offset + 12]: { name: "TsMean", arity: 1 },
+        [offset + 13]: { name: "TsStd", arity: 1 },
+        [offset + 14]: { name: "TsRank", arity: 1 },
+        [offset + 15]: { name: "TsSum", arity: 1 },
+        [offset + 16]: { name: "TsCorr", arity: 2 },
+        [offset + 17]: { name: "CsRank", arity: 1 },
+        [offset + 18]: { name: "CsMean", arity: 1 },
+    };
+}
+
+// Initial call with default offset
+initOperators(6);
+
+export async function loadFactorConfig() {
+    try {
+        const res = await fetch("/api/v1/config/factors");
+        if (res.ok) {
+            const config = await res.json();
+
+            // Rebuild Feature Map
+            FEATURE_MAP = {};
+            let maxId = 0;
+            if (config.active_factors) {
+                config.active_factors.forEach((f: any) => {
+                    FEATURE_MAP[f.id] = f.name;
+                    if (f.id >= maxId) maxId = f.id;
+                });
+                // Update specific operator offset
+                initOperators(config.active_factors.length);
+            }
+        }
+    } catch (e) {
+        console.error("Failed to load factor config, using defaults", e);
+    }
+}
+
 
 export function decodeGenome(tokens: number[]): string {
     if (!tokens || tokens.length === 0) return "Empty Strategy";
@@ -47,7 +76,7 @@ export function decodeGenome(tokens: number[]): string {
     const stack: string[] = [];
 
     for (const t of tokens) {
-        if (t < 14) {
+        if (t < OP_OFFSET) {  // Features are tokens 0..(OP_OFFSET-1)
             stack.push(FEATURE_MAP[t] || `F${t}`);
         } else {
             const op = OP_MAP[t] || { name: `Op${t}`, arity: 1 };
@@ -75,7 +104,7 @@ export function decodeGenome(tokens: number[]): string {
 export function getFeatureImportance(tokens: number[]): Record<string, number> {
     const counts: Record<string, number> = {};
     for (const t of tokens) {
-        if (t < 14) {
+        if (t < OP_OFFSET) {  // Features are tokens 0..(OP_OFFSET-1)
             const name = FEATURE_MAP[t] || `F${t}`;
             counts[name] = (counts[name] || 0) + 1;
         }
