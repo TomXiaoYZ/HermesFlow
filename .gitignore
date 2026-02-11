@@ -1,56 +1,25 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Node
+node_modules/
+.next/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+.venv/
+venv/
 *.egg-info/
-.installed.cfg
-*.egg
 .pytest_cache/
 .coverage
 htmlcov/
-.tox/
-.venv
-venv/
-ENV/
-
-# Rust
-target/
-**/*.rs.bk
-Cargo.lock
-
-# Go
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-go.work
-
-# Node
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-.env
-.env.*
-!.env.example
+.mypy_cache/
 
 # IDE
 .idea/
@@ -58,32 +27,33 @@ yarn-error.log*
 *.swp
 *.swo
 *~
-.cursor
+.cursor/
 *.code-workspace
 
 # OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 
-# Project specific
-logs/
-*.log
-log/
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.python-version
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.crt
+*.api_key
+*.secret
+credentials/
 
-# Docker
+# Build artifacts
+build/
+dist/
+/build
+/dist
+
+# Docker runtime
 .docker/
-*.env
-!example.env
 
 # Terraform
 .terraform/
@@ -91,98 +61,34 @@ log/
 *.tfstate.*
 *.tfvars
 !example.tfvars
-.terraformrc
-terraform.rc
 
-# Kubernetes
-kubeconfig
-*.kubeconfig
+# AI/Agent tools
+.claude/
+.agent/
 
-# Environment
-.env
-.env.*
-!.env.example
-venv/
-.python-version
+# Temp & debug files
+*.log
+*.pid
+check_*.txt
+.build_ctx/
+web_build_ctx/
 
-# Testing
-.coverage
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-
-# package-lock.json
-yarn.lock
-
-# Documentation
-docs/_build/
-site/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Local development
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Secrets
-*.pem
-*.key
-*.crt
-*.cer
-*.der
-*.p12
-*.pfx
-*.p7b
-*.p7r
-*.spc
-*.sst
-*.csr
-*.pub 
-
-# Node build artifacts
-/build
-/dist
-
-# Environment variables
-*.env*
-
-# HermesFlow specific
-# Data collection outputs
-data/raw/
-data/processed/
-data/cache/
-
-# Validation reports
-sentiment_connectors_validation_*.json
-*_validation_*.json
-*_baseline_*.json
-
-# Runtime logs
-logs/*.log
-logs/*.txt
-log/*.log
-log/*.txt
-
-# Production secrets
-deployment/production/.env
-deployment/staging/.env
-config/production.yml
-config/staging.yml
-
-# API keys and credentials
-*.api_key
-*.secret
-credentials/
-
-# Migration backups (temporary files)
-migration_backup/
-
-# Infrastructure Data (Docker Volumes)
+# Infrastructure runtime data
 infrastructure/database/clickhouse/data/
 infrastructure/database/clickhouse/log/
 infrastructure/database/postgres/data/
 infrastructure/database/redis/data/
 infrastructure/vector/data/
-infrastructure/vector/vector.toml
+
+# HermesFlow data outputs
+data/raw/
+data/processed/
+data/cache/
+migration_backup/
+
+# Documentation build
+docs/_build/
+site/
+
+# Jupyter
+.ipynb_checkpoints

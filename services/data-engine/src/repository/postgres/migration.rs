@@ -21,6 +21,8 @@ impl MigrationManager {
         self.run_market_data_migrations().await?;
         self.create_metrics_table().await?;
         self.create_watchlist_table().await?;
+        self.create_factors_table().await?;
+        self.create_backtest_results_table().await?;
         info!("All DB migrations completed successfully");
         Ok(())
     }
@@ -101,11 +103,11 @@ impl MigrationManager {
                 name TEXT NOT NULL,
                 decimals INTEGER NOT NULL,
                 chain TEXT NOT NULL,
-                liquidity_usd DECIMAL(18, 8),
-                fdv DECIMAL(18, 8),
-                market_cap DECIMAL(18, 8),
-                volume_24h DECIMAL(18, 8),
-                price_change_24h DECIMAL(18, 8),
+                liquidity_usd DECIMAL(40, 8),
+                fdv DECIMAL(40, 8),
+                market_cap DECIMAL(40, 8),
+                volume_24h DECIMAL(40, 8),
+                price_change_24h DECIMAL(40, 8),
                 first_discovered TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 is_active BOOLEAN DEFAULT true,
@@ -207,8 +209,8 @@ impl MigrationManager {
                 id SERIAL PRIMARY KEY,
                 market_id TEXT NOT NULL REFERENCES prediction_markets(id) ON DELETE CASCADE,
                 outcome TEXT NOT NULL,
-                price DECIMAL(18, 8) NOT NULL,
-                volume_24h DECIMAL(18, 8),
+                price DECIMAL(40, 8) NOT NULL,
+                volume_24h DECIMAL(40, 8),
                 timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 UNIQUE(market_id, outcome, timestamp)
             )
@@ -269,12 +271,12 @@ impl MigrationManager {
                 symbol TEXT NOT NULL,
                 resolution TEXT NOT NULL,
                 time TIMESTAMPTZ NOT NULL,
-                open DECIMAL(18, 8) NOT NULL,
-                high DECIMAL(18, 8) NOT NULL,
-                low DECIMAL(18, 8) NOT NULL,
-                close DECIMAL(18, 8) NOT NULL,
-                volume DECIMAL(18, 8) NOT NULL,
-                amount DECIMAL(18, 8),
+                open DECIMAL(40, 8) NOT NULL,
+                high DECIMAL(40, 8) NOT NULL,
+                low DECIMAL(40, 8) NOT NULL,
+                close DECIMAL(40, 8) NOT NULL,
+                volume DECIMAL(40, 8) NOT NULL,
+                amount DECIMAL(40, 8),
                 metadata JSONB,
                 PRIMARY KEY (exchange, symbol, resolution, time)
             )
@@ -293,7 +295,7 @@ impl MigrationManager {
         sqlx::query(
             r#"
             ALTER TABLE mkt_equity_candles 
-            ADD COLUMN IF NOT EXISTS liquidity DECIMAL(18, 8)
+            ADD COLUMN IF NOT EXISTS liquidity DECIMAL(40, 8)
             "#,
         )
         .execute(&self.pool)
@@ -306,7 +308,7 @@ impl MigrationManager {
         sqlx::query(
             r#"
             ALTER TABLE mkt_equity_candles 
-            ADD COLUMN IF NOT EXISTS fdv DECIMAL(18, 8)
+            ADD COLUMN IF NOT EXISTS fdv DECIMAL(40, 8)
             "#,
         )
         .execute(&self.pool)
@@ -318,13 +320,13 @@ impl MigrationManager {
             r#"
             CREATE TABLE IF NOT EXISTS mkt_equity_snapshots (
                 symbol TEXT NOT NULL,
-                price DECIMAL(18, 8) NOT NULL,
-                bid DECIMAL(18, 8),
-                ask DECIMAL(18, 8),
+                price DECIMAL(40, 8) NOT NULL,
+                bid DECIMAL(40, 8),
+                ask DECIMAL(40, 8),
                 volume BIGINT,
-                vwap DECIMAL(18, 8),
-                high DECIMAL(18, 8),
-                low DECIMAL(18, 8),
+                vwap DECIMAL(40, 8),
+                high DECIMAL(40, 8),
+                low DECIMAL(40, 8),
                 timestamp TIMESTAMPTZ NOT NULL
             )
             "#,
@@ -342,7 +344,128 @@ impl MigrationManager {
     }
 
     async fn run_trading_system_migrations(&self) -> Result<(), DataEngineError> {
-        // Disabled in favor of manual SQL file migration
+        // trade_orders
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS trade_orders (
+                id              BIGSERIAL PRIMARY KEY,
+                order_id        TEXT UNIQUE NOT NULL,
+                parent_order_id TEXT,
+                exchange        VARCHAR(50) NOT NULL,
+                account_id      VARCHAR(50),
+                symbol          VARCHAR(50) NOT NULL,
+                asset_type      VARCHAR(20) NOT NULL,
+                side            VARCHAR(10) NOT NULL,
+                order_type      VARCHAR(20) NOT NULL,
+                quantity        DECIMAL(24,8) NOT NULL,
+                filled_qty      DECIMAL(24,8) DEFAULT 0,
+                price           DECIMAL(24,8),
+                avg_price       DECIMAL(24,8),
+                status          VARCHAR(20) NOT NULL DEFAULT 'NEW',
+                commission      DECIMAL(18,8),
+                message         TEXT,
+                strategy_id     VARCHAR(50),
+                metadata        JSONB,
+                created_at      TIMESTAMPTZ DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!("Failed to create trade_orders table: {}", e))
+        })?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_orders_status ON trade_orders(status, created_at DESC)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_orders_exchange_symbol ON trade_orders(exchange, symbol)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
+
+        // trade_executions
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS trade_executions (
+                id              BIGSERIAL PRIMARY KEY,
+                execution_id    TEXT UNIQUE NOT NULL,
+                order_id        TEXT REFERENCES trade_orders(order_id),
+                price           DECIMAL(24,8) NOT NULL,
+                quantity        DECIMAL(24,8) NOT NULL,
+                commission      DECIMAL(18,8),
+                commission_asset VARCHAR(20),
+                trade_time      TIMESTAMPTZ NOT NULL,
+                created_at      TIMESTAMPTZ DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!(
+                "Failed to create trade_executions table: {}",
+                e
+            ))
+        })?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_executions_order ON trade_executions(order_id)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
+
+        // trade_positions
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS trade_positions (
+                id              BIGSERIAL PRIMARY KEY,
+                account_id      VARCHAR(50) NOT NULL,
+                exchange        VARCHAR(50) NOT NULL,
+                symbol          VARCHAR(50) NOT NULL,
+                quantity        DECIMAL(24,8) NOT NULL,
+                avg_price       DECIMAL(24,8) NOT NULL,
+                current_price   DECIMAL(24,8),
+                unrealized_pnl  DECIMAL(24,8),
+                updated_at      TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(account_id, exchange, symbol)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!(
+                "Failed to create trade_positions table: {}",
+                e
+            ))
+        })?;
+
+        // trade_accounts
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS trade_accounts (
+                account_id      VARCHAR(50) PRIMARY KEY,
+                exchange        VARCHAR(50) NOT NULL,
+                currency        VARCHAR(10) NOT NULL,
+                total_balance   DECIMAL(24,8),
+                available_balance DECIMAL(24,8),
+                updated_at      TIMESTAMPTZ DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!(
+                "Failed to create trade_accounts table: {}",
+                e
+            ))
+        })?;
+
+        info!("Trading system tables created successfully");
         Ok(())
     }
 
@@ -380,6 +503,99 @@ impl MigrationManager {
             .execute(&self.pool)
             .await
             .map_err(|e| DataEngineError::DatabaseError(format!("Failed to create index: {}", e)))?;
+
+        Ok(())
+    }
+
+    async fn create_factors_table(&self) -> Result<(), DataEngineError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS factors (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(200) NOT NULL,
+                slug VARCHAR(200) NOT NULL UNIQUE,
+                category VARCHAR(100) NOT NULL,
+                rust_function VARCHAR(500),
+                formula TEXT NOT NULL,
+                latex_formula TEXT,
+                description TEXT NOT NULL,
+                interpretation TEXT,
+                parameters JSONB DEFAULT '[]',
+                examples JSONB,
+                output_range TEXT,
+                normalization VARCHAR(50),
+                computation_cost VARCHAR(20),
+                min_bars_required INTEGER DEFAULT 0,
+                tags TEXT[],
+                refs JSONB,
+                is_active BOOLEAN DEFAULT true,
+                version INTEGER DEFAULT 1,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!("Failed to create factors table: {}", e))
+        })?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_factors_category ON factors(category)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_factors_slug ON factors(slug)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_factors_active ON factors(is_active)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
+
+        Ok(())
+    }
+
+    async fn create_backtest_results_table(&self) -> Result<(), DataEngineError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                strategy_id VARCHAR(255),
+                genome INTEGER[],
+                token_address VARCHAR(255) NOT NULL,
+                start_time TIMESTAMPTZ,
+                end_time TIMESTAMPTZ,
+                pnl_percent DOUBLE PRECISION,
+                win_rate DOUBLE PRECISION,
+                sharpe_ratio DOUBLE PRECISION,
+                max_drawdown DOUBLE PRECISION,
+                total_trades INTEGER,
+                equity_curve JSONB,
+                trades JSONB,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                metadata JSONB
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!(
+                "Failed to create backtest_results table: {}",
+                e
+            ))
+        })?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_backtest_created_at ON backtest_results(created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
 
         Ok(())
     }

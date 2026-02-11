@@ -1,90 +1,128 @@
-# HermesFlow 量化交易平台
+# HermesFlow
 
-[![CI](https://github.com/hermesflow/HermesFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/hermesflow/HermesFlow/actions/workflows/ci.yml)
+A Rust-based quantitative trading platform with multi-asset support: crypto via Solana/Raydium, US equities via IBKR, and HK stocks via Futu.
 
-HermesFlow 是一个面向个人使用的高性能量化交易平台，采用现代化的 **Rust + Python** 双栈微服务架构。
+## Architecture
 
-- **Rust (核心层)**: 负责高性能行情接入 (`data-engine`) 和 API 网关 (`gateway`).
-- **Python (业务层)**: 负责策略回测 (`strategy-engine`) 和风控计算 (`risk-engine`).
-- **Infrastructure**: 基于 Docker Compose 和 GitHub Actions 的全自动化运维.
+```mermaid
+graph TD
+    User[Web UI - Next.js] --> Gateway[Gateway - Rust/Actix]
+    Gateway --> DataEngine[Data Engine - Rust/Actix]
+    Gateway --> StratEngine[Strategy Engine - Rust]
+    Gateway --> StratGen[Strategy Generator - Rust/Actix]
+    Gateway --> UserMgmt[User Management - Java/Spring]
 
-## 🏗️ 项目架构
+    StratGen --> BacktestEngine[Backtest Engine - Rust lib]
+    StratEngine --> ExecEngine[Execution Engine - Rust]
+    ExecEngine --> FutuBridge[Futu Bridge - Python/Flask]
+
+    ExecEngine -->|Raydium DEX| Solana((Solana))
+    ExecEngine -->|TWS API| IBKR((IBKR))
+    FutuBridge -->|OpenD| FutuMarket((Futu))
+
+    DataEngine --> Redis[(Redis)]
+    DataEngine --> TSDB[(TimescaleDB)]
+    DataEngine --> CH[(ClickHouse)]
+    StratEngine --> Redis
+    StratGen --> TSDB
+    Gateway --> Redis
+    Gateway --> TSDB
+    Gateway --> CH
+
+    Vector[Vector] --> CH
+```
+
+## Tech Stack
+
+| Service | Language | Framework | Port | Description |
+|---------|----------|-----------|------|-------------|
+| **data-engine** | Rust | Actix-web | 8081 (ext) / 8080 (int) | Market data ingestion, normalization, storage |
+| **gateway** | Rust | Actix-web | 8080 | API gateway, auth, rate limiting, WebSocket proxy |
+| **strategy-engine** | Rust | Custom | -- (8082 internal health) | Real-time strategy execution, signal generation |
+| **strategy-generator** | Rust | Actix-web | 8082 (ext) / 8084 (int health) | Genetic algorithm strategy evolution |
+| **execution-engine** | Rust | Custom | -- (8083 internal health) | Trade execution: Raydium, IBKR, Futu |
+| **backtest-engine** | Rust | Library crate | -- | Factor computation, VM-based strategy backtesting |
+| **common** | Rust | Library crate | -- | Shared types, health checks, event bus, heartbeat |
+| **user-management** | Java | Spring Boot | 8086 | User auth, tenant management |
+| **futu-bridge** | Python | Flask | 8088 | Bridge to Futu OpenD for HK stock trading |
+| **web** | TypeScript | Next.js | 3000 | Dashboard, strategy lab, data discovery |
+
+## Infrastructure
+
+| Component | Image | Port | Role |
+|-----------|-------|------|------|
+| **Redis** | `redis:alpine` | 6379 | Pub/Sub event bus, price cache |
+| **TimescaleDB** | `timescale/timescaledb:latest-pg15` | 5432 | Primary time-series store (candles, snapshots) |
+| **ClickHouse** | `clickhouse/clickhouse-server:24.3` | 8123 / 9000 | OLAP analytics, log storage |
+| **Vector** | `timberio/vector:latest-alpine` | -- | Log pipeline (Docker -> ClickHouse) |
+
+## Quick Start
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Rust toolchain (stable)
+- Node.js 18+ (for web frontend)
+
+### Start all services
+
+```bash
+# Start infrastructure and services
+docker compose up -d
+
+# Verify
+docker compose ps
+```
+
+### Local development
+
+```bash
+# Verify toolchain and install frontend deps
+make setup
+
+# Run lints
+make lint
+
+# Run tests
+make test
+
+# Build Docker images
+make build
+```
+
+## Project Structure
 
 ```
 HermesFlow/
-├── services/                   # 🎯 微服务
-│   ├── data-engine/            # [Rust] 行情引擎 (Repository Pattern)
-│   ├── gateway/                # [Rust] API 网关 (Axum)
-│   ├── strategy-engine/        # [Python] 策略引擎 (FastAPI + Pandas)
-│   ├── risk-engine/            # [Python] 风控引擎 (FastAPI)
-│   └── twitter-scraper/        # [Python] 舆情采集
-├── infrastructure/             # 🔧 基础设施
-│   ├── database/               # 数据库 DDL (Postgres/ClickHouse)
-│   ├── python/                 # 共享 Python 库 (hermes-common)
-│   └── terraform/              # 云资源定义 (IAC)
-├── docs/                       # 📚 文档
-├── .github/workflows/          # 🚀 CI/CD 流水线
-├── docker-compose.yml          # 本地编排
-└── Makefile                    # 统一构建工具
+├── services/                  # Microservices
+│   ├── common/                # [Rust] Shared library crate
+│   ├── backtest-engine/       # [Rust] Backtesting library crate
+│   ├── data-engine/           # [Rust] Market data ingestion
+│   ├── gateway/               # [Rust] API gateway
+│   ├── strategy-engine/       # [Rust] Strategy execution
+│   ├── strategy-generator/    # [Rust] Genetic strategy evolution
+│   ├── execution-engine/      # [Rust] Trade execution (excluded from workspace)
+│   ├── user-management/       # [Java] User auth (Spring Boot)
+│   ├── futu-bridge/           # [Python] Futu OpenD bridge
+│   └── web/                   # [TypeScript] Next.js dashboard
+├── infrastructure/            # Database migrations, Vector config, Terraform
+├── config/                    # Shared configuration files (factors.yaml)
+├── docs/                      # Architecture, standards, conventions
+├── docker-compose.yml         # Local orchestration
+├── Cargo.toml                 # Rust workspace definition
+├── Makefile                   # Unified build commands
+└── rustfmt.toml               # Rust formatting config
 ```
 
-### 技术栈决策
+See [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) for the full breakdown.
 
-| 服务 | 技术栈 | 职责 | 端口 |
-|------|--------|------|------|
-| **Gateway** | **Rust (Axum)** | 统一接入、鉴权、路由 | 3000 -> 8080 |
-| **Data Engine** | **Rust (Tokio, SQLx)** | 多路行情聚合、高速入库 | 8080 |
-| **Strategy Engine** | **Python 3.11** | 策略逻辑、量化分析 | 8040 |
-| **Risk Engine** | **Python 3.11** | 实时风控、持仓检查 | 8030 |
-| **Storage** | **TimescaleDB + Redis** | 时序数据与热缓存 | 5432 / 6379 |
+## Documentation
 
-## 🚀 快速开始
+- [Architecture](docs/ARCHITECTURE.md) -- system design, component descriptions, data flow
+- [Engineering Standards](docs/STANDARDS.md) -- architecture-level standards and conventions
+- [Code Conventions](docs/CODE_CONVENTIONS.md) -- Rust code patterns, error handling, config, logging
+- [Project Structure](docs/PROJECT_STRUCTURE.md) -- directory layout, workspace details, config locations
 
-本项目使用统一的 `Makefile` 管理开发流程，无需手动运行脚本。
+## License
 
-### 1. 环境准备
-确保本地安装了 `Docker`, `Rust`, `Python 3.11`.
-
-### 2. 初始化项目
-一键安装依赖（创建虚拟环境、编译 Rust 依赖、安装 Python 共享库）：
-```bash
-make setup
-```
-
-### 3. 配置环境
-复制示例配置：
-```bash
-cp .env.example .env
-```
-根据需要修改 `.env` 中的凭据（默认为本地开发配置，无需修改）。
-
-### 4. 启动服务
-```bash
-make up
-```
-访问 http://localhost:3000/health 检查网关状态。
-
-### 5. 开发命令
-- `make test`: 运行所有服务的单元测试
-- `make lint`: 运行代码检查 (Clippy/Ruff/Mypy)
-- `make clean`: 清理构建产物
-
-## 📏 开发规范 (Phase 7 Standards)
-
-### 1. 虚拟环境
-所有 Python 操作必须在 `.venv` 中进行（`make setup` 自动处理）。禁止直接使用系统 Python。
-
-### 2. 配置管理
-- **禁止**在代码或 TOML 文件中硬编码密码。
-- 所有敏感配置通过 `.env` 注入，映射规则见 `docker-compose.yml` (例如 `DATA_ENGINE__POSTGRES__PASSWORD`)。
-
-### 3. 数据库变更
-数据库 Schema 变更必须在 `infrastructure/database/{type}/migrations` 中添加 SQL 文件。
-
-### 4. Python 共享库
-通用逻辑（日志、配置加载）应放入 `infrastructure/python/hermes_common`，禁止在业务服务中复制粘贴。
-
-## 📚 文档索引
-- [架构设计](docs/architecture/system-architecture.md)
-- [开发指南](docs/development/dev-guide.md)
-- [数据库设计](docs/database/database-design.md)
+See [LICENSE](LICENSE).
