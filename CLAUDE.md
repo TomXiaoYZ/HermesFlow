@@ -81,3 +81,4 @@ config/
 4. **SQL migrations** go in `infrastructure/database/{postgres,clickhouse}/migrations/` as numbered `.sql` files.
 5. **Prefer updating existing docs** (especially `ARCHITECTURE.md`) over creating new markdown files. ADRs go in `ARCHITECTURE.md` appendix.
 6. **Commit after completing work.** Every time a task or feature is completed, organize changes and commit with a clear message. Do not leave completed work uncommitted.
+7. **Local deploy verification per module.** After modifying any service, must: build Docker image → start service → verify health endpoint → smoke test changed functionality → commit → push. Never skip to the next module without verifying the current one runs correctly in Docker.
