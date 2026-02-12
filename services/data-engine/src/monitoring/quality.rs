@@ -99,15 +99,15 @@ impl DataMonitor {
         })?;
 
         // 2. Check mkt_equity_snapshots for Polygon stocks and AkShare A-shares
-        // Note: table uses 'exchange' column (not 'source') and 'time' (not 'timestamp')
+        // Note: table uses 'exchange' column and 'timestamp' column
         let threshold_minutes = self.config.freshness_threshold_sec / 60;
         let stale_equities = sqlx::query(
             r#"
-            SELECT symbol, exchange, MAX(time) as last_ts
+            SELECT symbol, exchange, MAX(timestamp) as last_ts
             FROM mkt_equity_snapshots
-            WHERE time > NOW() - INTERVAL '24 hours'
+            WHERE timestamp > NOW() - INTERVAL '24 hours'
             GROUP BY symbol, exchange
-            HAVING MAX(time) < NOW() - make_interval(mins => $1)
+            HAVING MAX(timestamp) < NOW() - make_interval(mins => $1)
             "#,
         )
         .bind(threshold_minutes as i32)
