@@ -99,14 +99,15 @@ impl DataMonitor {
         })?;
 
         // 2. Check mkt_equity_snapshots for Polygon stocks and AkShare A-shares
+        // Note: table uses 'exchange' column (not 'source') and 'time' (not 'timestamp')
         let threshold_minutes = self.config.freshness_threshold_sec / 60;
         let stale_equities = sqlx::query(
             r#"
-            SELECT DISTINCT symbol, source, MAX(timestamp) as last_ts
+            SELECT symbol, exchange, MAX(time) as last_ts
             FROM mkt_equity_snapshots
-            WHERE timestamp > NOW() - INTERVAL '24 hours'
-            GROUP BY symbol, source
-            HAVING MAX(timestamp) < NOW() - make_interval(mins => $1)
+            WHERE time > NOW() - INTERVAL '24 hours'
+            GROUP BY symbol, exchange
+            HAVING MAX(time) < NOW() - make_interval(mins => $1)
             "#,
         )
         .bind(threshold_minutes as i32)
@@ -139,8 +140,8 @@ impl DataMonitor {
                 .take(3)
                 .map(|r| {
                     let symbol: String = r.get("symbol");
-                    let source: String = r.get("source");
-                    format!("{}({})", symbol, source)
+                    let exchange: String = r.get("exchange");
+                    format!("{}({})", symbol, exchange)
                 })
                 .collect();
             warn!(

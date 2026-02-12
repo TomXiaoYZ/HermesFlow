@@ -17,6 +17,7 @@ use data_engine::{
         OkxConnector, PolymarketCollector, TwitterCollector,
     },
     config::AppConfig,
+    monitoring::metrics::{DATA_ERRORS_BY_SOURCE, DATA_MESSAGES_BY_SOURCE},
     repository::{postgres::PostgresRepositories, MarketDataRepository, SocialRepository},
     storage::RedisCache,
     traits::DataSourceConnector,
@@ -515,11 +516,19 @@ async fn publish_market_update(
         source: source.to_string(),
     };
 
+    // Track per-source message count
+    DATA_MESSAGES_BY_SOURCE
+        .with_label_values(&[source])
+        .inc();
+
     if let Ok(json) = serde_json::to_string(&update) {
         let _ = broadcast_tx.send(json.clone());
 
         if let Some(publisher) = redis_publisher {
             if let Err(e) = publisher.publish("market_data", &json).await {
+                DATA_ERRORS_BY_SOURCE
+                    .with_label_values(&[source])
+                    .inc();
                 tracing::warn!("Failed to publish {} update to Redis: {}", source, e);
             }
         }
