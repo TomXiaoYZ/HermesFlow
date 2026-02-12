@@ -1,0 +1,38 @@
+# Build artifacts
+target/
+services/web/.next/
+services/web/node_modules/
+services/futu-bridge/.venv/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs and data
+*.log
+infrastructure/database/clickhouse/logs/
+
+# Large binary files
+*.wasm
+*.so
+*.dylib
+
+# Docker volumes
+infrastructure/database/postgres/data/
+infrastructure/database/clickhouse/data/
+
+# Lock files (large, not useful for context)
+services/web/yarn.lock
+Cargo.lock
+services/*/Cargo.lock
+
+# Environment files
+.env
+.env.*
+!.env.*.example
+
+# Git
+.git/
