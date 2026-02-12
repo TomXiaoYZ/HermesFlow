@@ -364,23 +364,27 @@ impl TaskManager {
             if let Err(e) = aggregator.aggregate_candles(20, "1m", 1).await {
                 error!("Agg 1m failed: {}", e);
             }
-            // 2. 15m Candles
+            // 2. 5m Candles
+            if let Err(e) = aggregator.aggregate_candles(10, "5m", 5).await {
+                error!("Agg 5m failed: {}", e);
+            }
+            // 3. 15m Candles
             if let Err(e) = aggregator.aggregate_candles(30, "15m", 15).await {
                 error!("Agg 15m failed: {}", e);
             }
-            // 3. 1H Candles
+            // 4. 1H Candles
             if let Err(e) = aggregator.aggregate_candles(120, "1h", 60).await {
                 error!("Agg 1h failed: {}", e);
             }
-            // 4. 4H Candles
+            // 5. 4H Candles
             if let Err(e) = aggregator.aggregate_candles(300, "4h", 240).await {
                 error!("Agg 4h failed: {}", e);
             }
-            // 5. 1D Candles
+            // 6. 1D Candles
             if let Err(e) = aggregator.aggregate_candles(1500, "1d", 1440).await {
                 error!("Agg 1d failed: {}", e);
             }
-            // 6. 1W Candles
+            // 7. 1W Candles
             if let Err(e) = aggregator.aggregate_candles(11520, "1w", 10080).await {
                 error!("Agg 1w failed: {}", e);
             }
@@ -449,6 +453,9 @@ impl TaskManager {
 
                 if let Err(e) = aggregator.aggregate_candles(20, "1m", 1).await {
                     error!("Agg 1m failed: {}", e);
+                }
+                if let Err(e) = aggregator.aggregate_candles(10, "5m", 5).await {
+                    error!("Agg 5m failed: {}", e);
                 }
                 if let Err(e) = aggregator.aggregate_candles(30, "15m", 15).await {
                     error!("Agg 15m failed: {}", e);

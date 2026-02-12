@@ -40,11 +40,14 @@ graph TD
 - **Port**: 8080
 
 ### 2.2 Data Engine (Rust)
-- **Tech**: Actix-web, SQLx, Tokio, ClickHouse client
+- **Tech**: Axum, SQLx, Tokio, ClickHouse client, Prometheus
 - **Role**:
-  - Connects to external data sources (Birdeye, Jupiter, Helius, Polygon, Polymarket).
-  - Normalizes and persists market data (candles, snapshots, predictions).
-  - Runs background tasks: candle aggregation, historical sync, token discovery.
+  - Connects to 12+ external data sources (Binance, OKX, Bybit, Polygon/Massive, Jupiter, Birdeye, Helius, AkShare, Futu, Polymarket, IBKR, Twitter).
+  - Normalizes all data into `StandardMarketData` using `rust_decimal::Decimal` for financial precision.
+  - Persists market data (candles, snapshots, predictions) to TimescaleDB.
+  - Publishes real-time data via Redis Pub/Sub and WebSocket broadcast.
+  - Runs background tasks: candle aggregation (1m/5m/15m/1h/4h/1d/1w), historical sync, token discovery, data quality monitoring.
+  - 5-stage data quality pipeline: freshness, gap detection, liquidity guard, price spike detection, metrics export.
 - **Pattern**: Repository pattern for all database access.
 - **Port**: 8080 (internal), mapped to 8081 externally.
 
@@ -120,13 +123,65 @@ graph TD
 
 ## 4. Supported Data Sources
 
-| Source | Asset Class | Data Type | Protocol |
-|--------|------------|-----------|----------|
-| **Birdeye** | Crypto (Solana) | Price, metadata | REST |
-| **Jupiter** | Crypto (Solana) | Price, swap quotes | REST |
-| **Helius** | Crypto (Solana) | Transactions, metadata | REST/WebSocket |
-| **Polygon** | US Stocks | Candles, snapshots | REST/WebSocket |
-| **Polymarket** | Predictions | Market odds | REST |
+| Name | Protocol | Data Types | Source Type | Status |
+|------|----------|-----------|-------------|--------|
+| **Binance** | WS | Spot + futures tickers, trades | CEX | Active |
+| **OKX** | WS | Spot + futures tickers | CEX | Active |
+| **Bybit** | WS | Spot + futures tickers | CEX | Active |
+| **Polygon / Massive** | REST + WS | US stock candles, tickers | Traditional | Active |
+| **Jupiter** | REST (polling) | Solana DEX prices | DeFi | Active |
+| **Birdeye** | REST | Solana token metadata, prices | DeFi | Active |
+| **Helius** | REST | Solana token metadata | DeFi | Active |
+| **AkShare** | REST (polling) | A-share stock data | Traditional | Active |
+| **Futu** | REST (via Python bridge) | HK stock data | Traditional | Active |
+| **Polymarket** | REST (polling) | Prediction market outcomes | Prediction | Active |
+| **IBKR** | Native API | US/global stocks, options | Traditional | Active |
+| **Twitter** | REST | Social sentiment | Social | Active |
+
+Each data source has its own collector module under `services/data-engine/src/collectors/`. Multi-file collectors (Binance, OKX, Bybit, Polygon, Jupiter, Birdeye, Helius, Futu, Massive, DexScreener) have dedicated subdirectories with `mod.rs`, `client.rs`, `config.rs`, and optionally `connector.rs`/`websocket.rs`. Single-file collectors (AkShare, IBKR, Twitter, Polymarket) live as standalone `.rs` files.
+
+### 4.1 StandardMarketData Field Dictionary
+
+All data sources normalize their output into a unified `StandardMarketData` struct (defined in `services/data-engine/src/models/market_data.rs`). This struct uses `rust_decimal::Decimal` for all financial values to avoid floating-point precision errors.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | `DataSourceType` | Yes | Enum identifying the data source (e.g., `BinanceSpot`, `OkxFutures`) |
+| `exchange` | `String` | Yes | Human-readable exchange name (e.g., "Binance", "OKX") |
+| `symbol` | `String` | Yes | Trading pair or asset symbol (e.g., "BTCUSDT", "AAPL") |
+| `asset_type` | `AssetType` | Yes | Asset classification (Spot, Perpetual, Stock, etc.) |
+| `data_type` | `MarketDataType` | Yes | Type of market data (Trade, Ticker, Candle, FundingRate, OrderBook) |
+| `price` | `Decimal` | Yes | Last/current price |
+| `quantity` | `Decimal` | Yes | Volume or quantity |
+| `timestamp` | `i64` | Yes | Exchange-side timestamp (milliseconds since epoch) |
+| `received_at` | `i64` | Yes | System receive timestamp (milliseconds since epoch), for latency measurement |
+| `bid` | `Option<Decimal>` | No | Best bid price |
+| `ask` | `Option<Decimal>` | No | Best ask price |
+| `high_24h` | `Option<Decimal>` | No | 24-hour high price |
+| `low_24h` | `Option<Decimal>` | No | 24-hour low price |
+| `volume_24h` | `Option<Decimal>` | No | 24-hour trading volume |
+| `open_interest` | `Option<Decimal>` | No | Open interest (futures/perpetuals only) |
+| `funding_rate` | `Option<Decimal>` | No | Funding rate (perpetuals only) |
+| `liquidity` | `Option<Decimal>` | No | DEX liquidity in USD (Solana meme coins) |
+| `fdv` | `Option<Decimal>` | No | Fully diluted valuation |
+| `sequence_id` | `Option<u64>` | No | Sequence ID for message ordering and gap detection |
+| `raw_data` | `String` | Yes | Original raw message JSON (retained for debugging/replay) |
+
+Built-in validation (`StandardMarketData::validate()`) enforces: non-empty symbol, positive price for Trade/Ticker types, non-negative quantity, sane timestamp bounds, and bid <= ask ordering.
+
+### 4.2 Data Quality Monitoring
+
+The data engine runs a 5-stage data quality monitoring pipeline (defined in `services/data-engine/src/monitoring/quality.rs`), executed hourly via a scheduled task plus once on startup. Each stage exports Prometheus gauge metrics for alerting.
+
+| Stage | Name | What It Checks | Metric |
+|-------|------|---------------|--------|
+| 1 | **Freshness** | Detects symbols with no new snapshot data within a configurable threshold (default: 30s for tokens, scaled for equities). Checks both `active_tokens` and `mkt_equity_snapshots`. | `data_engine_dq_stale_symbols` |
+| 2 | **Gap Detection** | Verifies candle continuity across all timeframes (1m, 5m, 15m, 1h, 4h, 1d). Flags symbols where candle count falls below minimum expected thresholds within a lookback window. | `data_engine_dq_gap_symbols` |
+| 3 | **Liquidity Guard** | Identifies active tokens whose USD liquidity has dropped below the configured minimum (default: $100k). Recommends deactivation to prevent trading on illiquid assets. | `data_engine_dq_low_liq_symbols` |
+| 4 | **Price Spike Detection** | Uses LAG window functions to detect price movements exceeding a configurable threshold (default: 50%) within a 10-minute window. Flags potential bad data or extreme volatility. | `data_engine_dq_spike_symbols` |
+| 5 | **Metrics Export** | All stages export their findings as Prometheus gauges. Combined with per-source counters (`data_engine_messages_by_source_total`, `data_engine_errors_by_source_total`) and latency histograms (`data_engine_latency_by_source_seconds`) for comprehensive observability. | Multiple (see `monitoring/metrics.rs`) |
+
+Additional metrics exported: `data_engine_active_symbols_count`, `data_engine_ingest_latency_seconds`, `data_engine_validation_failures_total`, plus per-source breakdowns.
 
 ## 5. Deployment
 

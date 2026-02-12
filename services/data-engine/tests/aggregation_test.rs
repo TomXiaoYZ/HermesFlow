@@ -89,7 +89,10 @@ async fn test_multi_exchange_aggregation() {
 
     assert_eq!(saved_exchange, exchange, "Exchange mismatch!");
     assert_eq!(saved_close, dec!(100.0), "Close price mismatch!");
-    assert!(saved_volume > rust_decimal::Decimal::ZERO, "Volume should be positive");
+    assert!(
+        saved_volume > rust_decimal::Decimal::ZERO,
+        "Volume should be positive"
+    );
 
     // Clean up
     // sqlx::query("DELETE FROM mkt_equity_snapshots WHERE symbol = $1").bind(symbol).execute(&pool).await.unwrap();

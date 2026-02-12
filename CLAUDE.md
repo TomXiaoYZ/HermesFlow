@@ -30,7 +30,13 @@ make clean        # Full cleanup
 
 ```
 services/
-  data-engine/         # [Rust] Market data aggregation (Binance, Polygon, IBKR, Jupiter, Polymarket, etc.)
+  data-engine/         # [Rust] Market data aggregation
+    collectors/        # 12+ data source connectors (Binance, OKX, Bybit, Polygon, Jupiter, Birdeye, etc.)
+    monitoring/        # Data quality (5-stage), health checks, Prometheus metrics
+    tasks/             # Candle aggregation (1m/5m/15m/1h/4h/1d/1w), scheduling
+    repository/        # TimescaleDB persistence (snapshots, candles, predictions)
+    storage/           # Redis cache + pub/sub, ClickHouse client
+    server/            # Axum HTTP + WebSocket handlers
   gateway/             # [Rust] API gateway + WebSocket router (port 8080)
   execution-engine/    # [Rust] Trade execution (Raydium, IBKR, Futu) - excluded from workspace (Solana SDK tokio conflict)
   strategy-engine/     # [Rust] Real-time strategy execution, event-driven signals via Redis Pub/Sub
@@ -60,6 +66,8 @@ config/
 - **Error Handling**: `thiserror` derive macros. Two-tier: `DataError` (low-level) + `DataEngineError` (service-level). Use `retry_with_backoff()` for resilience.
 - **Config**: 12-Factor. Priority: env vars > `config/prod.toml` > `config/default.toml`. Naming: `{SERVICE_NAME}__{SECTION}__{KEY}`.
 - **execution-engine** is excluded from the Cargo workspace because Solana SDK pins `tokio ~1.14`, conflicting with workspace `tokio 1.35+`. Build and test it separately.
+- **Data Quality**: 5-stage monitoring pipeline (freshness, gap detection, liquidity guard, price spike detection, metrics export). Runs hourly plus on startup. See `services/data-engine/src/monitoring/quality.rs`.
+- **StandardMarketData**: Unified data type for all 12+ data sources, using `rust_decimal::Decimal` for financial precision. All collectors normalize into this struct before persistence/broadcast. See `services/data-engine/src/models/market_data.rs`.
 
 ### Docker
 - All builds use **root directory** as build context (`context: .` in compose).

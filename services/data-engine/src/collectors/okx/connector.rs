@@ -5,13 +5,14 @@ use crate::error::Result;
 use crate::models::{AssetType, DataSourceType, StandardMarketData};
 use crate::traits::{ConnectorStats, DataSourceConnector};
 use async_trait::async_trait;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 
 #[allow(dead_code)]
 pub struct OkxConnector {
     config: OkxConfig,
     client: OkxClient,
-    stats: ConnectorStats,
+    stats: Arc<RwLock<ConnectorStats>>,
     running: bool,
 }
 
@@ -21,7 +22,7 @@ impl OkxConnector {
         Self {
             config,
             client,
-            stats: ConnectorStats::default(),
+            stats: Arc::new(RwLock::new(ConnectorStats::default())),
             running: false,
         }
     }
@@ -66,7 +67,11 @@ impl DataSourceConnector for OkxConnector {
 
         // For now, write this connector assuming `config.symbols` exists.
 
-        let streamer = OkxStreamer::new(self.config.ws_url.clone(), self.config.symbols.clone());
+        let streamer = OkxStreamer::with_stats(
+            self.config.ws_url.clone(),
+            self.config.symbols.clone(),
+            self.stats.clone(),
+        );
         streamer.connect().await
     }
 
@@ -80,6 +85,9 @@ impl DataSourceConnector for OkxConnector {
     }
 
     fn stats(&self) -> ConnectorStats {
-        self.stats.clone()
+        match self.stats.try_read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => ConnectorStats::default(),
+        }
     }
 }

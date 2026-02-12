@@ -1,26 +1,46 @@
 use crate::error::Result;
 use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
+use crate::traits::ConnectorStats;
 use futures::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
 pub struct OkxStreamer {
     url: String,
     symbols: Vec<String>, // e.g., ["BTC-USDT", "ETH-USDT"]
+    stats: Arc<RwLock<ConnectorStats>>,
 }
 
 impl OkxStreamer {
     pub fn new(url: String, symbols: Vec<String>) -> Self {
-        Self { url, symbols }
+        Self {
+            url,
+            symbols,
+            stats: Arc::new(RwLock::new(ConnectorStats::default())),
+        }
+    }
+
+    pub fn with_stats(
+        url: String,
+        symbols: Vec<String>,
+        stats: Arc<RwLock<ConnectorStats>>,
+    ) -> Self {
+        Self {
+            url,
+            symbols,
+            stats,
+        }
     }
 
     pub async fn connect(&self) -> Result<mpsc::Receiver<StandardMarketData>> {
         let (tx, rx) = mpsc::channel(10000);
         let url_str = self.url.clone();
         let symbols = self.symbols.clone();
+        let stats = self.stats.clone();
 
         tokio::spawn(async move {
             let mut backoff = 1;
@@ -61,53 +81,73 @@ impl OkxStreamer {
                         let (mut write, mut read) = ws_stream.split();
 
                         // OKX requires responding to "ping" with "pong" string
-                        // But wait, OKX sends plain string "ping" in some versions or frame?
-                        // "server will send a ping message every 30s... client needs to reply pong"
-                        // If it's a Text frame with content "ping", we reply "pong".
+                        // OKX server sends ping every 30s; timeout at 60s to detect silent death.
+                        const READ_TIMEOUT: std::time::Duration =
+                            std::time::Duration::from_secs(60);
 
                         loop {
-                            tokio::select! {
-                                msg_res = read.next() => {
-                                    match msg_res {
-                                        Some(Ok(Message::Text(text))) => {
-                                            if text == "ping" {
-                                                if let Err(e) = write.send(Message::Text("pong".to_string())).await {
-                                                    error!("Failed to send pong: {}", e);
-                                                    break;
-                                                }
-                                                continue;
-                                            }
+                            let msg_res =
+                                match tokio::time::timeout(READ_TIMEOUT, read.next()).await {
+                                    Ok(Some(msg_res)) => msg_res,
+                                    Ok(None) => {
+                                        warn!("OKX WebSocket stream ended");
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        warn!(
+                                            "OKX WebSocket read timed out after {}s, reconnecting",
+                                            READ_TIMEOUT.as_secs()
+                                        );
+                                        break;
+                                    }
+                                };
 
-                                            // Handle data
-                                            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                                                // Check for "data" field
-                                                if let Some(data_array) = value.get("data").and_then(|v| v.as_array()) {
-                                                     for d in data_array {
-                                                         if let Some(md) = Self::parse_data(d) {
-                                                             if tx.send(md).await.is_err() {
-                                                                 return; // Receiver dropped
-                                                             }
-                                                         }
-                                                     }
+                            match msg_res {
+                                Ok(Message::Text(text)) => {
+                                    if text == "ping" {
+                                        if let Err(e) =
+                                            write.send(Message::Text("pong".to_string())).await
+                                        {
+                                            error!("Failed to send pong: {}", e);
+                                            break;
+                                        }
+                                        continue;
+                                    }
+
+                                    // Handle data
+                                    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                        // Check for "data" field
+                                        if let Some(data_array) =
+                                            value.get("data").and_then(|v| v.as_array())
+                                        {
+                                            let count = data_array.len() as u64;
+                                            for d in data_array {
+                                                if let Some(md) = Self::parse_data(d) {
+                                                    if tx.send(md).await.is_err() {
+                                                        return; // Receiver dropped
+                                                    }
                                                 }
-                                                // Handle error/event status?
                                             }
+                                            // Track stats
+                                            let mut s = stats.write().await;
+                                            s.messages_received += count;
+                                            s.messages_processed += count;
+                                            s.last_message_at = Some(std::time::SystemTime::now());
                                         }
-                                        Some(Ok(Message::Ping(_))) => {} // Tungstenite auto-pong
-                                        Some(Ok(Message::Close(_))) => {
-                                            warn!("OKX WebSocket closed");
-                                            break;
-                                        }
-                                        Some(Err(e)) => {
-                                            error!("WebSocket error: {}", e);
-                                            break;
-                                        }
-                                        None => break,
-                                        _ => {}
                                     }
                                 }
-                                // Implement keepalive/heartbeat sender if needed?
-                                // OKX server initiates ping usually.
+                                Ok(Message::Ping(_)) => {} // Tungstenite auto-pong
+                                Ok(Message::Close(_)) => {
+                                    warn!("OKX WebSocket closed");
+                                    break;
+                                }
+                                Err(e) => {
+                                    error!("WebSocket error: {}", e);
+                                    let mut s = stats.write().await;
+                                    s.errors += 1;
+                                    break;
+                                }
+                                _ => {}
                             }
                         }
                     }

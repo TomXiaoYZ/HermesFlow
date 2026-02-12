@@ -1,6 +1,8 @@
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use rust_decimal::Decimal;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::info;
 
 use super::client::{AggregateResult, MassiveClient};
@@ -13,22 +15,31 @@ use crate::config::MassiveConfig;
 
 pub struct MassiveConnector {
     client: MassiveClient,
-    stats: ConnectorStats,
+    stats: Arc<RwLock<ConnectorStats>>,
     source_type: DataSourceType,
     config: MassiveConfig,
+    last_success: Arc<AtomicU64>,
+    consecutive_errors: Arc<AtomicU32>,
 }
 
 impl MassiveConnector {
     pub fn new(config: MassiveConfig) -> Self {
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
         Self {
             client: MassiveClient::new(
                 config.api_key.clone(),
                 config.rate_limit_per_min,
                 "https://api.polygon.io".to_string(),
             ),
-            stats: ConnectorStats::default(),
+            stats: Arc::new(RwLock::new(ConnectorStats::default())),
             source_type: DataSourceType::PolygonStock,
             config,
+            last_success: Arc::new(AtomicU64::new(now_millis)),
+            consecutive_errors: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -42,40 +53,61 @@ impl MassiveConnector {
         from: &str,
         to: &str,
     ) -> Result<Vec<StandardMarketData>> {
-        let aggregates = self
+        let result = self
             .client
             .get_aggregates(ticker, multiplier, timespan, from, to)
             .await
             .map_err(|e| DataError::ConnectionFailed {
                 data_source: "Polygon".to_string(),
                 reason: e.to_string(),
-            })?;
+            });
 
-        // Convert to StandardMarketData
-        let mut data_points = Vec::with_capacity(aggregates.len());
+        match result {
+            Ok(aggregates) => {
+                let now_millis = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                self.last_success.store(now_millis, Ordering::Relaxed);
+                self.consecutive_errors.store(0, Ordering::Relaxed);
 
-        for agg in aggregates {
-            let data = self.map_aggregate(ticker, agg);
-            data_points.push(data);
+                let count = aggregates.len() as u64;
+                let mut data_points = Vec::with_capacity(aggregates.len());
+                for agg in aggregates {
+                    let data = self.map_aggregate(ticker, agg);
+                    data_points.push(data);
+                }
+
+                // Track stats
+                let mut s = self.stats.write().await;
+                s.messages_received += count;
+                s.messages_processed += count;
+                s.last_message_at = Some(std::time::SystemTime::now());
+
+                Ok(data_points)
+            }
+            Err(e) => {
+                self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+                let mut s = self.stats.write().await;
+                s.errors += 1;
+                Err(e)
+            }
         }
-
-        Ok(data_points)
     }
 
     fn map_aggregate(&self, ticker: &str, agg: AggregateResult) -> StandardMarketData {
-        let price = Decimal::from_f64_retain(agg.c).unwrap_or(Decimal::ZERO);
-        let volume = Decimal::from_f64_retain(agg.v).unwrap_or(Decimal::ZERO);
-        // Turn timestamp (msec) into raw i64
+        let price = agg.c;
+        let volume = agg.v;
         let timestamp = agg.t;
 
-        // Metadata for JSON storage
+        // Metadata for JSON storage (convert Decimal to string for serde_json compatibility)
         let metadata = serde_json::json!({
-            "vwap": agg.vw,
+            "vwap": agg.vw.map(|d| d.to_string()),
             "transactions": agg.n,
-            "open": agg.o,
-            "high": agg.h,
-            "low": agg.l,
-            "close": agg.c,
+            "open": agg.o.to_string(),
+            "high": agg.h.to_string(),
+            "low": agg.l.to_string(),
+            "close": agg.c.to_string(),
         });
 
         StandardMarketData {
@@ -96,9 +128,9 @@ impl MassiveConnector {
             received_at: chrono::Utc::now().timestamp_millis(),
             bid: None,
             ask: None,
-            high_24h: Some(Decimal::from_f64_retain(agg.h).unwrap_or(Decimal::ZERO)),
-            low_24h: Some(Decimal::from_f64_retain(agg.l).unwrap_or(Decimal::ZERO)),
-            volume_24h: None, // This is a single candle, not 24h rolling
+            high_24h: None,   // Single candle cannot represent 24h range
+            low_24h: None,    // Single candle cannot represent 24h range
+            volume_24h: None, // Single candle, not 24h rolling
             open_interest: None,
             funding_rate: None,
             liquidity: None,
@@ -127,7 +159,11 @@ impl DataSourceConnector for MassiveConnector {
     async fn connect(&mut self) -> Result<mpsc::Receiver<StandardMarketData>> {
         info!("Connecting to Massive/Polygon WebSocket for Real-Time data...");
         let api_key = self.client.api_key().to_string(); // Access api_key via getter
-        let streamer = super::websocket::MassiveStreamer::new(api_key, self.config.ws_url.clone());
+        let streamer = super::websocket::MassiveStreamer::with_stats(
+            api_key,
+            self.config.ws_url.clone(),
+            self.stats.clone(),
+        );
         streamer.connect().await
     }
 
@@ -136,11 +172,21 @@ impl DataSourceConnector for MassiveConnector {
     }
 
     async fn is_healthy(&self) -> bool {
-        // Simple heuristic: if we can create the client, we assume healthy for REST
-        true
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last = self.last_success.load(Ordering::Relaxed);
+        let errors = self.consecutive_errors.load(Ordering::Relaxed);
+
+        (now_millis.saturating_sub(last) < 300_000) && (errors < 3)
     }
 
     fn stats(&self) -> ConnectorStats {
-        self.stats.clone()
+        // Use try_read to avoid blocking; fall back to default if lock is held
+        match self.stats.try_read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => ConnectorStats::default(),
+        }
     }
 }

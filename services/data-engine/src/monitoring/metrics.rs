@@ -1,5 +1,7 @@
 use lazy_static::lazy_static;
-use prometheus::{Counter, Encoder, Histogram, IntGauge, Registry, TextEncoder};
+use prometheus::{
+    Counter, CounterVec, Encoder, Histogram, HistogramVec, IntGauge, Opts, Registry, TextEncoder,
+};
 
 lazy_static! {
     /// Registry for Prometheus metrics
@@ -86,6 +88,12 @@ lazy_static! {
         "Number of symbols with low liquidity"
     ).expect("Failed to create DQ_LOW_LIQ_SYMBOLS gauge");
 
+    /// Data Quality: Price Spike Symbols Count
+    pub static ref DQ_SPIKE_SYMBOLS: IntGauge = IntGauge::new(
+        "data_engine_dq_spike_symbols",
+        "Number of symbols with price spikes detected"
+    ).expect("Failed to create DQ_SPIKE_SYMBOLS gauge");
+
     /// BirdEye API Request Counter
     pub static ref BIRDEYE_API_REQUESTS_TOTAL: Counter = Counter::new(
         "data_engine_birdeye_requests_total",
@@ -106,6 +114,34 @@ lazy_static! {
         "data_engine_validation_failures_total",
         "Total data validation failures"
     ).expect("Failed to create VALIDATION_FAILURES counter");
+
+    /// Messages received per data source (labelled by "source")
+    pub static ref DATA_MESSAGES_BY_SOURCE: CounterVec = CounterVec::new(
+        Opts::new(
+            "data_engine_messages_by_source_total",
+            "Total messages received, labelled by data source"
+        ),
+        &["source"]
+    ).expect("Failed to create DATA_MESSAGES_BY_SOURCE counter vec");
+
+    /// Errors per data source (labelled by "source")
+    pub static ref DATA_ERRORS_BY_SOURCE: CounterVec = CounterVec::new(
+        Opts::new(
+            "data_engine_errors_by_source_total",
+            "Total errors encountered, labelled by data source"
+        ),
+        &["source"]
+    ).expect("Failed to create DATA_ERRORS_BY_SOURCE counter vec");
+
+    /// Processing latency per data source (labelled by "source")
+    pub static ref DATA_LATENCY_BY_SOURCE: HistogramVec = HistogramVec::new(
+        prometheus::HistogramOpts::new(
+            "data_engine_latency_by_source_seconds",
+            "Processing latency per data source in seconds"
+        )
+        .buckets(vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
+        &["source"]
+    ).expect("Failed to create DATA_LATENCY_BY_SOURCE histogram vec");
 }
 
 /// Initializes Prometheus metrics by registering them with the registry
@@ -122,9 +158,13 @@ pub fn init_metrics() -> Result<(), prometheus::Error> {
     REGISTRY.register(Box::new(DQ_STALE_SYMBOLS.clone()))?;
     REGISTRY.register(Box::new(DQ_GAP_SYMBOLS.clone()))?;
     REGISTRY.register(Box::new(DQ_LOW_LIQ_SYMBOLS.clone()))?;
+    REGISTRY.register(Box::new(DQ_SPIKE_SYMBOLS.clone()))?;
     REGISTRY.register(Box::new(BIRDEYE_API_REQUESTS_TOTAL.clone()))?;
     REGISTRY.register(Box::new(INGEST_LATENCY.clone()))?;
     REGISTRY.register(Box::new(VALIDATION_FAILURES.clone()))?;
+    REGISTRY.register(Box::new(DATA_MESSAGES_BY_SOURCE.clone()))?;
+    REGISTRY.register(Box::new(DATA_ERRORS_BY_SOURCE.clone()))?;
+    REGISTRY.register(Box::new(DATA_LATENCY_BY_SOURCE.clone()))?;
 
     // Set service as up initially
     SERVICE_UP.set(1);

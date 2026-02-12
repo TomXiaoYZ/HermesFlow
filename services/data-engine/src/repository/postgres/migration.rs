@@ -377,10 +377,12 @@ impl MigrationManager {
             DataEngineError::DatabaseError(format!("Failed to create trade_orders table: {}", e))
         })?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_orders_status ON trade_orders(status, created_at DESC)")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_orders_status ON trade_orders(status, created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_orders_exchange_symbol ON trade_orders(exchange, symbol)")
             .execute(&self.pool)
@@ -412,10 +414,12 @@ impl MigrationManager {
             ))
         })?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_executions_order ON trade_executions(order_id)")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_executions_order ON trade_executions(order_id)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DataEngineError::DatabaseError(format!("Failed index: {}", e)))?;
 
         // trade_positions
         sqlx::query(
@@ -437,10 +441,7 @@ impl MigrationManager {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            DataEngineError::DatabaseError(format!(
-                "Failed to create trade_positions table: {}",
-                e
-            ))
+            DataEngineError::DatabaseError(format!("Failed to create trade_positions table: {}", e))
         })?;
 
         // trade_accounts
@@ -459,10 +460,7 @@ impl MigrationManager {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            DataEngineError::DatabaseError(format!(
-                "Failed to create trade_accounts table: {}",
-                e
-            ))
+            DataEngineError::DatabaseError(format!("Failed to create trade_accounts table: {}", e))
         })?;
 
         info!("Trading system tables created successfully");

@@ -5,8 +5,8 @@ use futures::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
 pub struct BinanceStreamer {

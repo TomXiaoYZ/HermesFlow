@@ -114,8 +114,21 @@ impl StandardMarketData {
         if self.symbol.is_empty() {
             return Err("symbol is empty".into());
         }
-        if self.price < Decimal::ZERO {
-            return Err(format!("price is negative: {}", self.price));
+        // Trade and Ticker data must have strictly positive prices (zero-price trades don't exist)
+        match self.data_type {
+            MarketDataType::Trade | MarketDataType::Ticker => {
+                if self.price <= Decimal::ZERO {
+                    return Err(format!(
+                        "price must be positive for {:?}: {}",
+                        self.data_type, self.price
+                    ));
+                }
+            }
+            _ => {
+                if self.price < Decimal::ZERO {
+                    return Err(format!("price is negative: {}", self.price));
+                }
+            }
         }
         if self.quantity < Decimal::ZERO {
             return Err(format!("quantity is negative: {}", self.quantity));
@@ -277,5 +290,83 @@ mod tests {
 
         // Verify no precision loss
         assert_eq!(data.price.to_string(), "50000.12345678");
+    }
+
+    fn make_valid_data(data_type: MarketDataType, price: Decimal) -> StandardMarketData {
+        StandardMarketData {
+            source: DataSourceType::BinanceSpot,
+            exchange: "Binance".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            asset_type: AssetType::Spot,
+            data_type,
+            price,
+            quantity: dec!(1.0),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            received_at: chrono::Utc::now().timestamp_millis(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_validate_zero_price_trade_rejected() {
+        let data = make_valid_data(MarketDataType::Trade, Decimal::ZERO);
+        assert!(
+            data.validate().is_err(),
+            "Trade with price=0 should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_validate_zero_price_ticker_rejected() {
+        let data = make_valid_data(MarketDataType::Ticker, Decimal::ZERO);
+        assert!(
+            data.validate().is_err(),
+            "Ticker with price=0 should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_validate_negative_price_trade_rejected() {
+        let data = make_valid_data(MarketDataType::Trade, dec!(-1.0));
+        assert!(
+            data.validate().is_err(),
+            "Trade with negative price should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_validate_positive_price_trade_accepted() {
+        let data = make_valid_data(MarketDataType::Trade, dec!(100.0));
+        assert!(
+            data.validate().is_ok(),
+            "Trade with positive price should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_validate_zero_price_funding_rate_accepted() {
+        let data = make_valid_data(MarketDataType::FundingRate, Decimal::ZERO);
+        assert!(
+            data.validate().is_ok(),
+            "FundingRate with price=0 should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_validate_zero_price_orderbook_accepted() {
+        let data = make_valid_data(MarketDataType::OrderBook, Decimal::ZERO);
+        assert!(
+            data.validate().is_ok(),
+            "OrderBook with price=0 should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_validate_zero_price_candle_accepted() {
+        let data = make_valid_data(MarketDataType::Candle, Decimal::ZERO);
+        assert!(
+            data.validate().is_ok(),
+            "Candle with price=0 should be accepted"
+        );
     }
 }

@@ -61,12 +61,10 @@ impl PredictionRepository for PostgresPredictionRepository {
         .bind(market_id)
         .bind(&outcome.outcome)
         .bind(outcome.price)
-        .bind(outcome.volume_24h)
+        .bind(outcome.volume)
         .execute(&self.pool)
         .await
-        .map_err(|e| {
-            DataEngineError::DatabaseError(format!("Failed to insert outcome: {}", e))
-        })?;
+        .map_err(|e| DataEngineError::DatabaseError(format!("Failed to insert outcome: {}", e)))?;
         Ok(())
     }
 
@@ -141,9 +139,7 @@ impl PredictionRepository for PostgresPredictionRepository {
             .fetch_all(&self.pool)
             .await
         }
-        .map_err(|e| {
-            DataEngineError::DatabaseError(format!("Failed to list markets: {}", e))
-        })?;
+        .map_err(|e| DataEngineError::DatabaseError(format!("Failed to list markets: {}", e)))?;
 
         let mut markets = Vec::with_capacity(rows.len());
         for row in rows {
@@ -168,7 +164,7 @@ impl PredictionRepository for PostgresPredictionRepository {
                 .map(|r| MarketOutcome {
                     outcome: r.get("outcome"),
                     price: r.get("price"),
-                    volume_24h: r.try_get("volume_24h").ok(),
+                    volume: r.try_get("volume_24h").ok(),
                     timestamp: r.get("timestamp"),
                 })
                 .collect();
@@ -209,9 +205,7 @@ impl PredictionRepository for PostgresPredictionRepository {
         .bind(market_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| {
-            DataEngineError::DatabaseError(format!("Failed to get market: {}", e))
-        })?;
+        .map_err(|e| DataEngineError::DatabaseError(format!("Failed to get market: {}", e)))?;
 
         let row = match row_opt {
             Some(r) => r,
@@ -237,7 +231,7 @@ impl PredictionRepository for PostgresPredictionRepository {
             .map(|r| MarketOutcome {
                 outcome: r.get("outcome"),
                 price: r.get("price"),
-                volume_24h: r.try_get("volume_24h").ok(),
+                volume: r.try_get("volume_24h").ok(),
                 timestamp: r.get("timestamp"),
             })
             .collect();
@@ -279,10 +273,7 @@ impl PredictionRepository for PostgresPredictionRepository {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            DataEngineError::DatabaseError(format!(
-                "Failed to get outcome history: {}",
-                e
-            ))
+            DataEngineError::DatabaseError(format!("Failed to get outcome history: {}", e))
         })?;
 
         Ok(rows
@@ -290,7 +281,7 @@ impl PredictionRepository for PostgresPredictionRepository {
             .map(|r| MarketOutcome {
                 outcome: r.get("outcome"),
                 price: r.get("price"),
-                volume_24h: r.try_get("volume_24h").ok(),
+                volume: r.try_get("volume_24h").ok(),
                 timestamp: r.get("timestamp"),
             })
             .collect())

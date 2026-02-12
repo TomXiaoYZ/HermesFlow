@@ -12,8 +12,7 @@ use serde::{Deserialize, Deserializer};
 use std::fmt;
 
 /// Main application configuration
-#[derive(Debug, Deserialize, Clone)]
-#[derive(Default)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub redis: RedisConfig,
@@ -210,8 +209,7 @@ impl Default for MassiveConfig {
 }
 
 /// Data source configuration
-#[derive(Debug, Deserialize, Clone)]
-#[derive(Default)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct DataSourceConfig {
     /// Data source name (e.g., "binance_spot")
     pub name: String,
@@ -291,8 +289,6 @@ impl AppConfig {
         config.try_deserialize()
     }
 }
-
-
 
 impl Default for ServerConfig {
     fn default() -> Self {

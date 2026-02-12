@@ -1,29 +1,22 @@
-use chrono::{TimeZone, Utc};
-use common::events::MarketDataUpdate;
+mod collector_spawner;
+
+use chrono::Utc;
 use data_engine::{
-    collectors::{
-        AkShareCollector, BybitConnector, FutuConnector,
-        MassiveConnector, OkxConnector, PolymarketCollector, TwitterCollector,
-    },
     config::{AppConfig, LoggingConfig},
     monitoring::{init_metrics, logging::init_logging, HealthMonitor},
-    repository::{
-        postgres::PostgresRepositories,
-        MarketDataRepository,
-        SocialRepository, // Traits
-    },
+    repository::postgres::PostgresRepositories,
     server::{create_router, routes::AppStateParams, AppState},
     storage::{ClickHouseWriter, RedisCache},
     tasks::TaskManager,
-    traits::DataSourceConnector,
 };
 use futures::StreamExt;
 use redis::Commands;
-use rust_decimal::prelude::ToPrimitive;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::RwLock;
+
+use collector_spawner::CollectorDeps;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -110,26 +103,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize IBKR Trader if enabled
     let ibkr_trader = None;
-    /*
-    if let Some(ibkr_config) = config.ibkr.clone() {
-        if ibkr_config.enabled {
-            match IBKRTrader::new(&ibkr_config).await {
-                Ok(trader) => {
-                    tracing::info!("IBKR Trader initialized successfully");
-                    Some(trader)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to initialize IBKR Trader: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    */
 
     // Initialize Task Manager
     tracing::info!("Initializing Task Manager...");
@@ -138,23 +111,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = tm.start().await {
                 tracing::warn!("Failed to start Task Scheduler: {}", e);
             }
-            // Register EOD job
             if let Err(e) = tm.register_eod_job().await {
                 tracing::warn!("Failed to register EOD job: {}", e);
             }
-            // Register Token Discovery job
             if let Err(e) = tm.register_token_discovery_job().await {
                 tracing::warn!("Failed to register token discovery job: {}", e);
             }
-            // Register Data Quality job
             if let Err(e) = tm.register_data_quality_job().await {
                 tracing::warn!("Failed to register data quality job: {}", e);
             }
-            // Register Candle Aggregation job
             if let Err(e) = tm.register_candle_aggregation_job().await {
                 tracing::warn!("Failed to register candle aggregation job: {}", e);
             }
-            // Register Polymarket discovery job
             if let Err(e) = tm.register_polymarket_job().await {
                 tracing::warn!("Failed to register Polymarket job: {}", e);
             }
@@ -209,7 +177,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             while let Some(msg) = stream.next().await {
                 if let Ok(payload) = msg.get_payload::<String>() {
-                    // Check channel name if needed, but for now we just forward everything to WS
                     tracing::info!("Received Redis Msg (Forwarding to WS): {}", payload);
                     let _ = tx_clone.send(payload);
                 }
@@ -221,7 +188,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Starting Heartbeat Task...");
     let redis_url_hb = config.redis.url.clone();
     tokio::spawn(async move {
-        // Simple dedicated connection for heartbeat
         if let Ok(client) = redis::Client::open(redis_url_hb) {
             if let Ok(mut con) = client.get_connection() {
                 loop {
@@ -230,7 +196,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "status": "online",
                         "timestamp": Utc::now().timestamp_millis()
                     });
-                    // Fire and forget
                     let _: redis::RedisResult<()> = con.publish("system_heartbeat", hb.to_string());
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
@@ -243,717 +208,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create broadcast channel for shutdown signal
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
-    // Start Twitter collector if configured
-    if let Some(twitter_config) = config.twitter.clone() {
-        tracing::info!("Starting Twitter collector");
-        let twitter_cfg = twitter_config.clone();
-        let twitter_collector = Arc::new(TwitterCollector::new(twitter_config));
-        let shutdown_rx = shutdown_tx.subscribe();
-        let repos = Arc::clone(&postgres_repos);
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-                twitter_cfg.poll_interval_secs,
-            ));
-            let mut shutdown = shutdown_rx;
-
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let mut targets = twitter_cfg.targets.clone();
-                        if targets.is_empty() && !twitter_cfg.username.is_empty() {
-                            targets.push(twitter_cfg.username.clone());
-                        }
-
-                        let max_tweets = twitter_cfg.max_tweets_per_session.min(200);
-
-                        // Run timeline scrapes
-                        for target in targets {
-                            let job = format!("user:{}", target);
-                            match twitter_collector.scrape_user_timeline(&target, max_tweets as i32).await {
-                                Ok(tweets) => {
-                                    let scraped = tweets.len() as i32;
-                                    let mut upserted = 0i32;
-
-                                    for t in tweets {
-                                        let res = repos.social.insert_tweet(&t).await;
-                                        if res.is_ok() { upserted += 1; }
-                                    }
-
-                                    let _ = repos.social
-                                        .insert_collection_run(&job, scraped, upserted, None)
-                                        .await;
-                                }
-                                Err(e) => {
-                                    tracing::warn!(target = %target, err = %e, "Twitter user scrape failed");
-                                    let _ = repos.social
-                                        .insert_collection_run(&job, 0, 0, Some(&e.to_string()))
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                    _ = shutdown.recv() => break,
-                }
-            }
-        });
-    }
-
-    // Start Polymarket collector if configured
-    if let Some(polymarket_config) = config.polymarket.clone() {
-        tracing::info!("Starting Polymarket collector");
-        let pc = Arc::new(PolymarketCollector::new(
-            polymarket_config,
-            postgres_repos.prediction.clone(),
-        ));
-        let s_rx = shutdown_tx.subscribe();
-        tokio::spawn(async move {
-            if let Err(e) = pc.start(s_rx).await {
-                tracing::error!("Polymarket collector error: {}", e);
-            }
-        });
-    }
-
-    // Start IBKR collector if configured
-    /*
-    if let Some(ibkr_config) = config.ibkr.clone() {
-        if ibkr_config.enabled {
-            tracing::info!("Starting IBKR collector");
-            // Inject MarketDataRepository (coerced from Arc<PostgresMarketDataRepository>)
-            let mut ibkr_collector = IBKRCollector::new(ibkr_config, postgres_repos.market_data.clone());
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            let redis_publisher = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-
-            let broadcast_tx_ibkr = broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    match ibkr_collector.connect().await {
-                        Ok(mut rx) => {
-                            tracing::info!("IBKR collector connection established");
-                            loop {
-                                tokio::select! {
-                                    Some(msg) = rx.recv() => {
-                                        // 1. Store Generic Snapshot
-                                        if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                            tracing::warn!("Failed to store IBKR snapshot: {}", e);
-                                        }
-
-                                        // 2. Publish to Redis for Strategy Consumer
-                                        // Also broadcast internally for WebSocket
-                                        if let Some(publisher) = &redis_publisher {
-                                            let update = MarketDataUpdate {
-                                                symbol: msg.symbol.clone(),
-                                                price: msg.price.to_f64().unwrap_or_default(),
-                                                volume: msg.quantity.to_f64().unwrap_or_default(),
-                                                timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                                source: "ibkr".to_string(),
-                                            };
-
-                                            if let Ok(json) = serde_json::to_string(&update) {
-                                                // Send to Redis
-                                                if let Err(e) = publisher.publish(&"market_data", &json).await {
-                                                     tracing::warn!("Failed to publish IBKR update to Redis: {}", e);
-                                                }
-                                                // Send to Internal WS Broadcast
-                                                let _ = broadcast_tx_ibkr.send(json);
-                                            }
-                                        }
-                                    }
-                                    _ = shutdown_rx.recv() => {
-                                        let _ = ibkr_collector.disconnect().await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("IBKR Connect failed: {}. Retrying...", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
-    */
-    // Start Birdeye collector if configured
-    if let Some(birdeye_config) = config.birdeye.clone() {
-        if birdeye_config.enabled {
-            tracing::info!("Starting Birdeye collector");
-            use data_engine::collectors::BirdeyeConnector;
-            let birdeye_collector = BirdeyeConnector::new(birdeye_config.clone());
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            // Re-use redis publisher logic if possible
-            let redis_publisher = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-            let tx_clone = broadcast_tx.clone();
-
-            // Spawn Meta Collector (New)
-            if let Some(r) = &redis {
-                use data_engine::collectors::birdeye::meta_collector::BirdeyeMetaCollector;
-                let meta_collector = BirdeyeMetaCollector::new(
-                    birdeye_config.clone(),
-                    r.clone(),
-                    repos.token.clone(),
-                );
-                tokio::spawn(async move {
-                    meta_collector.run().await;
-                });
-                tracing::info!("Started Birdeye Meta Collector");
-            }
-
-            tokio::spawn(async move {
-                loop {
-                    match birdeye_collector.connect(repos.token.clone()).await {
-                        Ok(mut rx) => {
-                            tracing::info!("Birdeye collector connection established");
-                            loop {
-                                tokio::select! {
-                                    Some(msg) = rx.recv() => {
-                                         if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                             tracing::warn!("Failed to store Birdeye snapshot: {}", e);
-                                         }
-                                         // Map to Standard Event
-                                         let update = MarketDataUpdate {
-                                             symbol: msg.symbol.clone(),
-                                             price: msg.price.to_f64().unwrap_or_default(),
-                                             volume: msg.quantity.to_f64().unwrap_or_default(),
-                                             timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "Birdeye".to_string(),
-                                         };
-
-                                         if let Ok(json) = serde_json::to_string(&update) {
-                                              // Send to WebSocket
-                                              let _ = tx_clone.send(json.clone());
-
-                                              let channel = "market_data";
-                                              if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(channel, &json).await {
-                                                      tracing::warn!("Failed to publish to Redis: {}", e);
-                                                  }
-                                              }
-                                         }
-                                    }
-                                    _ = shutdown_rx.recv() => {
-                                        let _ = birdeye_collector.disconnect().await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Birdeye Connect failed: {}. Retrying...", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    // Start Helius collector if configured
-    if let Some(helius_config) = config.helius.clone() {
-        if helius_config.enabled {
-            tracing::info!("Starting Helius collector");
-            use data_engine::collectors::HeliusConnector;
-            let helius_collector = HeliusConnector::new(helius_config);
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            let redis_publisher = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-            let tx_clone = broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    match helius_collector.connect().await {
-                        Ok(mut rx) => {
-                            tracing::info!("Helius collector connection established");
-                            loop {
-                                tokio::select! {
-                                    Some(msg) = rx.recv() => {
-                                         // Helius is high frequency, maybe log less or batch insert?
-                                         // For now, treat same as others.
-                                         if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                             tracing::warn!("Failed to store Helius snapshot: {}", e);
-                                         }
-
-                                         let update = MarketDataUpdate {
-                                             symbol: msg.symbol.clone(),
-                                             price: msg.price.to_f64().unwrap_or_default(),
-                                             volume: msg.quantity.to_f64().unwrap_or_default(),
-                                             timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "Helius".to_string(),
-                                         };
-
-                                         if let Ok(json) = serde_json::to_string(&update) {
-                                              let _ = tx_clone.send(json.clone());
-                                              let channel = "market_data";
-                                              if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(channel, &json).await {
-                                                      tracing::warn!("Failed to publish to Redis: {}", e);
-                                                  }
-                                              }
-                                         }
-                                    }
-                                    _ = shutdown_rx.recv() => {
-                                        let _ = helius_collector.disconnect().await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Helius Connect failed: {}. Retrying in 5s...", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    // Start Jupiter collector if configured (New Optimization)
-    if let Some(jupiter_config) = config.jupiter.clone() {
-        if jupiter_config.enabled {
-            tracing::info!("Starting Jupiter Price collector");
-            use data_engine::collectors::JupiterPriceCollector;
-
-            let redis_cache_val = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-
-            let jupiter_collector = JupiterPriceCollector::new(jupiter_config, redis_cache_val);
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            let redis_publisher = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-            let tx_clone = broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    match jupiter_collector.connect(repos.token.clone()).await {
-                        Ok(mut rx) => {
-                            tracing::info!("Jupiter Price collector connection established");
-                            loop {
-                                tokio::select! {
-                                    Some(msg) = rx.recv() => {
-                                         if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                             tracing::warn!("Failed to store Jupiter snapshot: {}", e);
-                                         }
-
-                                         // Map to Standard Event
-                                         let update = MarketDataUpdate {
-                                             symbol: msg.symbol.clone(),
-                                             price: msg.price.to_f64().unwrap_or_default(),
-                                             volume: msg.quantity.to_f64().unwrap_or_default(),
-                                             timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "Jupiter".to_string(),
-                                         };
-
-                                         if let Ok(json) = serde_json::to_string(&update) {
-                                              let _ = tx_clone.send(json.clone());
-                                              let channel = "market_data";
-                                              if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(channel, &json).await {
-                                                      tracing::warn!("Failed to publish to Redis: {}", e);
-                                                  }
-                                              }
-                                         }
-                                    }
-                                    _ = shutdown_rx.recv() => {
-                                        let _ = jupiter_collector.disconnect().await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Jupiter Connect failed: {}. Retrying in 5s...", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    // Start AkShare collector if configured
-    if let Some(ak_config) = config.akshare.clone() {
-        if ak_config.enabled {
-            tracing::info!("Starting AkShare collector");
-            let mut ak_collector = AkShareCollector::new(ak_config);
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            tokio::spawn(async move {
-                match ak_collector.connect().await {
-                    Ok(mut rx) => loop {
-                        tokio::select! {
-                            Some(msg) = rx.recv() => {
-                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                    tracing::warn!("Failed to store AkShare snapshot: {}", e);
-                                }
-                            }
-                            _ = shutdown_rx.recv() => break,
-                        }
-                    },
-                    Err(e) => tracing::error!("AkShare Connect failed: {}", e),
-                }
-            });
-        }
-    }
-
-    // Start Massive (Polygon.io) collector if configured
-    if let Some(massive_config) = config.massive.clone() {
-        if !massive_config.api_key.is_empty() {
-            tracing::info!("Starting Massive (Polygon) collector");
-            let mut massive_collector = MassiveConnector::new(massive_config.clone());
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            let redis_publisher = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-            let tx_clone = broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                // Retry loop for connection
-                loop {
-                    match massive_collector.connect().await {
-                        Ok(mut rx) => {
-                            tracing::info!("Massive/Polygon collector connection established");
-                            loop {
-                                tokio::select! {
-                                    Some(msg) = rx.recv() => {
-                                        if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                            tracing::warn!("Failed to store Massive snapshot: {}", e);
-                                        }
-
-                                        // Map to Standard Event
-                                        let update = MarketDataUpdate {
-                                            symbol: msg.symbol.clone(),
-                                            price: msg.price.to_f64().unwrap_or_default(),
-                                            volume: msg.quantity.to_f64().unwrap_or_default(),
-                                            timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                            source: "massive".to_string(),
-                                        };
-
-                                        if let Ok(json) = serde_json::to_string(&update) {
-                                             // Send to WebSocket
-                                             let _ = tx_clone.send(json.clone());
-
-                                             let channel = "market_data";
-                                             if let Some(publisher) = &redis_publisher {
-                                                 if let Err(e) = publisher.publish(channel, &json).await {
-                                                     tracing::warn!("Failed to publish to Redis: {}", e);
-                                                 }
-                                             }
-                                        }
-                                    }
-                                    _ = shutdown_rx.recv() => {
-                                        let _ = massive_collector.disconnect().await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Massive Connect failed: {}. Retrying in 10s...", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    // Start Binance collector if configured
-    // Start Binance collector if configured
-    /*
-    if let Some(binance_config) = config.binance.clone() {
-        if binance_config.enabled {
-            tracing::info!("Starting Binance collector");
-            let mut binance_collector = BinanceConnector::new(binance_config);
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            let redis_publisher = if let Some(r) = &redis {
-                 Some(r.read().await.clone())
-            } else {
-                 None
-            };
-            // Note: Binance block was missing tx_clone, need to add it or it won't broadcast to WS
-            let tx_clone = broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    match binance_collector.connect().await {
-                         Ok(mut rx) => {
-                             tracing::info!("Binance collector connection established");
-                             loop {
-                                 tokio::select! {
-                                     Some(msg) = rx.recv() => {
-                                          if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                              tracing::warn!("Failed to store Binance snapshot: {}", e);
-                                          }
-
-                                          // Map to Standard Event
-                                          let update = MarketDataUpdate {
-                                              symbol: msg.symbol.clone(),
-                                              price: msg.price.to_f64().unwrap_or_default(),
-                                              volume: msg.quantity.to_f64().unwrap_or_default(),
-                                              timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                              source: "Binance".to_string(),
-                                          };
-
-                                          if let Ok(json) = serde_json::to_string(&update) {
-                                               // Send to WebSocket
-                                               let _ = tx_clone.send(json.clone());
-
-                                               let channel = "market_data";
-                                               if let Some(publisher) = &redis_publisher {
-                                                   if let Err(e) = publisher.publish(&channel, &json).await {
-                                                       tracing::warn!("Failed to publish to Redis: {}", e);
-                                                   }
-                                               }
-                                          }
-                                     }
-                                     _ = shutdown_rx.recv() => {
-                                         let _ = binance_collector.disconnect().await;
-                                         return;
-                                     }
-                                 }
-                             }
-                         }
-                         Err(e) => {
-                             tracing::error!("Binance Connect failed: {}. Retrying...", e);
-                             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                         }
-                    }
-                }
-            });
-        }
-    }
-    */
-
-    // Start OKX collector if configured
-    if let Some(okx_config) = config.okx.clone() {
-        if okx_config.enabled {
-            tracing::info!("Starting OKX collector");
-            let mut okx_collector = OkxConnector::new(okx_config);
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            let redis_publisher = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-            let tx_clone = broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    match okx_collector.connect().await {
-                        Ok(mut rx) => {
-                            tracing::info!("OKX collector connection established");
-                            loop {
-                                tokio::select! {
-                                    Some(msg) = rx.recv() => {
-                                         if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                             tracing::warn!("Failed to store OKX snapshot: {}", e);
-                                         }
-
-                                         // Map to Standard Event
-                                         let update = MarketDataUpdate {
-                                             symbol: msg.symbol.clone(),
-                                             price: msg.price.to_f64().unwrap_or_default(),
-                                             volume: msg.quantity.to_f64().unwrap_or_default(),
-                                             timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "okx".to_string(),
-                                         };
-
-                                         if let Ok(json) = serde_json::to_string(&update) {
-                                              // Send to WebSocket
-                                              let _ = tx_clone.send(json.clone());
-
-                                              let channel = "market_data";
-                                              if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(channel, &json).await {
-                                                      tracing::warn!("Failed to publish to Redis: {}", e);
-                                                  }
-                                              }
-                                         }
-                                    }
-                                    _ = shutdown_rx.recv() => {
-                                        let _ = okx_collector.disconnect().await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("OKX Connect failed: {}. Retrying...", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    // Start Bybit collector if configured
-    if let Some(bybit_config) = config.bybit.clone() {
-        if bybit_config.enabled {
-            tracing::info!("Starting Bybit collector");
-            let mut bybit_collector = BybitConnector::new(bybit_config);
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            let redis_publisher = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-            let tx_clone = broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    match bybit_collector.connect().await {
-                        Ok(mut rx) => {
-                            tracing::info!("Bybit collector connection established");
-                            loop {
-                                tokio::select! {
-                                    Some(msg) = rx.recv() => {
-                                         if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                             tracing::warn!("Failed to store Bybit snapshot: {}", e);
-                                         }
-
-                                         // Map to Standard Event
-                                         let update = MarketDataUpdate {
-                                             symbol: msg.symbol.clone(),
-                                             price: msg.price.to_f64().unwrap_or_default(),
-                                             volume: msg.quantity.to_f64().unwrap_or_default(),
-                                             timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "bybit".to_string(),
-                                         };
-
-                                         if let Ok(json) = serde_json::to_string(&update) {
-                                              // Send to WebSocket
-                                              let _ = tx_clone.send(json.clone());
-
-                                              let channel = "market_data";
-                                              if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(channel, &json).await {
-                                                      tracing::warn!("Failed to publish to Redis: {}", e);
-                                                  }
-                                              }
-                                         }
-                                    }
-                                    _ = shutdown_rx.recv() => {
-                                        let _ = bybit_collector.disconnect().await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Bybit Connect failed: {}. Retrying...", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    // Start Futu collector if configured
-    if let Some(futu_config) = config.futu.clone() {
-        if futu_config.enabled {
-            tracing::info!("Starting Futu collector");
-            let mut futu_collector = FutuConnector::new(futu_config);
-            let mut shutdown_rx = shutdown_tx.subscribe();
-            let repos = Arc::clone(&postgres_repos);
-
-            let redis_publisher = if let Some(r) = &redis {
-                Some(r.read().await.clone())
-            } else {
-                None
-            };
-            let tx_clone = broadcast_tx.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    match futu_collector.connect().await {
-                        Ok(mut rx) => {
-                            tracing::info!("Futu collector connection established (Placeholder)");
-                            loop {
-                                tokio::select! {
-                                    Some(msg) = rx.recv() => {
-                                         if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                             tracing::warn!("Failed to store Futu snapshot: {}", e);
-                                         }
-
-                                         // Map to Standard Event
-                                         let update = MarketDataUpdate {
-                                             symbol: msg.symbol.clone(),
-                                             price: msg.price.to_f64().unwrap_or_default(),
-                                             volume: msg.quantity.to_f64().unwrap_or_default(),
-                                             timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
-                                             source: "futu".to_string(),
-                                         };
-
-                                         if let Ok(json) = serde_json::to_string(&update) {
-                                              // Send to WebSocket
-                                              let _ = tx_clone.send(json.clone());
-
-                                              let channel = "market_data";
-                                              if let Some(publisher) = &redis_publisher {
-                                                  if let Err(e) = publisher.publish(channel, &json).await {
-                                                      tracing::warn!("Failed to publish to Redis: {}", e);
-                                                  }
-                                              }
-                                         }
-                                    }
-                                    _ = shutdown_rx.recv() => {
-                                        let _ = futu_collector.disconnect().await;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Futu Connect failed: {}. Retrying...", e);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
+    // Spawn all market data collectors
+    let collector_deps = CollectorDeps {
+        config: config.clone(),
+        postgres_repos: postgres_repos.clone(),
+        redis: redis.clone(),
+        broadcast_tx: broadcast_tx.clone(),
+        shutdown_tx: shutdown_tx.clone(),
+    };
+    collector_spawner::spawn_all_collectors(&collector_deps).await;
 
     // Start Health Check Loop
     {

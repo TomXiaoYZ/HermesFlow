@@ -1,0 +1,527 @@
+//! Collector spawning logic extracted from main.rs.
+//!
+//! This module handles starting all market data collectors (Twitter, Polymarket,
+//! Birdeye, Helius, Jupiter, AkShare, Massive/Polygon, OKX, Bybit, Futu) as
+//! background tasks with proper shutdown handling.
+
+use chrono::{TimeZone, Utc};
+use common::events::MarketDataUpdate;
+use rust_decimal::prelude::ToPrimitive;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+use data_engine::{
+    collectors::{
+        birdeye::meta_collector::BirdeyeMetaCollector, AkShareCollector, BirdeyeConnector,
+        BybitConnector, FutuConnector, HeliusConnector, JupiterPriceCollector, MassiveConnector,
+        OkxConnector, PolymarketCollector, TwitterCollector,
+    },
+    config::AppConfig,
+    repository::{postgres::PostgresRepositories, MarketDataRepository, SocialRepository},
+    storage::RedisCache,
+    traits::DataSourceConnector,
+};
+
+/// Dependencies required by all collectors.
+pub struct CollectorDeps {
+    pub config: AppConfig,
+    pub postgres_repos: Arc<PostgresRepositories>,
+    pub redis: Option<Arc<RwLock<RedisCache>>>,
+    pub broadcast_tx: tokio::sync::broadcast::Sender<String>,
+    pub shutdown_tx: tokio::sync::broadcast::Sender<()>,
+}
+
+/// Spawn all configured collectors as background tasks.
+///
+/// Each collector respects the shutdown signal and publishes market data updates
+/// to both Redis (for strategy consumers) and the WebSocket broadcast channel.
+pub async fn spawn_all_collectors(deps: &CollectorDeps) {
+    spawn_twitter_collector(deps).await;
+    spawn_polymarket_collector(deps).await;
+    spawn_birdeye_collector(deps).await;
+    spawn_helius_collector(deps).await;
+    spawn_jupiter_collector(deps).await;
+    spawn_akshare_collector(deps).await;
+    spawn_massive_collector(deps).await;
+    spawn_okx_collector(deps).await;
+    spawn_bybit_collector(deps).await;
+    spawn_futu_collector(deps).await;
+}
+
+async fn spawn_twitter_collector(deps: &CollectorDeps) {
+    let Some(twitter_config) = deps.config.twitter.clone() else {
+        return;
+    };
+
+    tracing::info!("Starting Twitter collector");
+    let twitter_cfg = twitter_config.clone();
+    let twitter_collector = Arc::new(TwitterCollector::new(twitter_config));
+    let shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+            twitter_cfg.poll_interval_secs,
+        ));
+        let mut shutdown = shutdown_rx;
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let mut targets = twitter_cfg.targets.clone();
+                    if targets.is_empty() && !twitter_cfg.username.is_empty() {
+                        targets.push(twitter_cfg.username.clone());
+                    }
+
+                    let max_tweets = twitter_cfg.max_tweets_per_session.min(200);
+
+                    for target in targets {
+                        let job = format!("user:{}", target);
+                        match twitter_collector.scrape_user_timeline(&target, max_tweets as i32).await {
+                            Ok(tweets) => {
+                                let scraped = tweets.len() as i32;
+                                let mut upserted = 0i32;
+
+                                for t in tweets {
+                                    let res = repos.social.insert_tweet(&t).await;
+                                    if res.is_ok() { upserted += 1; }
+                                }
+
+                                let _ = repos.social
+                                    .insert_collection_run(&job, scraped, upserted, None)
+                                    .await;
+                            }
+                            Err(e) => {
+                                tracing::warn!(target = %target, err = %e, "Twitter user scrape failed");
+                                let _ = repos.social
+                                    .insert_collection_run(&job, 0, 0, Some(&e.to_string()))
+                                    .await;
+                            }
+                        }
+                    }
+                }
+                _ = shutdown.recv() => break,
+            }
+        }
+    });
+}
+
+async fn spawn_polymarket_collector(deps: &CollectorDeps) {
+    let Some(polymarket_config) = deps.config.polymarket.clone() else {
+        return;
+    };
+
+    tracing::info!("Starting Polymarket collector");
+    let pc = Arc::new(PolymarketCollector::new(
+        polymarket_config,
+        deps.postgres_repos.prediction.clone(),
+    ));
+    let s_rx = deps.shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = pc.start(s_rx).await {
+            tracing::error!("Polymarket collector error: {}", e);
+        }
+    });
+}
+
+async fn spawn_birdeye_collector(deps: &CollectorDeps) {
+    let Some(birdeye_config) = deps.config.birdeye.clone() else {
+        return;
+    };
+    if !birdeye_config.enabled {
+        return;
+    }
+
+    tracing::info!("Starting Birdeye collector");
+    let birdeye_collector = BirdeyeConnector::new(birdeye_config.clone());
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    // Spawn Meta Collector if Redis is available
+    if let Some(r) = &deps.redis {
+        let meta_collector =
+            BirdeyeMetaCollector::new(birdeye_config, r.clone(), repos.token.clone());
+        tokio::spawn(async move {
+            meta_collector.run().await;
+        });
+        tracing::info!("Started Birdeye Meta Collector");
+    }
+
+    tokio::spawn(async move {
+        loop {
+            match birdeye_collector.connect(repos.token.clone()).await {
+                Ok(mut rx) => {
+                    tracing::info!("Birdeye collector connection established");
+                    loop {
+                        tokio::select! {
+                            Some(msg) = rx.recv() => {
+                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                                    tracing::warn!("Failed to store Birdeye snapshot: {}", e);
+                                }
+                                publish_market_update(&msg, "Birdeye", &tx_clone, &redis_publisher).await;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                let _ = birdeye_collector.disconnect().await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Birdeye Connect failed: {}. Retrying...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                }
+            }
+        }
+    });
+}
+
+async fn spawn_helius_collector(deps: &CollectorDeps) {
+    let Some(helius_config) = deps.config.helius.clone() else {
+        return;
+    };
+    if !helius_config.enabled {
+        return;
+    }
+
+    tracing::info!("Starting Helius collector");
+    let helius_collector = HeliusConnector::new(helius_config);
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match helius_collector.connect().await {
+                Ok(mut rx) => {
+                    tracing::info!("Helius collector connection established");
+                    loop {
+                        tokio::select! {
+                            Some(msg) = rx.recv() => {
+                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                                    tracing::warn!("Failed to store Helius snapshot: {}", e);
+                                }
+                                publish_market_update(&msg, "Helius", &tx_clone, &redis_publisher).await;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                let _ = helius_collector.disconnect().await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Helius Connect failed: {}. Retrying in 5s...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+}
+
+async fn spawn_jupiter_collector(deps: &CollectorDeps) {
+    let Some(jupiter_config) = deps.config.jupiter.clone() else {
+        return;
+    };
+    if !jupiter_config.enabled {
+        return;
+    }
+
+    tracing::info!("Starting Jupiter Price collector");
+
+    let redis_cache_val = if let Some(r) = &deps.redis {
+        Some(r.read().await.clone())
+    } else {
+        None
+    };
+
+    let jupiter_collector = JupiterPriceCollector::new(jupiter_config, redis_cache_val);
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match jupiter_collector.connect(repos.token.clone()).await {
+                Ok(mut rx) => {
+                    tracing::info!("Jupiter Price collector connection established");
+                    loop {
+                        tokio::select! {
+                            Some(msg) = rx.recv() => {
+                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                                    tracing::warn!("Failed to store Jupiter snapshot: {}", e);
+                                }
+                                publish_market_update(&msg, "Jupiter", &tx_clone, &redis_publisher).await;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                let _ = jupiter_collector.disconnect().await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Jupiter Connect failed: {}. Retrying in 5s...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+}
+
+async fn spawn_akshare_collector(deps: &CollectorDeps) {
+    let Some(ak_config) = deps.config.akshare.clone() else {
+        return;
+    };
+    if !ak_config.enabled {
+        return;
+    }
+
+    tracing::info!("Starting AkShare collector");
+    let mut ak_collector = AkShareCollector::new(ak_config);
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    tokio::spawn(async move {
+        match ak_collector.connect().await {
+            Ok(mut rx) => loop {
+                tokio::select! {
+                    Some(msg) = rx.recv() => {
+                        if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                            tracing::warn!("Failed to store AkShare snapshot: {}", e);
+                        }
+                        publish_market_update(&msg, "akshare", &tx_clone, &redis_publisher).await;
+                    }
+                    _ = shutdown_rx.recv() => break,
+                }
+            },
+            Err(e) => tracing::error!("AkShare Connect failed: {}", e),
+        }
+    });
+}
+
+async fn spawn_massive_collector(deps: &CollectorDeps) {
+    let Some(massive_config) = deps.config.massive.clone() else {
+        return;
+    };
+    if massive_config.api_key.is_empty() {
+        return;
+    }
+
+    tracing::info!("Starting Massive (Polygon) collector");
+    let mut massive_collector = MassiveConnector::new(massive_config);
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match massive_collector.connect().await {
+                Ok(mut rx) => {
+                    tracing::info!("Massive/Polygon collector connection established");
+                    loop {
+                        tokio::select! {
+                            Some(msg) = rx.recv() => {
+                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                                    tracing::warn!("Failed to store Massive snapshot: {}", e);
+                                }
+                                publish_market_update(&msg, "massive", &tx_clone, &redis_publisher).await;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                let _ = massive_collector.disconnect().await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Massive Connect failed: {}. Retrying in 10s...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                }
+            }
+        }
+    });
+}
+
+async fn spawn_okx_collector(deps: &CollectorDeps) {
+    let Some(okx_config) = deps.config.okx.clone() else {
+        return;
+    };
+    if !okx_config.enabled {
+        return;
+    }
+
+    tracing::info!("Starting OKX collector");
+    let mut okx_collector = OkxConnector::new(okx_config);
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match okx_collector.connect().await {
+                Ok(mut rx) => {
+                    tracing::info!("OKX collector connection established");
+                    loop {
+                        tokio::select! {
+                            Some(msg) = rx.recv() => {
+                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                                    tracing::warn!("Failed to store OKX snapshot: {}", e);
+                                }
+                                publish_market_update(&msg, "okx", &tx_clone, &redis_publisher).await;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                let _ = okx_collector.disconnect().await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("OKX Connect failed: {}. Retrying...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+}
+
+async fn spawn_bybit_collector(deps: &CollectorDeps) {
+    let Some(bybit_config) = deps.config.bybit.clone() else {
+        return;
+    };
+    if !bybit_config.enabled {
+        return;
+    }
+
+    tracing::info!("Starting Bybit collector");
+    let mut bybit_collector = BybitConnector::new(bybit_config);
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match bybit_collector.connect().await {
+                Ok(mut rx) => {
+                    tracing::info!("Bybit collector connection established");
+                    loop {
+                        tokio::select! {
+                            Some(msg) = rx.recv() => {
+                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                                    tracing::warn!("Failed to store Bybit snapshot: {}", e);
+                                }
+                                publish_market_update(&msg, "bybit", &tx_clone, &redis_publisher).await;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                let _ = bybit_collector.disconnect().await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Bybit Connect failed: {}. Retrying...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+}
+
+async fn spawn_futu_collector(deps: &CollectorDeps) {
+    let Some(futu_config) = deps.config.futu.clone() else {
+        return;
+    };
+    if !futu_config.enabled {
+        return;
+    }
+
+    tracing::info!("Starting Futu collector");
+    let mut futu_collector = FutuConnector::new(futu_config);
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match futu_collector.connect().await {
+                Ok(mut rx) => {
+                    tracing::info!("Futu collector connection established (Placeholder)");
+                    loop {
+                        tokio::select! {
+                            Some(msg) = rx.recv() => {
+                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
+                                    tracing::warn!("Failed to store Futu snapshot: {}", e);
+                                }
+                                publish_market_update(&msg, "futu", &tx_clone, &redis_publisher).await;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                let _ = futu_collector.disconnect().await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Futu Connect failed: {}. Retrying...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                }
+            }
+        }
+    });
+}
+
+/// Helper: get a cloned RedisCache for publishing if Redis is available.
+async fn get_redis_publisher(redis: &Option<Arc<RwLock<RedisCache>>>) -> Option<RedisCache> {
+    if let Some(r) = redis {
+        Some(r.read().await.clone())
+    } else {
+        None
+    }
+}
+
+/// Helper: map a StandardMarketData snapshot to a MarketDataUpdate event and
+/// publish it to both the WebSocket broadcast channel and Redis.
+async fn publish_market_update(
+    msg: &data_engine::models::StandardMarketData,
+    source: &str,
+    broadcast_tx: &tokio::sync::broadcast::Sender<String>,
+    redis_publisher: &Option<RedisCache>,
+) {
+    let update = MarketDataUpdate {
+        symbol: msg.symbol.clone(),
+        price: msg.price.to_f64().unwrap_or_default(),
+        volume: msg.quantity.to_f64().unwrap_or_default(),
+        timestamp: Utc.timestamp_millis_opt(msg.timestamp).unwrap(),
+        source: source.to_string(),
+    };
+
+    if let Ok(json) = serde_json::to_string(&update) {
+        let _ = broadcast_tx.send(json.clone());
+
+        if let Some(publisher) = redis_publisher {
+            if let Err(e) = publisher.publish("market_data", &json).await {
+                tracing::warn!("Failed to publish {} update to Redis: {}", source, e);
+            }
+        }
+    }
+}

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -44,11 +45,22 @@ impl DependencyStatus {
     }
 }
 
+/// Per-collector connection health information
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CollectorHealth {
+    pub name: String,
+    pub connected: bool,
+    pub messages_per_min: f64,
+    pub last_message_at: Option<i64>,
+    pub consecutive_errors: u32,
+}
+
 /// Health monitor for tracking service health
 pub struct HealthMonitor {
     last_message: Arc<RwLock<Option<Instant>>>,
     redis_status: Arc<RwLock<DependencyStatus>>,
     clickhouse_status: Arc<RwLock<DependencyStatus>>,
+    collector_health: Arc<RwLock<HashMap<String, CollectorHealth>>>,
     start_time: Instant,
 }
 
@@ -63,6 +75,7 @@ impl HealthMonitor {
             clickhouse_status: Arc::new(RwLock::new(DependencyStatus::down(
                 "Not checked yet".to_string(),
             ))),
+            collector_health: Arc::new(RwLock::new(HashMap::new())),
             start_time: Instant::now(),
         }
     }
@@ -71,6 +84,74 @@ impl HealthMonitor {
     pub async fn record_message(&self) {
         let mut last = self.last_message.write().await;
         *last = Some(Instant::now());
+    }
+
+    /// Records a successful message from a specific collector
+    pub async fn record_collector_message(&self, collector_name: &str) {
+        let now_ts = chrono::Utc::now().timestamp();
+        let mut collectors = self.collector_health.write().await;
+        let entry = collectors
+            .entry(collector_name.to_string())
+            .or_insert_with(|| CollectorHealth {
+                name: collector_name.to_string(),
+                connected: false,
+                messages_per_min: 0.0,
+                last_message_at: None,
+                consecutive_errors: 0,
+            });
+
+        entry.connected = true;
+        entry.last_message_at = Some(now_ts);
+        entry.consecutive_errors = 0;
+
+        // Approximate messages_per_min: increment by 1 and decay over time.
+        // A simple heuristic: add 1 and let the periodic check decay it.
+        entry.messages_per_min += 1.0;
+    }
+
+    /// Records an error from a specific collector
+    pub async fn record_collector_error(&self, collector_name: &str) {
+        let mut collectors = self.collector_health.write().await;
+        let entry = collectors
+            .entry(collector_name.to_string())
+            .or_insert_with(|| CollectorHealth {
+                name: collector_name.to_string(),
+                connected: false,
+                messages_per_min: 0.0,
+                last_message_at: None,
+                consecutive_errors: 0,
+            });
+
+        entry.consecutive_errors += 1;
+        // Mark as disconnected after 3 consecutive errors
+        if entry.consecutive_errors >= 3 {
+            entry.connected = false;
+        }
+    }
+
+    /// Updates the connection status of a specific collector
+    pub async fn set_collector_connected(&self, collector_name: &str, connected: bool) {
+        let mut collectors = self.collector_health.write().await;
+        let entry = collectors
+            .entry(collector_name.to_string())
+            .or_insert_with(|| CollectorHealth {
+                name: collector_name.to_string(),
+                connected: false,
+                messages_per_min: 0.0,
+                last_message_at: None,
+                consecutive_errors: 0,
+            });
+
+        entry.connected = connected;
+        if connected {
+            entry.consecutive_errors = 0;
+        }
+    }
+
+    /// Returns all collector health statuses
+    pub async fn collector_statuses(&self) -> Vec<CollectorHealth> {
+        let collectors = self.collector_health.read().await;
+        collectors.values().cloned().collect()
     }
 
     /// Checks overall health status

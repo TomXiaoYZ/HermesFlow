@@ -2,28 +2,44 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{debug, error, info, warn};
 use url::Url;
 
 use crate::error::Result;
 use crate::models::{AssetType, DataSourceType, MarketDataType, StandardMarketData};
+use crate::traits::ConnectorStats;
 
 pub struct MassiveStreamer {
     api_key: String,
     url: String,
+    stats: Arc<RwLock<ConnectorStats>>,
 }
 
 impl MassiveStreamer {
     pub fn new(api_key: String, url: String) -> Self {
-        Self { api_key, url }
+        Self {
+            api_key,
+            url,
+            stats: Arc::new(RwLock::new(ConnectorStats::default())),
+        }
+    }
+
+    pub fn with_stats(api_key: String, url: String, stats: Arc<RwLock<ConnectorStats>>) -> Self {
+        Self {
+            api_key,
+            url,
+            stats,
+        }
     }
 
     pub async fn connect(&self) -> Result<mpsc::Receiver<StandardMarketData>> {
         let (tx, rx) = mpsc::channel(10000);
         let api_key = self.api_key.clone();
         let url_str = self.url.clone();
+        let stats = self.stats.clone();
 
         tokio::spawn(async move {
             let mut backoff = 1;
@@ -63,14 +79,36 @@ impl MassiveStreamer {
                         backoff = 1; // Reset backoff on successful connection logic entry
 
                         // 3. Read Loop
-                        while let Some(msg_res) = read.next().await {
-                            match msg_res {
+                        const READ_TIMEOUT: std::time::Duration =
+                            std::time::Duration::from_secs(60);
+                        loop {
+                            let msg_opt = match tokio::time::timeout(READ_TIMEOUT, read.next())
+                                .await
+                            {
+                                Ok(Some(msg_res)) => msg_res,
+                                Ok(None) => {
+                                    warn!("Massive WebSocket stream ended");
+                                    break;
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        "Massive WebSocket read timed out after {}s, reconnecting",
+                                        READ_TIMEOUT.as_secs()
+                                    );
+                                    break;
+                                }
+                            };
+                            match msg_opt {
                                 Ok(Message::Text(text)) => {
                                     // Handle Pings/Heartbeats if any? Polygon sends generic messages
                                     if let Ok(values) = serde_json::from_str::<Vec<Value>>(&text) {
                                         for value in values {
                                             Self::process_message(value, &tx).await;
                                         }
+                                        // Track stats for the batch
+                                        let mut s = stats.write().await;
+                                        s.messages_received += 1;
+                                        s.last_message_at = Some(std::time::SystemTime::now());
                                     } else {
                                         debug!("Received non-array message: {}", text);
                                     }
@@ -84,6 +122,8 @@ impl MassiveStreamer {
                                 }
                                 Err(e) => {
                                     error!("WebSocket read error: {}", e);
+                                    let mut s = stats.write().await;
+                                    s.errors += 1;
                                     break;
                                 }
                                 _ => {}

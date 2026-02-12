@@ -59,8 +59,10 @@ pub trait PredictionRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<PredictionMarket>, DataEngineError>;
-    async fn get_market(&self, market_id: &str)
-        -> Result<Option<PredictionMarket>, DataEngineError>;
+    async fn get_market(
+        &self,
+        market_id: &str,
+    ) -> Result<Option<PredictionMarket>, DataEngineError>;
     async fn get_outcome_history(
         &self,
         market_id: &str,

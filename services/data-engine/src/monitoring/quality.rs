@@ -1,6 +1,6 @@
 use crate::error::DataEngineError;
 use crate::monitoring::metrics::{
-    ACTIVE_SYMBOLS_COUNT, DQ_GAP_SYMBOLS, DQ_LOW_LIQ_SYMBOLS, DQ_STALE_SYMBOLS,
+    ACTIVE_SYMBOLS_COUNT, DQ_GAP_SYMBOLS, DQ_LOW_LIQ_SYMBOLS, DQ_SPIKE_SYMBOLS, DQ_STALE_SYMBOLS,
 };
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
@@ -50,6 +50,9 @@ impl DataMonitor {
         // 3. Liquidity Guard
         self.check_liquidity().await?;
 
+        // 4. Price Spike Detection
+        self.check_price_spikes().await?;
+
         info!("Data Quality Validation Complete.");
         Ok(())
     }
@@ -72,12 +75,10 @@ impl DataMonitor {
         // Query active symbols that haven't updated in X seconds
         let threshold = Utc::now() - Duration::seconds(self.config.freshness_threshold_sec);
 
-        // Use FromRow struct or simple query
-        // "SELECT symbol, timestamp FROM mkt_equity_snapshots WHERE timestamp < $1"
-        // We can just fetch rows.
         use sqlx::Row;
 
-        let stale_rows = sqlx::query(
+        // 1. Check active_tokens (Solana DEX / Birdeye)
+        let stale_tokens = sqlx::query(
             r#"
             SELECT a.address as symbol, NULL::timestamptz as timestamp
             FROM active_tokens a
@@ -93,20 +94,59 @@ impl DataMonitor {
         .bind(threshold)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DataEngineError::DatabaseError(format!("Freshness check failed: {}", e)))?;
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!("Freshness check (tokens) failed: {}", e))
+        })?;
 
-        DQ_STALE_SYMBOLS.set(stale_rows.len() as i64);
+        // 2. Check mkt_equity_snapshots for Polygon stocks and AkShare A-shares
+        let threshold_minutes = self.config.freshness_threshold_sec / 60;
+        let stale_equities = sqlx::query(
+            r#"
+            SELECT DISTINCT symbol, source, MAX(timestamp) as last_ts
+            FROM mkt_equity_snapshots
+            WHERE timestamp > NOW() - INTERVAL '24 hours'
+            GROUP BY symbol, source
+            HAVING MAX(timestamp) < NOW() - make_interval(mins => $1)
+            "#,
+        )
+        .bind(threshold_minutes as i32)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!("Freshness check (equities) failed: {}", e))
+        })?;
 
-        if !stale_rows.is_empty() {
-            let sample: Vec<String> = stale_rows
+        let total_stale = stale_tokens.len() + stale_equities.len();
+        DQ_STALE_SYMBOLS.set(total_stale as i64);
+
+        if !stale_tokens.is_empty() {
+            let sample: Vec<String> = stale_tokens
                 .iter()
                 .take(3)
                 .map(|r| r.get::<String, _>("symbol"))
                 .collect();
             warn!(
-                "Stage 1 FRESHNESS ALERT: {} symbols are stale (>{}s). Examples: {:?}",
-                stale_rows.len(),
+                "Stage 1 FRESHNESS ALERT (tokens): {} symbols are stale (>{}s). Examples: {:?}",
+                stale_tokens.len(),
                 self.config.freshness_threshold_sec,
+                sample
+            );
+        }
+
+        if !stale_equities.is_empty() {
+            let sample: Vec<String> = stale_equities
+                .iter()
+                .take(3)
+                .map(|r| {
+                    let symbol: String = r.get("symbol");
+                    let source: String = r.get("source");
+                    format!("{}({})", symbol, source)
+                })
+                .collect();
+            warn!(
+                "Stage 1 FRESHNESS ALERT (equities): {} symbols are stale (>{}m). Examples: {:?}",
+                stale_equities.len(),
+                threshold_minutes,
                 sample
             );
         }
@@ -115,38 +155,64 @@ impl DataMonitor {
     }
 
     async fn check_gaps(&self) -> Result<(), DataEngineError> {
-        // Check for missing 15m candles in the last hour
         use sqlx::Row;
-        let one_hour_ago = Utc::now() - Duration::hours(1);
 
-        let rows = sqlx::query(
-            r#"
-             SELECT symbol, count(*) as count
-             FROM mkt_equity_candles
-             WHERE resolution = '15m' AND time > $1
-             GROUP BY symbol
-             HAVING count(*) < 3
-             "#,
-        )
-        .bind(one_hour_ago)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DataEngineError::DatabaseError(format!("Gap check failed: {}", e)))?;
+        // (resolution, lookback_hours, min_expected_count)
+        let timeframes: &[(&str, i64, i64)] = &[
+            ("1m", 4, 200),
+            ("5m", 8, 80),
+            ("15m", 24, 80),
+            ("1h", 72, 60),
+            ("4h", 168, 36),
+            ("1d", 720, 25),
+        ];
 
-        DQ_GAP_SYMBOLS.set(rows.len() as i64);
+        let mut total_gap_symbols: i64 = 0;
 
-        if !rows.is_empty() {
-            let sample: Vec<String> = rows
-                .iter()
-                .take(3)
-                .map(|r| r.get::<String, _>("symbol"))
-                .collect();
-            warn!(
-                "Stage 2 GAP ALERT: {} symbols missing 15m candles in last hour. Examples: {:?}",
-                rows.len(),
-                sample
-            );
+        for &(resolution, lookback_hours, min_expected) in timeframes {
+            let cutoff = Utc::now() - Duration::hours(lookback_hours);
+
+            let rows = sqlx::query(
+                r#"
+                SELECT symbol, count(*) as count
+                FROM mkt_equity_candles
+                WHERE resolution = $1 AND time > $2
+                GROUP BY symbol
+                HAVING count(*) < $3
+                "#,
+            )
+            .bind(resolution)
+            .bind(cutoff)
+            .bind(min_expected)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| {
+                DataEngineError::DatabaseError(format!(
+                    "Gap check failed for {}: {}",
+                    resolution, e
+                ))
+            })?;
+
+            total_gap_symbols += rows.len() as i64;
+
+            if !rows.is_empty() {
+                let sample: Vec<String> = rows
+                    .iter()
+                    .take(3)
+                    .map(|r| r.get::<String, _>("symbol"))
+                    .collect();
+                warn!(
+                    "Stage 2 GAP ALERT [{}]: {} symbols missing candles in last {}h (expected >= {}). Examples: {:?}",
+                    resolution,
+                    rows.len(),
+                    lookback_hours,
+                    min_expected,
+                    sample
+                );
+            }
         }
+
+        DQ_GAP_SYMBOLS.set(total_gap_symbols);
 
         Ok(())
     }
@@ -185,5 +251,66 @@ impl DataMonitor {
         }
 
         Ok(())
+    }
+
+    /// Stage 4: Detect price spikes where price changed >threshold% vs previous snapshot within 10 minutes
+    async fn check_price_spikes(&self) -> Result<Vec<(String, f64)>, DataEngineError> {
+        use sqlx::Row;
+        let threshold = self.config.price_change_threshold_pct;
+        let ten_minutes_ago = Utc::now() - Duration::minutes(10);
+
+        let spike_rows = sqlx::query(
+            r#"
+            WITH lagged AS (
+                SELECT
+                    symbol,
+                    price,
+                    LAG(price) OVER (PARTITION BY symbol ORDER BY timestamp) AS prev_price,
+                    timestamp
+                FROM mkt_equity_snapshots
+                WHERE timestamp >= $1
+            )
+            SELECT DISTINCT
+                symbol,
+                ABS((price - prev_price) / NULLIF(prev_price, 0))::float8 AS pct_change
+            FROM lagged
+            WHERE prev_price IS NOT NULL
+              AND prev_price != 0
+              AND ABS((price - prev_price) / prev_price) > $2
+            LIMIT 100
+            "#,
+        )
+        .bind(ten_minutes_ago)
+        .bind(threshold)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DataEngineError::DatabaseError(format!("Price spike check failed: {}", e)))?;
+
+        DQ_SPIKE_SYMBOLS.set(spike_rows.len() as i64);
+
+        let results: Vec<(String, f64)> = spike_rows
+            .iter()
+            .map(|r| {
+                let symbol: String = r.get("symbol");
+                let pct_change: f64 = r.get("pct_change");
+                (symbol, pct_change)
+            })
+            .collect();
+
+        if !results.is_empty() {
+            let sample: Vec<_> = results
+                .iter()
+                .take(3)
+                .map(|(s, pct)| format!("{}({:.1}%)", s, pct * 100.0))
+                .collect();
+            warn!(
+                "Stage 4 PRICE SPIKE ALERT: {} symbols moved >{:.0}% in 10min. Examples: {:?}",
+                results.len(),
+                threshold * 100.0,
+                sample
+            );
+        }
+
+        Ok(results)
     }
 }

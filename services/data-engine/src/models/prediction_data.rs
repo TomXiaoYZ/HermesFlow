@@ -36,8 +36,8 @@ pub struct MarketOutcome {
     pub outcome: String,
     /// Current price (probability)
     pub price: Decimal,
-    /// 24h trading volume
-    pub volume_24h: Option<Decimal>,
+    /// Total (lifetime) trading volume
+    pub volume: Option<Decimal>,
     /// Timestamp of this price
     pub timestamp: DateTime<Utc>,
 }
@@ -62,11 +62,11 @@ impl PredictionMarket {
     }
 
     /// Adds an outcome to the market
-    pub fn add_outcome(&mut self, outcome: String, price: Decimal, volume_24h: Option<Decimal>) {
+    pub fn add_outcome(&mut self, outcome: String, price: Decimal, volume: Option<Decimal>) {
         self.outcomes.push(MarketOutcome {
             outcome,
             price,
-            volume_24h,
+            volume,
             timestamp: Utc::now(),
         });
     }
@@ -89,9 +89,9 @@ impl PredictionMarket {
         self.outcomes.iter().max_by(|a, b| a.price.cmp(&b.price))
     }
 
-    /// Calculates total 24h volume
-    pub fn total_volume_24h(&self) -> Option<Decimal> {
-        let volumes: Vec<Decimal> = self.outcomes.iter().filter_map(|o| o.volume_24h).collect();
+    /// Calculates total volume across all outcomes
+    pub fn total_volume(&self) -> Option<Decimal> {
+        let volumes: Vec<Decimal> = self.outcomes.iter().filter_map(|o| o.volume).collect();
         if volumes.is_empty() {
             None
         } else {
@@ -106,7 +106,7 @@ impl MarketOutcome {
         Self {
             outcome,
             price,
-            volume_24h: None,
+            volume: None,
             timestamp: Utc::now(),
         }
     }
@@ -177,7 +177,7 @@ mod tests {
         market.add_outcome("Yes".to_string(), dec!(0.6), Some(dec!(1000.0)));
         market.add_outcome("No".to_string(), dec!(0.4), Some(dec!(800.0)));
 
-        assert_eq!(market.total_volume_24h(), Some(dec!(1800.0)));
+        assert_eq!(market.total_volume(), Some(dec!(1800.0)));
     }
 
     #[test]

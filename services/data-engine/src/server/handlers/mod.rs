@@ -5,12 +5,12 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use sqlx::Row;
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 
 use crate::monitoring::metrics::export_metrics;
 use crate::monitoring::metrics::{ACTIVE_SYMBOLS_COUNT, BIRDEYE_API_REQUESTS_TOTAL};
-use crate::monitoring::{DependencyStatus, HealthStatus};
+use crate::monitoring::{CollectorHealth, DependencyStatus, HealthStatus};
 use std::time::Duration;
 
 pub mod agent;
@@ -99,6 +99,7 @@ pub struct HealthResponse {
     pub version: String,
     pub uptime_secs: u64,
     pub dependencies: HealthDeps,
+    pub collectors: Vec<CollectorHealth>,
 }
 
 #[derive(Serialize)]
@@ -177,6 +178,7 @@ pub async fn health_check(State(state): State<AppState>) -> Response {
 
     let redis_status = state.health_monitor.get_redis_status().await;
     let clickhouse_status = state.health_monitor.get_clickhouse_status().await;
+    let collectors = state.health_monitor.collector_statuses().await;
 
     let response = HealthResponse {
         status: match health_status {
@@ -190,6 +192,7 @@ pub async fn health_check(State(state): State<AppState>) -> Response {
             redis: redis_status,
             clickhouse: clickhouse_status,
         },
+        collectors,
     };
 
     let status_code = match health_status {
@@ -610,11 +613,19 @@ mod tests {
                 redis: DependencyStatus::up(5.0),
                 clickhouse: DependencyStatus::up(10.0),
             },
+            collectors: vec![CollectorHealth {
+                name: "binance".to_string(),
+                connected: true,
+                messages_per_min: 120.0,
+                last_message_at: Some(1700000000),
+                consecutive_errors: 0,
+            }],
         };
 
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("healthy"));
         assert!(json.contains("0.1.0"));
+        assert!(json.contains("binance"));
     }
 
     #[test]

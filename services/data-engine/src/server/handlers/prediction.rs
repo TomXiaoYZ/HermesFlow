@@ -52,7 +52,7 @@ pub struct OutcomeSummary {
     pub outcome: String,
     pub price: f64,
     pub probability_pct: f64,
-    pub volume_24h: Option<f64>,
+    pub volume: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -91,7 +91,7 @@ pub struct OutcomeHistoryResponse {
 pub struct OutcomeHistoryPoint {
     pub outcome: String,
     pub price: f64,
-    pub volume_24h: Option<f64>,
+    pub volume: Option<f64>,
     pub timestamp: String,
 }
 
@@ -106,19 +106,18 @@ pub async fn list_prediction_markets(
     match state
         .postgres
         .prediction
-        .list_markets(
-            params.active,
-            params.category.as_deref(),
-            limit,
-            offset,
-        )
+        .list_markets(params.active, params.category.as_deref(), limit, offset)
         .await
     {
         Ok(markets) => {
             let summaries: Vec<MarketSummary> = markets
                 .iter()
                 .map(|m| {
-                    let volume = m.metadata.get("volume").and_then(|v| v.as_str()).map(String::from);
+                    let volume = m
+                        .metadata
+                        .get("volume")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
                     MarketSummary {
                         id: m.id.clone(),
                         title: m.title.clone(),
@@ -132,7 +131,7 @@ pub async fn list_prediction_markets(
                                 outcome: o.outcome.clone(),
                                 price: o.price.to_f64().unwrap_or(0.0),
                                 probability_pct: o.price.to_f64().unwrap_or(0.0) * 100.0,
-                                volume_24h: o.volume_24h.and_then(|v| v.to_f64()),
+                                volume: o.volume.and_then(|v| v.to_f64()),
                             })
                             .collect(),
                         volume,
@@ -185,7 +184,7 @@ pub async fn get_prediction_market(
                         outcome: o.outcome.clone(),
                         price: o.price.to_f64().unwrap_or(0.0),
                         probability_pct: o.price.to_f64().unwrap_or(0.0) * 100.0,
-                        volume_24h: o.volume_24h.and_then(|v| v.to_f64()),
+                        volume: o.volume.and_then(|v| v.to_f64()),
                     })
                     .collect(),
                 metadata: market.metadata,
@@ -232,7 +231,7 @@ pub async fn get_prediction_market_history(
                 .map(|o| OutcomeHistoryPoint {
                     outcome: o.outcome.clone(),
                     price: o.price.to_f64().unwrap_or(0.0),
-                    volume_24h: o.volume_24h.and_then(|v| v.to_f64()),
+                    volume: o.volume.and_then(|v| v.to_f64()),
                     timestamp: o.timestamp.to_rfc3339(),
                 })
                 .collect();

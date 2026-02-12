@@ -64,7 +64,7 @@ impl CandleAggregator {
             let symbol: String = row.get("symbol");
             let timestamp: DateTime<Utc> = row.get("timestamp");
             let price: rust_decimal::Decimal = row.get("price");
-            let volume: Option<i64> = row.try_get("volume").ok();
+            let volume: Option<rust_decimal::Decimal> = row.try_get("volume").ok();
             let high: Option<rust_decimal::Decimal> = row.try_get("high").ok();
             let low: Option<rust_decimal::Decimal> = row.try_get("low").ok();
 
@@ -115,7 +115,7 @@ impl CandleAggregator {
                 high = GREATEST(mkt_equity_candles.high, EXCLUDED.high),
                 low = LEAST(mkt_equity_candles.low, EXCLUDED.low),
                 close = EXCLUDED.close,
-                volume = mkt_equity_candles.volume + EXCLUDED.volume",
+                volume = EXCLUDED.volume",
             );
 
             match query_builder.build().execute(&self.pool).await {
@@ -165,7 +165,7 @@ struct CandleBuilder {
     prices: Vec<rust_decimal::Decimal>,
     high: Option<rust_decimal::Decimal>,
     low: Option<rust_decimal::Decimal>,
-    volume: i64,
+    volume: rust_decimal::Decimal,
 }
 
 impl CandleBuilder {
@@ -175,14 +175,14 @@ impl CandleBuilder {
             prices: Vec::new(),
             high: None,
             low: None,
-            volume: 0,
+            volume: rust_decimal::Decimal::ZERO,
         }
     }
 
     fn add_tick(
         &mut self,
         price: rust_decimal::Decimal,
-        volume: Option<i64>,
+        volume: Option<rust_decimal::Decimal>,
         high: Option<rust_decimal::Decimal>,
         low: Option<rust_decimal::Decimal>,
     ) {
@@ -221,6 +221,10 @@ impl CandleBuilder {
         let high = self.high.unwrap_or(open);
         let low = self.low.unwrap_or(open);
 
+        // Ensure OHLC consistency: high >= max(open,close) and low <= min(open,close)
+        let high = high.max(open).max(close);
+        let low = low.min(open).min(close);
+
         Candle {
             open,
             high,
@@ -236,5 +240,5 @@ struct Candle {
     high: rust_decimal::Decimal,
     low: rust_decimal::Decimal,
     close: rust_decimal::Decimal,
-    volume: i64,
+    volume: rust_decimal::Decimal,
 }
