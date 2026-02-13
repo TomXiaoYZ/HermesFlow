@@ -98,6 +98,7 @@ services:
       - "8081:8080"
     environment:
       - RUST_ENV=prod
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - DATA_ENGINE__REDIS__URL=redis://redis:6379
       - DATA_ENGINE__POSTGRES__HOST=timescaledb
       - DATA_ENGINE__POSTGRES__PASSWORD=password
@@ -137,6 +138,7 @@ services:
       - "8080:8080"
     environment:
       - RUST_LOG=info
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - REDIS_URL=redis://redis:6379
       - CLICKHOUSE_URL=http://clickhouse:8123
       - CLICKHOUSE_USER=default
@@ -163,6 +165,7 @@ services:
       dockerfile: services/strategy-engine/Dockerfile
     environment:
       - RUST_LOG=info
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - REDIS_URL=redis://redis:6379
     depends_on:
       redis:
@@ -291,6 +294,20 @@ services:
       start_period: 30s
 
   # ── Monitoring Stack ──────────────────────────────────────────────
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC receiver
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:14269/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
   prometheus:
     image: prom/prometheus:v2.49.0

@@ -43,6 +43,12 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 prometheus = "0.13"
 lazy_static = "1.4"
 
+# OpenTelemetry (feature-gated in common crate)
+opentelemetry = "0.22"
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.15", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.23"
+
 # Time & ID
 chrono = { version = "0.4", features = ["serde"] }
 time = "0.3"

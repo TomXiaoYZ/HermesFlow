@@ -8,6 +8,14 @@ default = []
 health = ["dep:axum", "dep:tracing", "dep:tokio"]
 heartbeat = ["dep:redis", "dep:tracing", "dep:tokio"]
 metrics = ["dep:axum", "dep:tracing", "dep:prometheus", "dep:lazy_static"]
+telemetry = [
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
 
 [dependencies]
 serde = { workspace = true }
@@ -24,3 +32,10 @@ tokio = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
 prometheus = { workspace = true, optional = true }
 lazy_static = { workspace = true, optional = true }
+
+# OpenTelemetry (gated by telemetry feature)
+tracing-subscriber = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }

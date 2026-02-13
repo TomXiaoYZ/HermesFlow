@@ -48,13 +48,15 @@ struct SystemLog {
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
-        ))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    // Initialize tracing (with OpenTelemetry if OTEL_EXPORTER_OTLP_ENDPOINT is set)
+    if !common::telemetry::try_init_telemetry("gateway") {
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new(
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+            ))
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 
     info!("Starting Gateway Service...");
 

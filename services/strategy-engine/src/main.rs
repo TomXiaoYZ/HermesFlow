@@ -10,7 +10,10 @@ use tracing::{error, info, warn};
 #[tokio::main]
 #[allow(unreachable_code)]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    // Initialize tracing (with OpenTelemetry if OTEL_EXPORTER_OTLP_ENDPOINT is set)
+    if !common::telemetry::try_init_telemetry("strategy-engine") {
+        tracing_subscriber::fmt::init();
+    }
     info!("Starting Strategy Engine...");
 
     // Initialize Prometheus metrics

@@ -23,8 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load .env
     dotenvy::dotenv().ok();
 
-    // Initialize standard logging first (with defaults)
-    init_logging(&LoggingConfig::default());
+    // Initialize tracing (with OpenTelemetry if OTEL_EXPORTER_OTLP_ENDPOINT is set)
+    if !common::telemetry::try_init_telemetry("data-engine") {
+        init_logging(&LoggingConfig::default());
+    }
     tracing::info!("Data Engine starting (Repository Refactor)...");
 
     // Load configuration

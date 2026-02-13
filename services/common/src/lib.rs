@@ -8,3 +8,6 @@ pub mod heartbeat;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
+
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
