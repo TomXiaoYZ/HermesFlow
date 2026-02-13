@@ -7,6 +7,7 @@ edition = "2021"
 default = []
 health = ["dep:axum", "dep:tracing", "dep:tokio"]
 heartbeat = ["dep:redis", "dep:tracing", "dep:tokio"]
+metrics = ["dep:axum", "dep:tracing", "dep:prometheus", "dep:lazy_static"]
 
 [dependencies]
 serde = { workspace = true }
@@ -21,3 +22,5 @@ axum = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }
+prometheus = { workspace = true, optional = true }
+lazy_static = { workspace = true, optional = true }

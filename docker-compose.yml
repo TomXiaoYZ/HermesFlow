@@ -290,7 +290,77 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── Monitoring Stack ──────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.49.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/prometheus/rules/:/etc/prometheus/rules/:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    depends_on:
+      data-engine:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./infrastructure/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  alertmanager-discord:
+    image: benjojo/alertmanager-discord:latest
+    environment:
+      - DISCORD_WEBHOOK=${DISCORD_ALERT_WEBHOOK_URL}
+    depends_on:
+      alertmanager:
+        condition: service_healthy
+    restart: always
+
+  grafana:
+    image: grafana/grafana:10.3.0
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-hermesflow}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./infrastructure/grafana/provisioning/:/etc/grafana/provisioning/:ro
+      - ./infrastructure/grafana/dashboards/:/var/lib/grafana/dashboards/:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
 volumes:
   redis_data:
   hermesflow_postgres-data:
     external: true
+  prometheus_data:
+  grafana_data:

@@ -20,6 +20,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod auth_handler;
 mod health_checker;
+mod metrics;
 
 struct AppState {
     tx: broadcast::Sender<String>,
@@ -56,6 +57,11 @@ async fn main() {
         .init();
 
     info!("Starting Gateway Service...");
+
+    // Initialize Prometheus metrics
+    if let Err(e) = metrics::init_gateway_metrics() {
+        error!("Failed to initialize metrics: {}", e);
+    }
 
     // Redis URL
     let redis_url =
@@ -183,6 +189,7 @@ async fn main() {
     // Build App
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/metrics", get(common::metrics::metrics_handler))
         .route("/ws", get(ws_handler))
         .route("/api/logs", get(get_logs))
         .route("/api/v1/strategy/status", get(get_strategy_status))
@@ -377,6 +384,9 @@ async fn run_backtest_proxy(
         }
         Err(e) => {
             error!("Failed to proxy backtest: {}", e);
+            metrics::PROXY_ERRORS_TOTAL
+                .with_label_values(&["strategy-generator"])
+                .inc();
             (
                 axum::http::StatusCode::BAD_GATEWAY,
                 json!({"error": "Backtest service unavailable"}).to_string(),
@@ -391,6 +401,7 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) ->
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    metrics::WEBSOCKET_CONNECTIONS.inc();
     let mut rx = state.tx.subscribe();
     if socket
         .send(Message::Text(
@@ -399,6 +410,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         .await
         .is_err()
     {
+        metrics::WEBSOCKET_CONNECTIONS.dec();
         return;
     }
 
@@ -412,6 +424,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             else => break,
         }
     }
+    metrics::WEBSOCKET_CONNECTIONS.dec();
 }
 
 async fn get_market_tokens(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -481,6 +494,9 @@ async fn watchlist_proxy(
         }
         Err(e) => {
             error!("Failed to proxy to data-engine watchlist: {}", e);
+            metrics::PROXY_ERRORS_TOTAL
+                .with_label_values(&["data-engine"])
+                .inc();
             (
                 axum::http::StatusCode::BAD_GATEWAY,
                 json!({"error": "Data Engine unavailable"}).to_string(),
@@ -543,6 +559,9 @@ async fn data_engine_proxy(
         }
         Err(e) => {
             error!("Failed to proxy to data-engine: {}", e);
+            metrics::PROXY_ERRORS_TOTAL
+                .with_label_values(&["data-engine"])
+                .inc();
             (
                 axum::http::StatusCode::BAD_GATEWAY,
                 json!({"error": "Data Engine unavailable"}).to_string(),
@@ -589,6 +608,9 @@ async fn jobs_proxy(
         }
         Err(e) => {
             error!("Failed to proxy to data-engine jobs: {}", e);
+            metrics::PROXY_ERRORS_TOTAL
+                .with_label_values(&["data-engine"])
+                .inc();
             (
                 axum::http::StatusCode::BAD_GATEWAY,
                 json!({"error": "Data Engine unavailable"}).to_string(),

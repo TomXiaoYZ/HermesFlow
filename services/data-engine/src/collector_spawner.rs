@@ -17,7 +17,8 @@ use data_engine::{
         OkxConnector, PolymarketCollector, TwitterCollector,
     },
     config::AppConfig,
-    monitoring::metrics::{DATA_ERRORS_BY_SOURCE, DATA_MESSAGES_BY_SOURCE},
+    models::StandardMarketData,
+    monitoring::metrics::{DATA_ERRORS_BY_SOURCE, DATA_MESSAGES_BY_SOURCE, VALIDATION_FAILURES},
     repository::{postgres::PostgresRepositories, MarketDataRepository, SocialRepository},
     storage::RedisCache,
     traits::DataSourceConnector,
@@ -159,9 +160,10 @@ async fn spawn_birdeye_collector(deps: &CollectorDeps) {
                     loop {
                         tokio::select! {
                             Some(msg) = rx.recv() => {
-                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                    tracing::warn!("Failed to store Birdeye snapshot: {}", e);
+                                if !validate_market_data(&msg, "birdeye") {
+                                    continue;
                                 }
+                                insert_with_retry(&repos, &msg, "birdeye").await;
                                 publish_market_update(&msg, "Birdeye", &tx_clone, &redis_publisher).await;
                             }
                             _ = shutdown_rx.recv() => {
@@ -204,9 +206,10 @@ async fn spawn_helius_collector(deps: &CollectorDeps) {
                     loop {
                         tokio::select! {
                             Some(msg) = rx.recv() => {
-                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                    tracing::warn!("Failed to store Helius snapshot: {}", e);
+                                if !validate_market_data(&msg, "helius") {
+                                    continue;
                                 }
+                                insert_with_retry(&repos, &msg, "helius").await;
                                 publish_market_update(&msg, "Helius", &tx_clone, &redis_publisher).await;
                             }
                             _ = shutdown_rx.recv() => {
@@ -256,9 +259,10 @@ async fn spawn_jupiter_collector(deps: &CollectorDeps) {
                     loop {
                         tokio::select! {
                             Some(msg) = rx.recv() => {
-                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                    tracing::warn!("Failed to store Jupiter snapshot: {}", e);
+                                if !validate_market_data(&msg, "jupiter") {
+                                    continue;
                                 }
+                                insert_with_retry(&repos, &msg, "jupiter").await;
                                 publish_market_update(&msg, "Jupiter", &tx_clone, &redis_publisher).await;
                             }
                             _ = shutdown_rx.recv() => {
@@ -298,9 +302,10 @@ async fn spawn_akshare_collector(deps: &CollectorDeps) {
             Ok(mut rx) => loop {
                 tokio::select! {
                     Some(msg) = rx.recv() => {
-                        if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                            tracing::warn!("Failed to store AkShare snapshot: {}", e);
+                        if !validate_market_data(&msg, "akshare") {
+                            continue;
                         }
+                        insert_with_retry(&repos, &msg, "akshare").await;
                         publish_market_update(&msg, "akshare", &tx_clone, &redis_publisher).await;
                     }
                     _ = shutdown_rx.recv() => break,
@@ -335,9 +340,10 @@ async fn spawn_massive_collector(deps: &CollectorDeps) {
                     loop {
                         tokio::select! {
                             Some(msg) = rx.recv() => {
-                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                    tracing::warn!("Failed to store Massive snapshot: {}", e);
+                                if !validate_market_data(&msg, "massive") {
+                                    continue;
                                 }
+                                insert_with_retry(&repos, &msg, "massive").await;
                                 publish_market_update(&msg, "massive", &tx_clone, &redis_publisher).await;
                             }
                             _ = shutdown_rx.recv() => {
@@ -380,9 +386,10 @@ async fn spawn_okx_collector(deps: &CollectorDeps) {
                     loop {
                         tokio::select! {
                             Some(msg) = rx.recv() => {
-                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                    tracing::warn!("Failed to store OKX snapshot: {}", e);
+                                if !validate_market_data(&msg, "okx") {
+                                    continue;
                                 }
+                                insert_with_retry(&repos, &msg, "okx").await;
                                 publish_market_update(&msg, "okx", &tx_clone, &redis_publisher).await;
                             }
                             _ = shutdown_rx.recv() => {
@@ -425,9 +432,10 @@ async fn spawn_bybit_collector(deps: &CollectorDeps) {
                     loop {
                         tokio::select! {
                             Some(msg) = rx.recv() => {
-                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                    tracing::warn!("Failed to store Bybit snapshot: {}", e);
+                                if !validate_market_data(&msg, "bybit") {
+                                    continue;
                                 }
+                                insert_with_retry(&repos, &msg, "bybit").await;
                                 publish_market_update(&msg, "bybit", &tx_clone, &redis_publisher).await;
                             }
                             _ = shutdown_rx.recv() => {
@@ -470,9 +478,10 @@ async fn spawn_futu_collector(deps: &CollectorDeps) {
                     loop {
                         tokio::select! {
                             Some(msg) = rx.recv() => {
-                                if let Err(e) = repos.market_data.insert_snapshot(&msg).await {
-                                    tracing::warn!("Failed to store Futu snapshot: {}", e);
+                                if !validate_market_data(&msg, "futu") {
+                                    continue;
                                 }
+                                insert_with_retry(&repos, &msg, "futu").await;
                                 publish_market_update(&msg, "futu", &tx_clone, &redis_publisher).await;
                             }
                             _ = shutdown_rx.recv() => {
@@ -489,6 +498,69 @@ async fn spawn_futu_collector(deps: &CollectorDeps) {
             }
         }
     });
+}
+
+const INSERT_MAX_RETRIES: u32 = 3;
+const INSERT_INITIAL_DELAY_MS: u64 = 200;
+
+/// Insert a snapshot with retry and dead-letter fallback.
+///
+/// Retries up to 3 times with exponential backoff (200ms → 400ms → 800ms).
+/// If all retries fail, logs a dead-letter record for later investigation.
+async fn insert_with_retry(repos: &PostgresRepositories, msg: &StandardMarketData, source: &str) {
+    let mut delay_ms = INSERT_INITIAL_DELAY_MS;
+    for attempt in 1..=INSERT_MAX_RETRIES {
+        match repos.market_data.insert_snapshot(msg).await {
+            Ok(()) => return,
+            Err(e) if attempt == INSERT_MAX_RETRIES => {
+                tracing::error!(
+                    source = source,
+                    symbol = %msg.symbol,
+                    attempt = attempt,
+                    err = %e,
+                    "Insert failed after all retries"
+                );
+                data_engine::monitoring::dead_letter::log_dead_letter(
+                    msg,
+                    &e.to_string(),
+                    "postgres",
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    source = source,
+                    symbol = %msg.symbol,
+                    attempt = attempt,
+                    err = %e,
+                    "Insert failed, retrying in {}ms",
+                    delay_ms
+                );
+                DATA_ERRORS_BY_SOURCE.with_label_values(&[source]).inc();
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                delay_ms *= 2;
+            }
+        }
+    }
+}
+
+/// Validates market data before storage. Returns `true` if valid.
+/// Invalid data is logged and counted in `VALIDATION_FAILURES` metric.
+fn validate_market_data(msg: &StandardMarketData, source: &str) -> bool {
+    match msg.validate() {
+        Ok(()) => true,
+        Err(reason) => {
+            tracing::warn!(
+                source = source,
+                symbol = %msg.symbol,
+                reason = %reason,
+                "Rejected invalid market data"
+            );
+            VALIDATION_FAILURES.inc();
+            DATA_ERRORS_BY_SOURCE.with_label_values(&[source]).inc();
+            false
+        }
+    }
 }
 
 /// Helper: get a cloned RedisCache for publishing if Redis is available.
@@ -517,18 +589,14 @@ async fn publish_market_update(
     };
 
     // Track per-source message count
-    DATA_MESSAGES_BY_SOURCE
-        .with_label_values(&[source])
-        .inc();
+    DATA_MESSAGES_BY_SOURCE.with_label_values(&[source]).inc();
 
     if let Ok(json) = serde_json::to_string(&update) {
         let _ = broadcast_tx.send(json.clone());
 
         if let Some(publisher) = redis_publisher {
             if let Err(e) = publisher.publish("market_data", &json).await {
-                DATA_ERRORS_BY_SOURCE
-                    .with_label_values(&[source])
-                    .inc();
+                DATA_ERRORS_BY_SOURCE.with_label_values(&[source]).inc();
                 tracing::warn!("Failed to publish {} update to Redis: {}", source, e);
             }
         }

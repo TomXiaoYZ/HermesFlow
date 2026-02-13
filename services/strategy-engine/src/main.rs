@@ -13,7 +13,12 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting Strategy Engine...");
 
-    // Spawn health check server
+    // Initialize Prometheus metrics
+    if let Err(e) = common::metrics::init_metrics("strategy-engine") {
+        error!("Failed to initialize metrics: {}", e);
+    }
+
+    // Spawn health check server (also serves /metrics when metrics feature enabled)
     tokio::spawn(common::health::start_health_server("strategy-engine", 8082));
 
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());

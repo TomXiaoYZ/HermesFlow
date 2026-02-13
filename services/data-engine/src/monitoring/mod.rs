@@ -1,3 +1,4 @@
+pub mod dead_letter;
 pub mod health;
 pub mod logging;
 pub mod metrics;

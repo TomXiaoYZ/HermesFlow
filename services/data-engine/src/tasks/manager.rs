@@ -395,30 +395,51 @@ impl TaskManager {
     }
 
     pub async fn register_data_quality_job(&self) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Registering Data Quality Job (Every hour)...");
+        info!("Registering tiered Data Quality Jobs (30s / 5min / 1h)...");
 
-        let repos_clone = self.repos.clone();
+        use crate::monitoring::quality::CheckTier;
+        use crate::tasks::data_quality::DataQualityTask;
 
-        // Every hour at minute 0: 0 0 * * * *
-        let job = Job::new_async("0 0 * * * *", move |_uuid, _l| {
-            let repos = repos_clone.clone();
-
+        // ── Critical tier: every 30 seconds ────────────────────────────
+        let repos_critical = self.repos.clone();
+        let job_critical = Job::new_async("*/30 * * * * *", move |_uuid, _l| {
+            let repos = repos_critical.clone();
             Box::pin(async move {
-                use crate::tasks::data_quality::DataQualityTask;
-                let task = DataQualityTask::new(repos);
+                let task = DataQualityTask::new(repos, CheckTier::Critical);
+                task.run().await;
+            })
+        })?;
+
+        // ── Warning tier: every 5 minutes ──────────────────────────────
+        let repos_warning = self.repos.clone();
+        let job_warning = Job::new_async("0 */5 * * * *", move |_uuid, _l| {
+            let repos = repos_warning.clone();
+            Box::pin(async move {
+                let task = DataQualityTask::new(repos, CheckTier::Warning);
+                task.run().await;
+            })
+        })?;
+
+        // ── Full audit tier: every hour ────────────────────────────────
+        let repos_audit = self.repos.clone();
+        let job_audit = Job::new_async("0 0 * * * *", move |_uuid, _l| {
+            let repos = repos_audit.clone();
+            Box::pin(async move {
+                let task = DataQualityTask::new(repos, CheckTier::FullAudit);
                 task.run().await;
             })
         })?;
 
         let scheduler = self.scheduler.write().await;
-        scheduler.add(job).await?;
+        scheduler.add(job_critical).await?;
+        scheduler.add(job_warning).await?;
+        scheduler.add(job_audit).await?;
 
-        // Run immediately on startup for visibility
+        // Run initial critical check on startup for visibility
         let repos_startup = self.repos.clone();
         tokio::spawn(async move {
-            info!("🚀 Running initial Data Quality Check...");
-            use crate::tasks::data_quality::DataQualityTask;
-            let task = DataQualityTask::new(repos_startup);
+            info!("Running initial Critical data quality check...");
+            let task = DataQualityTask::new(repos_startup, CheckTier::Critical);
             task.run().await;
         });
 

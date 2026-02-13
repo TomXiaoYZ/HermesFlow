@@ -1,0 +1,95 @@
+{
+  "dashboard": {
+    "title": "HermesFlow - System Health",
+    "uid": "hermesflow-system-health",
+    "tags": ["hermesflow", "health"],
+    "timezone": "browser",
+    "refresh": "15s",
+    "time": { "from": "now-30m", "to": "now" },
+    "panels": [
+      {
+        "title": "Service Status",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+        "targets": [
+          { "expr": "data_engine_service_up", "legendFormat": "Data Engine" },
+          { "expr": "service_up{job=\"gateway\"}", "legendFormat": "Gateway" },
+          { "expr": "service_up{job=\"strategy-engine\"}", "legendFormat": "Strategy Engine" }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+            ]
+          }
+        }
+      },
+      {
+        "title": "Active Symbols",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+        "targets": [
+          { "expr": "data_engine_active_symbols_count", "legendFormat": "Symbols" }
+        ]
+      },
+      {
+        "title": "Messages Processed Total",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+        "targets": [
+          { "expr": "rate(data_engine_messages_processed_total[1m]) * 60", "legendFormat": "msgs/min" }
+        ]
+      },
+      {
+        "title": "Latency by Source (P95)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+        "targets": [
+          { "expr": "histogram_quantile(0.95, rate(data_engine_latency_by_source_seconds_bucket[5m]))", "legendFormat": "{{ source }}" }
+        ]
+      },
+      {
+        "title": "ClickHouse Latency (P50 / P95)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+        "targets": [
+          { "expr": "histogram_quantile(0.50, rate(data_engine_clickhouse_latency_seconds_bucket[5m]))", "legendFormat": "P50" },
+          { "expr": "histogram_quantile(0.95, rate(data_engine_clickhouse_latency_seconds_bucket[5m]))", "legendFormat": "P95" }
+        ]
+      },
+      {
+        "title": "BirdEye API Requests",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+        "targets": [
+          { "expr": "rate(data_engine_birdeye_requests_total[5m])", "legendFormat": "Requests/s" }
+        ]
+      },
+      {
+        "title": "Total Errors",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+        "targets": [
+          { "expr": "rate(data_engine_errors_total[5m])", "legendFormat": "Errors/s" },
+          { "expr": "rate(data_engine_errors_by_source_total[5m])", "legendFormat": "{{ source }}" }
+        ]
+      },
+      {
+        "title": "Gateway WebSocket Connections",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 8, "x": 0, "y": 20 },
+        "targets": [
+          { "expr": "gateway_websocket_connections", "legendFormat": "Active" }
+        ]
+      },
+      {
+        "title": "Gateway Proxy Errors",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 16, "x": 8, "y": 20 },
+        "targets": [
+          { "expr": "rate(gateway_proxy_errors_total[5m])", "legendFormat": "{{ target }}" }
+        ]
+      }
+    ]
+  }
+}

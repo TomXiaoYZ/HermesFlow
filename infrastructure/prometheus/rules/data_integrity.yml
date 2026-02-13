@@ -1,0 +1,129 @@
+groups:
+  # ── CRITICAL: Immediate attention required ────────────────────────
+  - name: critical_data_integrity
+    interval: 30s
+    rules:
+      - alert: DataEngineDown
+        expr: data_engine_service_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Data Engine is DOWN"
+          description: "data_engine_service_up has been 0 for over 1 minute."
+
+      - alert: MajorDataStaleness
+        expr: data_engine_dq_stale_symbols > (data_engine_active_symbols_count * 0.5)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over 50% of symbols have stale data"
+          description: "{{ $value }} symbols are stale."
+
+      - alert: DeadLetterSpike
+        expr: rate(data_engine_dead_letter_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dead letter records accumulating"
+          description: "Data permanently dropped at {{ $value | humanize }}/s."
+
+      - alert: HighErrorRate
+        expr: rate(data_engine_errors_total[5m]) > 1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate in data engine"
+          description: "Error rate: {{ $value | humanize }}/s"
+
+  # ── WARNING: Investigate soon ─────────────────────────────────────
+  - name: warning_data_quality
+    interval: 60s
+    rules:
+      - alert: DataGapsDetected
+        expr: data_engine_dq_gap_symbols > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Multiple symbols with data gaps"
+          description: "{{ $value }} symbols have missing candles."
+
+      - alert: PriceSpikesDetected
+        expr: data_engine_dq_spike_symbols > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Multiple price spike anomalies"
+          description: "{{ $value }} symbols with >50% price movement in 10min."
+
+      - alert: CrossSourceDivergence
+        expr: data_engine_dq_cross_source_divergence > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cross-source price divergence detected"
+          description: "{{ $value }} symbols have >1% price difference across exchanges."
+
+      - alert: HighIngestLatency
+        expr: histogram_quantile(0.95, rate(data_engine_ingest_latency_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High data ingest latency"
+          description: "P95 ingest latency is {{ $value | humanize }}s."
+
+      - alert: ValidationFailureSpike
+        expr: rate(data_engine_validation_failures_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High validation failure rate"
+          description: "{{ $value | humanize }} invalid records/s being rejected."
+
+      - alert: TimestampDrift
+        expr: data_engine_dq_timestamp_drift_symbols > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Timestamp drift detected"
+          description: "{{ $value }} symbols with excessive exchange-to-system timestamp drift."
+
+  # ── INFO: Routine monitoring ──────────────────────────────────────
+  - name: info_monitoring
+    interval: 300s
+    rules:
+      - alert: SourceQualityDegraded
+        expr: data_engine_dq_source_score < 0.7
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Data source quality below threshold"
+          description: "Source {{ $labels.source }} quality score: {{ $value | humanize }}"
+
+      - alert: LowLiquidityTokens
+        expr: data_engine_dq_low_liq_symbols > 5
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Multiple low-liquidity tokens active"
+          description: "{{ $value }} tokens below liquidity threshold."
+
+      - alert: VolumeAnomaly
+        expr: data_engine_dq_volume_anomaly > 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Volume anomaly detected"
+          description: "{{ $value }} symbols with abnormal trading volume."

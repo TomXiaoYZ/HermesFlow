@@ -115,6 +115,39 @@ lazy_static! {
         "Total data validation failures"
     ).expect("Failed to create VALIDATION_FAILURES counter");
 
+    /// Dead letter counter — records permanently dropped after retry exhaustion
+    pub static ref DEAD_LETTER_TOTAL: Counter = Counter::new(
+        "data_engine_dead_letter_total",
+        "Total records permanently dropped after retry exhaustion"
+    ).expect("Failed to create DEAD_LETTER_TOTAL counter");
+
+    /// Data Quality: Cross-source price divergence count
+    pub static ref DQ_CROSS_SOURCE_DIVERGENCE: IntGauge = IntGauge::new(
+        "data_engine_dq_cross_source_divergence",
+        "Number of symbols with cross-source price divergence"
+    ).expect("Failed to create DQ_CROSS_SOURCE_DIVERGENCE gauge");
+
+    /// Data Quality: Volume anomaly count
+    pub static ref DQ_VOLUME_ANOMALY: IntGauge = IntGauge::new(
+        "data_engine_dq_volume_anomaly",
+        "Number of symbols with abnormal volume"
+    ).expect("Failed to create DQ_VOLUME_ANOMALY gauge");
+
+    /// Data Quality: Timestamp drift count
+    pub static ref DQ_TIMESTAMP_DRIFT: IntGauge = IntGauge::new(
+        "data_engine_dq_timestamp_drift_symbols",
+        "Number of symbols with excessive timestamp drift"
+    ).expect("Failed to create DQ_TIMESTAMP_DRIFT gauge");
+
+    /// Data Quality: Per-source quality score (0.0–1.0)
+    pub static ref DQ_SOURCE_SCORE: prometheus::GaugeVec = prometheus::GaugeVec::new(
+        prometheus::Opts::new(
+            "data_engine_dq_source_score",
+            "Data quality score per source (0.0-1.0)"
+        ),
+        &["source"]
+    ).expect("Failed to create DQ_SOURCE_SCORE gauge vec");
+
     /// Messages received per data source (labelled by "source")
     pub static ref DATA_MESSAGES_BY_SOURCE: CounterVec = CounterVec::new(
         Opts::new(
@@ -162,6 +195,11 @@ pub fn init_metrics() -> Result<(), prometheus::Error> {
     REGISTRY.register(Box::new(BIRDEYE_API_REQUESTS_TOTAL.clone()))?;
     REGISTRY.register(Box::new(INGEST_LATENCY.clone()))?;
     REGISTRY.register(Box::new(VALIDATION_FAILURES.clone()))?;
+    REGISTRY.register(Box::new(DEAD_LETTER_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(DQ_CROSS_SOURCE_DIVERGENCE.clone()))?;
+    REGISTRY.register(Box::new(DQ_VOLUME_ANOMALY.clone()))?;
+    REGISTRY.register(Box::new(DQ_TIMESTAMP_DRIFT.clone()))?;
+    REGISTRY.register(Box::new(DQ_SOURCE_SCORE.clone()))?;
     REGISTRY.register(Box::new(DATA_MESSAGES_BY_SOURCE.clone()))?;
     REGISTRY.register(Box::new(DATA_ERRORS_BY_SOURCE.clone()))?;
     REGISTRY.register(Box::new(DATA_LATENCY_BY_SOURCE.clone()))?;

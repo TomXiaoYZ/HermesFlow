@@ -1,0 +1,45 @@
+[sources.docker]
+type = "docker_logs"
+include_containers = [
+  "hermesflow-data-engine-1", 
+  "hermesflow-strategy-engine-1", 
+  "hermesflow-execution-engine-1", 
+  "hermesflow-gateway-1", 
+  "hermesflow-strategy-generator-1",
+  "hermesflow-redis-1",
+  "hermesflow-timescaledb-1",
+  "hermesflow-clickhouse-1",
+  "hermesflow-vector-1"
+]
+
+[transforms.parse_logs]
+type = "remap"
+inputs = ["docker"]
+source = '''
+.original_message = .message
+.timestamp = now()
+.level = "INFO"
+
+# Attempt to parse JSON logs from Rust services
+parsed, err = parse_json(.message)
+if err == null {
+  .message = parsed.fields.message || parsed.message || .message
+  .level = parsed.level || "INFO"
+}
+'''
+
+[sinks.clickhouse]
+type = "clickhouse"
+inputs = ["parse_logs"]
+endpoint = "http://clickhouse:8123"
+database = "default"
+table = "system_logs"
+auth.strategy = "basic"
+auth.user = "default"
+auth.password = "hermesflow"
+skip_unknown_fields = true
+compression = "gzip"
+healthcheck.enabled = true
+
+[sinks.clickhouse.encoding]
+timestamp_format = "unix_ms"

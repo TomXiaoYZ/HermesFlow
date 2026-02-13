@@ -1,0 +1,72 @@
+{
+  "dashboard": {
+    "title": "HermesFlow - Data Pipeline",
+    "uid": "hermesflow-data-pipeline",
+    "tags": ["hermesflow", "data-engine"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": { "from": "now-1h", "to": "now" },
+    "panels": [
+      {
+        "title": "Messages Received Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "targets": [
+          { "expr": "rate(data_engine_messages_received_total[1m])", "legendFormat": "Total" },
+          { "expr": "rate(data_engine_messages_by_source_total[1m])", "legendFormat": "{{ source }}" }
+        ]
+      },
+      {
+        "title": "Error Rate by Source",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "targets": [
+          { "expr": "rate(data_engine_errors_by_source_total[5m])", "legendFormat": "{{ source }}" }
+        ]
+      },
+      {
+        "title": "Ingest Latency (P50 / P95 / P99)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+        "targets": [
+          { "expr": "histogram_quantile(0.50, rate(data_engine_ingest_latency_seconds_bucket[5m]))", "legendFormat": "P50" },
+          { "expr": "histogram_quantile(0.95, rate(data_engine_ingest_latency_seconds_bucket[5m]))", "legendFormat": "P95" },
+          { "expr": "histogram_quantile(0.99, rate(data_engine_ingest_latency_seconds_bucket[5m]))", "legendFormat": "P99" }
+        ]
+      },
+      {
+        "title": "ClickHouse Insert Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+        "targets": [
+          { "expr": "rate(data_engine_clickhouse_inserts_total[1m])", "legendFormat": "Inserts/s" }
+        ]
+      },
+      {
+        "title": "Redis Latency (P95)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+        "targets": [
+          { "expr": "histogram_quantile(0.95, rate(data_engine_redis_latency_seconds_bucket[5m]))", "legendFormat": "P95" }
+        ]
+      },
+      {
+        "title": "Validation Failures",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+        "targets": [
+          { "expr": "rate(data_engine_validation_failures_total[5m])", "legendFormat": "Failures/s" },
+          { "expr": "rate(data_engine_dead_letter_total[5m])", "legendFormat": "Dead Letters/s" }
+        ]
+      },
+      {
+        "title": "Active Symbols",
+        "type": "stat",
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+        "targets": [
+          { "expr": "data_engine_active_symbols_count", "legendFormat": "Active Symbols" }
+        ]
+      }
+    ]
+  }
+}
