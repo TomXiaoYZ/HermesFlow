@@ -369,6 +369,7 @@ async fn run_backtest_proxy(
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
     let target_url = "http://strategy-generator:8082/backtest";
+    let start = std::time::Instant::now();
 
     match state
         .http_client
@@ -378,11 +379,25 @@ async fn run_backtest_proxy(
         .await
     {
         Ok(resp) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["strategy-generator"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["strategy-generator"])
+                .set(1);
             let status = resp.status();
             let body = resp.text().await.unwrap_or("".to_string());
             (status, body).into_response()
         }
         Err(e) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["strategy-generator"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["strategy-generator"])
+                .set(0);
             error!("Failed to proxy backtest: {}", e);
             metrics::PROXY_ERRORS_TOTAL
                 .with_label_values(&["strategy-generator"])
@@ -458,6 +473,7 @@ async fn watchlist_proxy(
     State(state): State<Arc<AppState>>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
+    let start = std::time::Instant::now();
     let (parts, body) = req.into_parts();
     let query_string = parts
         .uri
@@ -490,9 +506,23 @@ async fn watchlist_proxy(
 
             let mut response = (status, body).into_response();
             *response.headers_mut() = headers;
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["data-engine"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["data-engine"])
+                .set(1);
             response
         }
         Err(e) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["data-engine"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["data-engine"])
+                .set(0);
             error!("Failed to proxy to data-engine watchlist: {}", e);
             metrics::PROXY_ERRORS_TOTAL
                 .with_label_values(&["data-engine"])
@@ -511,6 +541,7 @@ async fn data_engine_proxy(
     axum::extract::Path(path): axum::extract::Path<String>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
+    let start = std::time::Instant::now();
     // Deconstruct request
     let (parts, body) = req.into_parts();
 
@@ -555,9 +586,23 @@ async fn data_engine_proxy(
 
             let mut response = (status, body).into_response();
             *response.headers_mut() = headers;
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["data-engine"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["data-engine"])
+                .set(1);
             response
         }
         Err(e) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["data-engine"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["data-engine"])
+                .set(0);
             error!("Failed to proxy to data-engine: {}", e);
             metrics::PROXY_ERRORS_TOTAL
                 .with_label_values(&["data-engine"])
@@ -576,6 +621,7 @@ async fn jobs_proxy(
     axum::extract::Path(path): axum::extract::Path<String>,
     req: axum::extract::Request,
 ) -> impl IntoResponse {
+    let start = std::time::Instant::now();
     let (parts, body) = req.into_parts();
     let query_string = parts
         .uri
@@ -604,9 +650,23 @@ async fn jobs_proxy(
             let body = resp.bytes().await.unwrap_or_default();
             let mut response = (status, body).into_response();
             *response.headers_mut() = headers;
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["data-engine"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["data-engine"])
+                .set(1);
             response
         }
         Err(e) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["data-engine"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["data-engine"])
+                .set(0);
             error!("Failed to proxy to data-engine jobs: {}", e);
             metrics::PROXY_ERRORS_TOTAL
                 .with_label_values(&["data-engine"])

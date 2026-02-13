@@ -17,6 +17,9 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = common::metrics::init_metrics("strategy-engine") {
         error!("Failed to initialize metrics: {}", e);
     }
+    if let Err(e) = strategy_engine::metrics::init_strategy_metrics() {
+        error!("Failed to initialize strategy metrics: {}", e);
+    }
 
     // Spawn health check server (also serves /metrics when metrics feature enabled)
     tokio::spawn(common::health::start_health_server("strategy-engine", 8082));
@@ -134,6 +137,12 @@ async fn main() -> anyhow::Result<()> {
                 // Debug Log
                 info!("Market Data Received: {} Price: {}", msg.symbol, msg.price);
 
+                strategy_engine::metrics::MARKET_DATA_CONSUMED.inc();
+                let lag_secs = (Utc::now() - msg.timestamp).num_milliseconds() as f64 / 1000.0;
+                if lag_secs >= 0.0 {
+                    strategy_engine::metrics::MARKET_DATA_LAG_SECONDS.observe(lag_secs);
+                }
+
                 // 4.0 Update Portfolio Prices & Check Exits
                 portfolio_manager.update_price(&msg.symbol, msg.price);
 
@@ -152,6 +161,10 @@ async fn main() -> anyhow::Result<()> {
                             "EXIT SIGNAL TRIGGERED: {} Reason: {:?}",
                             exit.symbol, exit.reason
                         );
+
+                        strategy_engine::metrics::SIGNALS_GENERATED_TOTAL
+                            .with_label_values(&["ExitLogic", "sell"])
+                            .inc();
 
                         // Construct Signal
                         let signal = TradeSignal {
@@ -219,9 +232,17 @@ async fn main() -> anyhow::Result<()> {
                                 };
 
                                 // Async Risk Check (with Honeypot)
-                                if risk_engine.check(&signal, Some(10000.0)).await {
+                                let risk_approved = risk_engine.check(&signal, Some(10000.0)).await;
+                                strategy_engine::metrics::RISK_CHECKS_TOTAL
+                                    .with_label_values(&[if risk_approved { "approved" } else { "rejected" }])
+                                    .inc();
+                                if risk_approved {
                                     // Valid Signal
                                     info!("ENTRY SIGNAL: {} @ {} (Amt: {} SOL)", msg.symbol, msg.price, amount_sol);
+
+                                    strategy_engine::metrics::SIGNALS_GENERATED_TOTAL
+                                        .with_label_values(&[&strategy_name, "buy"])
+                                        .inc();
 
                                     if let Err(e) = event_bus.publish_signal(&signal).await {
                                         error!("Failed to publish Entry signal: {}", e);
@@ -234,6 +255,8 @@ async fn main() -> anyhow::Result<()> {
                                             amount_sol / msg.price,
                                             msg.price,
                                         );
+                                        strategy_engine::metrics::ACTIVE_POSITIONS
+                                            .set(portfolio_manager.positions.len() as i64);
                                     }
                                 }
                             }

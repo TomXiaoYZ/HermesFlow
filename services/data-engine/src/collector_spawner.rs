@@ -22,8 +22,9 @@ use data_engine::{
     config::AppConfig,
     models::StandardMarketData,
     monitoring::metrics::{
-        CIRCUIT_BREAKER_STATE, CIRCUIT_BREAKER_TRIPS, DATA_E2E_FRESHNESS_SECONDS,
-        DATA_ERRORS_BY_SOURCE, DATA_MESSAGES_BY_SOURCE, VALIDATION_FAILURES,
+        CIRCUIT_BREAKER_STATE, CIRCUIT_BREAKER_TRIPS, COLLECTOR_LAST_MESSAGE_TS,
+        DATA_E2E_FRESHNESS_SECONDS, DATA_ERRORS_BY_SOURCE, DATA_MESSAGES_BY_SOURCE,
+        VALIDATION_FAILURES,
     },
     repository::{postgres::PostgresRepositories, MarketDataRepository, SocialRepository},
     storage::RedisCache,
@@ -767,6 +768,12 @@ async fn publish_market_update(
 
     // Track per-source message count
     DATA_MESSAGES_BY_SOURCE.with_label_values(&[source]).inc();
+
+    // Track last message timestamp per source (unix epoch seconds)
+    let now_epoch = Utc::now().timestamp() as f64;
+    COLLECTOR_LAST_MESSAGE_TS
+        .with_label_values(&[&source.to_lowercase()])
+        .set(now_epoch);
 
     // Track end-to-end data freshness (source timestamp to now)
     let now_ms = Utc::now().timestamp_millis();

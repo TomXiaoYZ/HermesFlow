@@ -75,10 +75,14 @@ impl RedisCache {
 
         match result {
             Some(json) => {
+                crate::monitoring::metrics::REDIS_CACHE_HITS.inc();
                 let data: StandardMarketData = serde_json::from_str(&json)?;
                 Ok(Some(data))
             }
-            None => Ok(None),
+            None => {
+                crate::monitoring::metrics::REDIS_CACHE_MISSES.inc();
+                Ok(None)
+            }
         }
     }
 
@@ -134,10 +138,14 @@ impl RedisCache {
 
         match result {
             Some(json) => {
+                crate::monitoring::metrics::REDIS_CACHE_HITS.inc();
                 let data: TokenMetadata = serde_json::from_str(&json)?;
                 Ok(Some(data))
             }
-            None => Ok(None),
+            None => {
+                crate::monitoring::metrics::REDIS_CACHE_MISSES.inc();
+                Ok(None)
+            }
         }
     }
 

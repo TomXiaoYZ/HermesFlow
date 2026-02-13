@@ -241,6 +241,29 @@ lazy_static! {
         ),
         &["check_type", "severity"]
     ).expect("Failed to create DQ_INCIDENTS_TOTAL counter vec");
+
+    // ── Phase 3: Enhanced Monitoring metrics ─────────────────────────
+
+    /// Last message timestamp per collector source (unix epoch seconds)
+    pub static ref COLLECTOR_LAST_MESSAGE_TS: prometheus::GaugeVec = prometheus::GaugeVec::new(
+        prometheus::Opts::new(
+            "data_engine_collector_last_message_timestamp",
+            "Unix epoch seconds of last message received per source"
+        ),
+        &["source"]
+    ).expect("Failed to create COLLECTOR_LAST_MESSAGE_TS gauge vec");
+
+    /// Redis cache hits
+    pub static ref REDIS_CACHE_HITS: Counter = Counter::new(
+        "data_engine_redis_cache_hits_total",
+        "Total Redis cache hits"
+    ).expect("Failed to create REDIS_CACHE_HITS counter");
+
+    /// Redis cache misses
+    pub static ref REDIS_CACHE_MISSES: Counter = Counter::new(
+        "data_engine_redis_cache_misses_total",
+        "Total Redis cache misses"
+    ).expect("Failed to create REDIS_CACHE_MISSES counter");
 }
 
 /// Initializes Prometheus metrics by registering them with the registry
@@ -276,6 +299,9 @@ pub fn init_metrics() -> Result<(), prometheus::Error> {
     REGISTRY.register(Box::new(TASK_OVERLAP_SKIPPED.clone()))?;
     REGISTRY.register(Box::new(DATA_E2E_FRESHNESS_SECONDS.clone()))?;
     REGISTRY.register(Box::new(DQ_INCIDENTS_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(COLLECTOR_LAST_MESSAGE_TS.clone()))?;
+    REGISTRY.register(Box::new(REDIS_CACHE_HITS.clone()))?;
+    REGISTRY.register(Box::new(REDIS_CACHE_MISSES.clone()))?;
 
     // Set service as up initially
     SERVICE_UP.set(1);
