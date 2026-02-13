@@ -64,6 +64,8 @@ dist/
 
 # AI/Agent tools
 .claude/
+!.claude/rules/
+!.claude/CLAUDE.md
 .agent/
 
 # Temp & debug files
