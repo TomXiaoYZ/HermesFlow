@@ -388,9 +388,9 @@ pub async fn get_active_tokens(State(state): State<AppState>) -> Response {
     // We cannot join with ClickHouse tables in Postgres, so we fetch standard data here
     let query = "
         WITH LatestPrices AS (
-            SELECT DISTINCT ON (symbol) symbol, price, volume, timestamp
+            SELECT DISTINCT ON (symbol) symbol, price, volume, time
             FROM mkt_equity_snapshots
-            ORDER BY symbol, timestamp DESC
+            ORDER BY symbol, time DESC
         )
         SELECT 
             t.address, 
