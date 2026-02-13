@@ -82,22 +82,21 @@ impl MassiveStreamer {
                         const READ_TIMEOUT: std::time::Duration =
                             std::time::Duration::from_secs(60);
                         loop {
-                            let msg_opt = match tokio::time::timeout(READ_TIMEOUT, read.next())
-                                .await
-                            {
-                                Ok(Some(msg_res)) => msg_res,
-                                Ok(None) => {
-                                    warn!("Massive WebSocket stream ended");
-                                    break;
-                                }
-                                Err(_) => {
-                                    warn!(
+                            let msg_opt =
+                                match tokio::time::timeout(READ_TIMEOUT, read.next()).await {
+                                    Ok(Some(msg_res)) => msg_res,
+                                    Ok(None) => {
+                                        warn!("Massive WebSocket stream ended");
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        warn!(
                                         "Massive WebSocket read timed out after {}s, reconnecting",
                                         READ_TIMEOUT.as_secs()
                                     );
-                                    break;
-                                }
-                            };
+                                        break;
+                                    }
+                                };
                             match msg_opt {
                                 Ok(Message::Text(text)) => {
                                     // Handle Pings/Heartbeats if any? Polygon sends generic messages

@@ -114,14 +114,16 @@ impl RiskEngine {
         }
 
         // 3. Honeypot Check (Sell Simulation)
-        if self.config.check_honeypot && signal.side == OrderSide::Buy
-            && !self.check_honeypot(&signal.symbol).await {
-                warn!(
-                    "Risk Reject: Honeypot detected/Simulation failed for {}",
-                    signal.symbol
-                );
-                return false;
-            }
+        if self.config.check_honeypot
+            && signal.side == OrderSide::Buy
+            && !self.check_honeypot(&signal.symbol).await
+        {
+            warn!(
+                "Risk Reject: Honeypot detected/Simulation failed for {}",
+                signal.symbol
+            );
+            return false;
+        }
 
         true
     }

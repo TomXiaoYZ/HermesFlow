@@ -48,7 +48,6 @@ impl MemeIndicators {
         }
         let ma: Array2<f64> = sum / (window as f64);
 
-        
         (close - &ma) / (&ma + 1e-9)
     }
 

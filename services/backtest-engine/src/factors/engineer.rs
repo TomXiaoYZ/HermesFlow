@@ -44,10 +44,7 @@ impl FeatureEngineer {
         out
     }
 
-    fn compute_single_factor(
-        name: &str,
-        d: &crate::factors::traits::OhlcvData<'_>,
-    ) -> Array2<f64> {
+    fn compute_single_factor(name: &str, d: &crate::factors::traits::OhlcvData<'_>) -> Array2<f64> {
         match name {
             "return" => {
                 let prev = ts_delay(d.close, 1);

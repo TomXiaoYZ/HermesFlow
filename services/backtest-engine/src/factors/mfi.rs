@@ -83,7 +83,6 @@ impl MFI {
 
         // 5. MFI calculation
         let mfr = &sum_pos / (&sum_neg + 1e-9);
-        
 
         100.0 - (100.0 / (1.0 + &mfr))
     }

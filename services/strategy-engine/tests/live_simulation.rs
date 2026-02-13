@@ -19,10 +19,10 @@ async fn test_live_strategy_loop() -> anyhow::Result<()> {
 
     // Subscribe to signals to verify output
     let _signal_rx = event_bus.subscribe_market_data("trade_signals").await?; // Using generic subscribe for now, returns raw string in rx?
-                                                                                 // Wait, subscribe_market_data returns Receiver<MarketDataUpdate>.
-                                                                                 // I need a Receiver for TradeSignal.
-                                                                                 // EventBus doesn't have subscribe_signals yet.
-                                                                                 // I need to add it or just raw redis subscribe here.
+                                                                              // Wait, subscribe_market_data returns Receiver<MarketDataUpdate>.
+                                                                              // I need a Receiver for TradeSignal.
+                                                                              // EventBus doesn't have subscribe_signals yet.
+                                                                              // I need to add it or just raw redis subscribe here.
 
     let client = redis::Client::open(redis_url)?;
     let mut conn = client.get_connection()?;

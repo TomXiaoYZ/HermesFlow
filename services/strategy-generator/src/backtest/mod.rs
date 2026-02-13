@@ -127,10 +127,8 @@ impl Backtester {
                 liquidity: &liq,
                 fdv: &fdv,
             };
-            let features = FeatureEngineer::compute_features_from_config(
-                &self.factor_config,
-                &ohlcv,
-            );
+            let features =
+                FeatureEngineer::compute_features_from_config(&self.factor_config, &ohlcv);
 
             // Calculate Future Returns (Target)
             // For fitness, we want correlation with Next Return?
