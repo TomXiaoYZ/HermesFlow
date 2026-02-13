@@ -1,12 +1,11 @@
 {
-  "dashboard": {
-    "title": "HermesFlow - Data Quality",
-    "uid": "hermesflow-data-quality",
-    "tags": ["hermesflow", "data-quality"],
-    "timezone": "browser",
-    "refresh": "30s",
-    "time": { "from": "now-3h", "to": "now" },
-    "panels": [
+  "title": "HermesFlow - Data Quality",
+  "uid": "hermesflow-data-quality",
+  "tags": ["hermesflow", "data-quality"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "panels": [
       {
         "title": "Stale Symbols",
         "type": "gauge",
@@ -140,5 +139,4 @@
         ]
       }
     ]
-  }
 }

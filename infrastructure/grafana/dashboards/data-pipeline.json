@@ -1,12 +1,11 @@
 {
-  "dashboard": {
-    "title": "HermesFlow - Data Pipeline",
-    "uid": "hermesflow-data-pipeline",
-    "tags": ["hermesflow", "data-engine"],
-    "timezone": "browser",
-    "refresh": "10s",
-    "time": { "from": "now-1h", "to": "now" },
-    "panels": [
+  "title": "HermesFlow - Data Pipeline",
+  "uid": "hermesflow-data-pipeline",
+  "tags": ["hermesflow", "data-engine"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
       {
         "title": "Messages Received Rate",
         "type": "timeseries",
@@ -68,5 +67,4 @@
         ]
       }
     ]
-  }
 }

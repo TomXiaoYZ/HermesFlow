@@ -127,3 +127,123 @@ groups:
         annotations:
           summary: "Volume anomaly detected"
           description: "{{ $value }} symbols with abnormal trading volume."
+
+  # ── GATEWAY: Proxy & WebSocket alerts ──────────────────────────────
+  - name: gateway_alerts
+    interval: 30s
+    rules:
+      - alert: GatewayHighErrorRate
+        expr: rate(gateway_proxy_errors_total[5m]) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway proxy error rate elevated"
+          description: "Proxy errors at {{ $value | humanize }}/s for target {{ $labels.target }}."
+
+      - alert: WebSocketConnectionDrop
+        expr: delta(gateway_websocket_connections[5m]) < -10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sudden WebSocket connection drop"
+          description: "{{ $value | humanize }} WebSocket connections lost in 5 minutes."
+
+      - alert: GatewayHighLatency
+        expr: histogram_quantile(0.95, rate(gateway_upstream_latency_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway upstream latency high"
+          description: "P95 proxy latency to {{ $labels.target }} is {{ $value | humanize }}s."
+
+      - alert: GatewayUpstreamDown
+        expr: gateway_upstream_health == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateway upstream service unreachable"
+          description: "Upstream {{ $labels.target }} has been down for over 2 minutes."
+
+  # ── STRATEGY ENGINE: Signal & Risk alerts ──────────────────────────
+  - name: strategy_engine_alerts
+    interval: 30s
+    rules:
+      - alert: StrategyEngineDown
+        expr: service_up{job="strategy-engine"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Strategy Engine is DOWN"
+          description: "Strategy engine service_up has been 0 for over 1 minute."
+
+      - alert: RiskRejectionSpike
+        expr: rate(strategy_risk_checks_total{result="rejected"}[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Risk rejection rate elevated"
+          description: "Risk rejections at {{ $value | humanize }}/s."
+
+      - alert: MarketDataLagHigh
+        expr: histogram_quantile(0.95, rate(strategy_market_data_lag_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Strategy engine market data lag high"
+          description: "P95 market data lag is {{ $value | humanize }}s."
+
+      - alert: NoMarketDataConsumed
+        expr: rate(strategy_market_data_consumed_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Strategy engine receiving no market data"
+          description: "No market data consumed in the last 5 minutes."
+
+  # ── CIRCUIT BREAKER & TASK alerts ──────────────────────────────────
+  - name: resilience_alerts
+    interval: 30s
+    rules:
+      - alert: CircuitBreakerOpen
+        expr: data_engine_circuit_breaker_state > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker open for {{ $labels.source }}"
+          description: "Source {{ $labels.source }} circuit breaker state: {{ $value }} (1=open, 2=half-open)."
+
+      - alert: TaskTimeoutSpike
+        expr: rate(data_engine_task_timeout_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduled task timeouts detected"
+          description: "Task {{ $labels.task }} is timing out."
+
+      - alert: E2EFreshnessStale
+        expr: data_engine_e2e_freshness_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data freshness stale for {{ $labels.source }}"
+          description: "Source {{ $labels.source }} data is {{ $value | humanize }}s old."
+
+      - alert: DQIncidentRate
+        expr: rate(data_engine_dq_incidents_total[10m]) > 0.05
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Data quality incidents accumulating"
+          description: "DQ incidents ({{ $labels.check_type }}/{{ $labels.severity }}) at {{ $value | humanize }}/s."

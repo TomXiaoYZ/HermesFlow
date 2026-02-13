@@ -1,12 +1,11 @@
 {
-  "dashboard": {
-    "title": "HermesFlow - System Health",
-    "uid": "hermesflow-system-health",
-    "tags": ["hermesflow", "health"],
-    "timezone": "browser",
-    "refresh": "15s",
-    "time": { "from": "now-30m", "to": "now" },
-    "panels": [
+  "title": "HermesFlow - System Health",
+  "uid": "hermesflow-system-health",
+  "tags": ["hermesflow", "health"],
+  "timezone": "browser",
+  "refresh": "15s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
       {
         "title": "Service Status",
         "type": "stat",
@@ -41,9 +40,35 @@
         ]
       },
       {
+        "title": "Circuit Breaker State",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 12, "x": 0, "y": 4 },
+        "targets": [
+          { "expr": "data_engine_circuit_breaker_state", "legendFormat": "{{ source }}" }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "CLOSED", "color": "green" }, "1": { "text": "OPEN", "color": "red" }, "2": { "text": "HALF-OPEN", "color": "yellow" } } }
+            ]
+          }
+        }
+      },
+      {
+        "title": "E2E Data Freshness (seconds)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+        "targets": [
+          { "expr": "data_engine_e2e_freshness_seconds", "legendFormat": "{{ source }}" }
+        ],
+        "fieldConfig": {
+          "defaults": { "unit": "s" }
+        }
+      },
+      {
         "title": "Latency by Source (P95)",
         "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
         "targets": [
           { "expr": "histogram_quantile(0.95, rate(data_engine_latency_by_source_seconds_bucket[5m]))", "legendFormat": "{{ source }}" }
         ]
@@ -51,33 +76,42 @@
       {
         "title": "ClickHouse Latency (P50 / P95)",
         "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
         "targets": [
           { "expr": "histogram_quantile(0.50, rate(data_engine_clickhouse_latency_seconds_bucket[5m]))", "legendFormat": "P50" },
           { "expr": "histogram_quantile(0.95, rate(data_engine_clickhouse_latency_seconds_bucket[5m]))", "legendFormat": "P95" }
         ]
       },
       {
-        "title": "BirdEye API Requests",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+        "title": "Gateway Upstream Health",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 8, "x": 0, "y": 20 },
         "targets": [
-          { "expr": "rate(data_engine_birdeye_requests_total[5m])", "legendFormat": "Requests/s" }
-        ]
+          { "expr": "gateway_upstream_health", "legendFormat": "{{ target }}" }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+            ]
+          }
+        }
       },
       {
-        "title": "Total Errors",
+        "title": "Gateway Upstream Latency (P95)",
         "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 20 },
         "targets": [
-          { "expr": "rate(data_engine_errors_total[5m])", "legendFormat": "Errors/s" },
-          { "expr": "rate(data_engine_errors_by_source_total[5m])", "legendFormat": "{{ source }}" }
-        ]
+          { "expr": "histogram_quantile(0.95, rate(gateway_upstream_latency_seconds_bucket[5m]))", "legendFormat": "{{ target }}" }
+        ],
+        "fieldConfig": {
+          "defaults": { "unit": "s" }
+        }
       },
       {
         "title": "Gateway WebSocket Connections",
         "type": "stat",
-        "gridPos": { "h": 4, "w": 8, "x": 0, "y": 20 },
+        "gridPos": { "h": 4, "w": 4, "x": 16, "y": 20 },
         "targets": [
           { "expr": "gateway_websocket_connections", "legendFormat": "Active" }
         ]
@@ -85,11 +119,27 @@
       {
         "title": "Gateway Proxy Errors",
         "type": "timeseries",
-        "gridPos": { "h": 8, "w": 16, "x": 8, "y": 20 },
+        "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
         "targets": [
           { "expr": "rate(gateway_proxy_errors_total[5m])", "legendFormat": "{{ target }}" }
         ]
+      },
+      {
+        "title": "Total Errors by Source",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+        "targets": [
+          { "expr": "rate(data_engine_errors_total[5m])", "legendFormat": "Total" },
+          { "expr": "rate(data_engine_errors_by_source_total[5m])", "legendFormat": "{{ source }}" }
+        ]
+      },
+      {
+        "title": "BirdEye API Requests",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+        "targets": [
+          { "expr": "rate(data_engine_birdeye_requests_total[5m])", "legendFormat": "Requests/s" }
+        ]
       }
     ]
-  }
 }

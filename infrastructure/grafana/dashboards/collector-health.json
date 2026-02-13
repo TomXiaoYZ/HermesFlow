@@ -1,0 +1,123 @@
+{
+  "title": "HermesFlow - Collector Health",
+  "uid": "hermesflow-collector-health",
+  "tags": ["hermesflow", "collectors"],
+  "timezone": "browser",
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+      {
+        "title": "Circuit Breaker State",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+        "targets": [
+          { "expr": "data_engine_circuit_breaker_state", "legendFormat": "{{ source }}" }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              { "type": "value", "options": { "0": { "text": "CLOSED", "color": "green" }, "1": { "text": "OPEN", "color": "red" }, "2": { "text": "HALF-OPEN", "color": "yellow" } } }
+            ]
+          }
+        }
+      },
+      {
+        "title": "Circuit Breaker Trips",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+        "targets": [
+          { "expr": "rate(data_engine_circuit_breaker_trips_total[5m])", "legendFormat": "{{ source }}" }
+        ]
+      },
+      {
+        "title": "Last Message Age (seconds since last msg)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+        "targets": [
+          { "expr": "time() - data_engine_collector_last_message_timestamp", "legendFormat": "{{ source }}" }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "thresholds": {
+              "steps": [
+                { "color": "green", "value": 0 },
+                { "color": "yellow", "value": 60 },
+                { "color": "red", "value": 300 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Messages per Source",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+        "targets": [
+          { "expr": "rate(data_engine_messages_by_source_total[1m])", "legendFormat": "{{ source }}" }
+        ]
+      },
+      {
+        "title": "Errors per Source",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+        "targets": [
+          { "expr": "rate(data_engine_errors_by_source_total[5m])", "legendFormat": "{{ source }}" }
+        ]
+      },
+      {
+        "title": "E2E Freshness by Source",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+        "targets": [
+          { "expr": "data_engine_e2e_freshness_seconds", "legendFormat": "{{ source }}" }
+        ],
+        "fieldConfig": {
+          "defaults": { "unit": "s" }
+        }
+      },
+      {
+        "title": "Processing Latency by Source (P95)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+        "targets": [
+          { "expr": "histogram_quantile(0.95, rate(data_engine_latency_by_source_seconds_bucket[5m]))", "legendFormat": "{{ source }}" }
+        ],
+        "fieldConfig": {
+          "defaults": { "unit": "s" }
+        }
+      },
+      {
+        "title": "Validation Failures & Dead Letters",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+        "targets": [
+          { "expr": "rate(data_engine_validation_failures_total[5m])", "legendFormat": "Validation Failures/s" },
+          { "expr": "rate(data_engine_dead_letter_total[5m])", "legendFormat": "Dead Letters/s" }
+        ]
+      },
+      {
+        "title": "Redis Cache Hit Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+        "targets": [
+          { "expr": "rate(data_engine_redis_cache_hits_total[5m])", "legendFormat": "Hits/s" },
+          { "expr": "rate(data_engine_redis_cache_misses_total[5m])", "legendFormat": "Misses/s" }
+        ],
+        "fieldConfig": {
+          "overrides": [
+            { "matcher": { "id": "byName", "options": "Hits/s" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
+            { "matcher": { "id": "byName", "options": "Misses/s" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
+          ]
+        }
+      },
+      {
+        "title": "DQ Incidents Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 24, "x": 0, "y": 36 },
+        "targets": [
+          { "expr": "rate(data_engine_dq_incidents_total[10m])", "legendFormat": "{{ check_type }} / {{ severity }}" }
+        ]
+      }
+    ]
+}
