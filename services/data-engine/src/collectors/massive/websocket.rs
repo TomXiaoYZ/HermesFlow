@@ -195,7 +195,9 @@ impl MassiveStreamer {
             timestamp: timestamp_ms,
             received_at: Utc::now().timestamp_millis(),
             bid: None,
+            bid_size: None,
             ask: None,
+            ask_size: None,
             volume_24h: None, // This is 1-sec volume
             high_24h: Some(Decimal::from_f64_retain(high).unwrap_or_default()),
             low_24h: Some(Decimal::from_f64_retain(low).unwrap_or_default()),

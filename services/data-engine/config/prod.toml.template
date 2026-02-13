@@ -22,7 +22,7 @@ max_connections = 20
 
 [clickhouse]
 # Optional: Only if you need high-frequency market tick data
-url = "tcp://your-clickhouse-host:9000"
+url = "http://your-clickhouse-host:8123"
 database = "hermesflow"
 username = "default"
 password = ""

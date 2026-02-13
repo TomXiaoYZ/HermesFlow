@@ -127,7 +127,9 @@ impl MassiveConnector {
             timestamp,
             received_at: chrono::Utc::now().timestamp_millis(),
             bid: None,
+            bid_size: None,
             ask: None,
+            ask_size: None,
             high_24h: None,   // Single candle cannot represent 24h range
             low_24h: None,    // Single candle cannot represent 24h range
             volume_24h: None, // Single candle, not 24h rolling

@@ -100,7 +100,25 @@ impl ClickHouseWriter {
         batch_size: usize,
         flush_interval_ms: u64,
     ) -> Result<Self> {
-        let client = Client::default().with_url(url).with_database(database);
+        Self::new_with_auth(url, database, "default", "", batch_size, flush_interval_ms)
+    }
+
+    /// Creates a new ClickHouse writer with authentication
+    pub fn new_with_auth(
+        url: &str,
+        database: &str,
+        user: &str,
+        password: &str,
+        batch_size: usize,
+        flush_interval_ms: u64,
+    ) -> Result<Self> {
+        let mut client = Client::default()
+            .with_url(url)
+            .with_database(database)
+            .with_user(user);
+        if !password.is_empty() {
+            client = client.with_password(password);
+        }
 
         Ok(Self {
             client,
@@ -131,8 +149,9 @@ impl ClickHouseWriter {
 
     /// Flushes the current batch to ClickHouse with retry.
     ///
-    /// The batch is only cleared after a successful write. On failure, the batch
-    /// is preserved so the next flush attempt can retry the same data.
+    /// Retries up to 3 times with exponential backoff (500ms, 1s, 2s).
+    /// The batch is only cleared after a successful write. On failure,
+    /// the batch is preserved so the next auto-flush can retry.
     pub async fn flush(&mut self) -> Result<()> {
         if self.batch.is_empty() {
             return Ok(());
@@ -140,38 +159,61 @@ impl ClickHouseWriter {
 
         let start = Instant::now();
         let count = self.batch.len();
+        let max_attempts: u32 = 3;
+        let mut delay_ms: u64 = 500;
+        let mut last_err = None;
 
-        tracing::debug!("Flushing {} rows to ClickHouse", count);
+        for attempt in 1..=max_attempts {
+            match self.try_flush_batch().await {
+                Ok(()) => {
+                    self.batch.clear();
+                    let elapsed = start.elapsed();
+                    self.last_flush = Instant::now();
 
-        let result = self.try_flush_batch().await;
-
-        match result {
-            Ok(()) => {
-                self.batch.clear();
-                let elapsed = start.elapsed();
-                self.last_flush = Instant::now();
-
-                tracing::info!(
-                    "Flushed {} rows to ClickHouse in {:?} ({:.0} rows/sec)",
-                    count,
-                    elapsed,
-                    if elapsed.as_secs_f64() > 0.0 {
-                        count as f64 / elapsed.as_secs_f64()
+                    if attempt > 1 {
+                        tracing::info!(
+                            "Flushed {} rows to ClickHouse on attempt {}/{} in {:?}",
+                            count,
+                            attempt,
+                            max_attempts,
+                            elapsed
+                        );
                     } else {
-                        count as f64
+                        tracing::info!(
+                            "Flushed {} rows to ClickHouse in {:?} ({:.0} rows/sec)",
+                            count,
+                            elapsed,
+                            if elapsed.as_secs_f64() > 0.0 {
+                                count as f64 / elapsed.as_secs_f64()
+                            } else {
+                                count as f64
+                            }
+                        );
                     }
-                );
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!(
-                    "ClickHouse flush failed for {} rows (batch preserved for retry): {}",
-                    count,
-                    e
-                );
-                Err(e)
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt < max_attempts {
+                        tracing::warn!(
+                            "ClickHouse flush attempt {}/{} failed for {} rows: {}. Retrying in {}ms",
+                            attempt, max_attempts, count, e, delay_ms
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        delay_ms *= 2;
+                    }
+                    last_err = Some(e);
+                }
             }
         }
+
+        let err = last_err.unwrap();
+        tracing::error!(
+            "ClickHouse flush failed after {} attempts for {} rows (batch preserved): {}",
+            max_attempts,
+            count,
+            err
+        );
+        Err(err)
     }
 
     /// Attempt to write the current batch without clearing it.

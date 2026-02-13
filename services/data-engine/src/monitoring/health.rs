@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
-use crate::storage::RedisCache;
+use crate::storage::{ClickHouseWriter, RedisCache};
 
 /// Overall health status of the service
 #[derive(Debug, Clone, PartialEq)]
@@ -197,13 +197,23 @@ impl HealthMonitor {
         }
     }
 
-    /// Checks ClickHouse health
-    pub async fn check_clickhouse(&self) -> DependencyStatus {
-        // In a real implementation, we'd ping ClickHouse
-        // For now, return a mock status
-        let status = DependencyStatus::up(5.0);
-        *self.clickhouse_status.write().await = status.clone();
-        status
+    /// Checks ClickHouse health by executing a lightweight query
+    pub async fn check_clickhouse(&self, writer: &ClickHouseWriter) -> DependencyStatus {
+        let start = Instant::now();
+
+        match writer.client().query("SELECT 1").execute().await {
+            Ok(_) => {
+                let latency = start.elapsed().as_secs_f64() * 1000.0;
+                let status = DependencyStatus::up(latency);
+                *self.clickhouse_status.write().await = status.clone();
+                status
+            }
+            Err(e) => {
+                let status = DependencyStatus::down(format!("ClickHouse ping failed: {}", e));
+                *self.clickhouse_status.write().await = status.clone();
+                status
+            }
+        }
     }
 
     /// Returns uptime in seconds

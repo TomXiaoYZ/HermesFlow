@@ -59,9 +59,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Initialize ClickHouse
-    let clickhouse = match ClickHouseWriter::new(
+    let clickhouse = match ClickHouseWriter::new_with_auth(
         &config.clickhouse.url,
         &config.clickhouse.database,
+        &config.clickhouse.username,
+        &config.clickhouse.password,
         config.clickhouse.batch_size,
         config.clickhouse.flush_interval_ms,
     ) {
@@ -234,8 +236,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     health_monitor.check_redis(&mut r_guard).await;
                 }
 
-                if clickhouse.is_some() {
-                    health_monitor.check_clickhouse().await;
+                if let Some(ch) = &clickhouse {
+                    let ch_guard = ch.read().await;
+                    health_monitor.check_clickhouse(&ch_guard).await;
                 }
             }
         });

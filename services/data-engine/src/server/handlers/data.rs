@@ -64,7 +64,7 @@ pub async fn get_data_quality(State(state): State<AppState>) -> Response {
 
     // 1. Snapshots
     let snap_res: Result<Option<chrono::DateTime<Utc>>, _> =
-        sqlx::query_scalar("SELECT MAX(timestamp) FROM mkt_equity_snapshots")
+        sqlx::query_scalar("SELECT MAX(time) FROM mkt_equity_snapshots")
             .fetch_one(pool)
             .await;
     let snap_metric = calc_metric(snap_res, 30); // Healthy if < 30s

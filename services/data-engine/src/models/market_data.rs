@@ -31,8 +31,12 @@ pub struct StandardMarketData {
     // Optional fields
     /// Best bid price
     pub bid: Option<Decimal>,
+    /// Best bid size
+    pub bid_size: Option<Decimal>,
     /// Best ask price
     pub ask: Option<Decimal>,
+    /// Best ask size
+    pub ask_size: Option<Decimal>,
     /// 24-hour high price
     pub high_24h: Option<Decimal>,
     /// 24-hour low price
@@ -69,7 +73,9 @@ impl Default for StandardMarketData {
             timestamp: 0,
             received_at: 0,
             bid: None,
+            bid_size: None,
             ask: None,
+            ask_size: None,
             high_24h: None,
             low_24h: None,
             volume_24h: None,
@@ -224,7 +230,9 @@ mod tests {
             timestamp: 1234567890000,
             received_at: 1234567890100,
             bid: Some(dec!(49999.99)),
+            bid_size: Some(dec!(1.5)),
             ask: Some(dec!(50000.01)),
+            ask_size: Some(dec!(2.3)),
             high_24h: Some(dec!(51000.0)),
             low_24h: Some(dec!(49000.0)),
             volume_24h: Some(dec!(1000.0)),

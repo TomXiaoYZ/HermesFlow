@@ -167,7 +167,9 @@ impl BinanceStreamer {
                 timestamp,
                 received_at: Utc::now().timestamp_millis(),
                 bid: None,
+                bid_size: None,
                 ask: None,
+                ask_size: None,
                 volume_24h: None, // Not in aggTrade
                 high_24h: None,
                 low_24h: None,

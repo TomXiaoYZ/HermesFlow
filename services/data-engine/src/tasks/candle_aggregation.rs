@@ -39,10 +39,10 @@ impl CandleAggregator {
         // Ideally we should look back enough to cover the bucket.
         let snapshots = sqlx::query(
             r#"
-            SELECT exchange, symbol, timestamp, price, volume, high, low
+            SELECT exchange, symbol, time, price, volume, high, low
             FROM mkt_equity_snapshots
-            WHERE timestamp >= $1 AND timestamp < $2
-            ORDER BY timestamp ASC
+            WHERE time >= $1 AND time < $2
+            ORDER BY time ASC
             "#,
         )
         .bind(start_time)
@@ -62,7 +62,7 @@ impl CandleAggregator {
         for row in snapshots {
             let exchange: String = row.get("exchange");
             let symbol: String = row.get("symbol");
-            let timestamp: DateTime<Utc> = row.get("timestamp");
+            let timestamp: DateTime<Utc> = row.get("time");
             let price: rust_decimal::Decimal = row.get("price");
             let volume: Option<rust_decimal::Decimal> = row.try_get("volume").ok();
             let high: Option<rust_decimal::Decimal> = row.try_get("high").ok();

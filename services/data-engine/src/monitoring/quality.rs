@@ -128,7 +128,7 @@ impl DataMonitor {
             AND NOT EXISTS (
                 SELECT 1 FROM mkt_equity_snapshots s
                 WHERE s.symbol = a.address
-                AND s.timestamp >= $1
+                AND s.time >= $1
             )
             LIMIT 100
             "#,
@@ -143,11 +143,11 @@ impl DataMonitor {
         let threshold_minutes = self.config.freshness_threshold_sec / 60;
         let stale_equities = sqlx::query(
             r#"
-            SELECT symbol, exchange, MAX(timestamp) as last_ts
+            SELECT symbol, exchange, MAX(time) as last_ts
             FROM mkt_equity_snapshots
-            WHERE timestamp > NOW() - INTERVAL '24 hours'
+            WHERE time > NOW() - INTERVAL '24 hours'
             GROUP BY symbol, exchange
-            HAVING MAX(timestamp) < NOW() - make_interval(mins => $1)
+            HAVING MAX(time) < NOW() - make_interval(mins => $1)
             "#,
         )
         .bind(threshold_minutes as i32)
@@ -307,10 +307,10 @@ impl DataMonitor {
                 SELECT
                     symbol,
                     price,
-                    LAG(price) OVER (PARTITION BY symbol ORDER BY timestamp) AS prev_price,
-                    timestamp
+                    LAG(price) OVER (PARTITION BY symbol ORDER BY time) AS prev_price,
+                    time
                 FROM mkt_equity_snapshots
-                WHERE timestamp >= $1
+                WHERE time >= $1
             )
             SELECT DISTINCT
                 symbol,
@@ -370,8 +370,8 @@ impl DataMonitor {
                 SELECT DISTINCT ON (symbol, exchange)
                     symbol, exchange, price::float8 as price
                 FROM mkt_equity_snapshots
-                WHERE timestamp >= $1
-                ORDER BY symbol, exchange, timestamp DESC
+                WHERE time >= $1
+                ORDER BY symbol, exchange, time DESC
             ),
             divergence AS (
                 SELECT
@@ -436,11 +436,11 @@ impl DataMonitor {
             WITH hourly_counts AS (
                 SELECT
                     symbol,
-                    date_trunc('hour', timestamp) AS hour,
+                    date_trunc('hour', time) AS hour,
                     COUNT(*) AS cnt
                 FROM mkt_equity_snapshots
-                WHERE timestamp > NOW() - INTERVAL '7 days'
-                GROUP BY symbol, date_trunc('hour', timestamp)
+                WHERE time > NOW() - INTERVAL '7 days'
+                GROUP BY symbol, date_trunc('hour', time)
             ),
             stats AS (
                 SELECT
@@ -507,13 +507,13 @@ impl DataMonitor {
                 exchange,
                 COUNT(DISTINCT symbol) AS drift_symbols,
                 PERCENTILE_CONT(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (NOW() - timestamp))
+                    ORDER BY EXTRACT(EPOCH FROM (NOW() - time))
                 )::float8 AS median_drift_sec
             FROM mkt_equity_snapshots
-            WHERE timestamp >= $1
+            WHERE time >= $1
             GROUP BY exchange
             HAVING PERCENTILE_CONT(0.5) WITHIN GROUP (
-                ORDER BY EXTRACT(EPOCH FROM (NOW() - timestamp))
+                ORDER BY EXTRACT(EPOCH FROM (NOW() - time))
             ) > $2
             "#,
         )
@@ -564,10 +564,10 @@ impl DataMonitor {
                     exchange,
                     COUNT(*) AS total_snapshots,
                     COUNT(DISTINCT symbol) AS distinct_symbols,
-                    MAX(timestamp) AS last_ts,
-                    EXTRACT(EPOCH FROM (NOW() - MAX(timestamp)))::float8 AS staleness_sec
+                    MAX(time) AS last_ts,
+                    EXTRACT(EPOCH FROM (NOW() - MAX(time)))::float8 AS staleness_sec
                 FROM mkt_equity_snapshots
-                WHERE timestamp > NOW() - INTERVAL '1 hour'
+                WHERE time > NOW() - INTERVAL '1 hour'
                 GROUP BY exchange
             )
             SELECT

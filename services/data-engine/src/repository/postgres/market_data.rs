@@ -1,11 +1,8 @@
-use async_trait::async_trait;
-use rust_decimal::prelude::ToPrimitive;
-use rust_decimal::Decimal;
-use sqlx::PgPool;
-// use tracing::error; // Removed unused import
 use crate::error::DataEngineError;
 use crate::models::{Candle, StandardMarketData};
 use crate::repository::MarketDataRepository;
+use async_trait::async_trait;
+use sqlx::PgPool;
 
 pub struct PostgresMarketDataRepository {
     pool: PgPool,
@@ -26,61 +23,36 @@ impl MarketDataRepository for PostgresMarketDataRepository {
         )
         .unwrap_or(chrono::Utc::now());
 
-        // Debug logging decreased to trace or if specific criteria met
-        // tracing::info!("Insertion...");
+        let received = chrono::DateTime::from_timestamp(
+            data.received_at / 1000,
+            ((data.received_at % 1000) * 1_000_000) as u32,
+        )
+        .unwrap_or(chrono::Utc::now());
 
         sqlx::query(
             r#"
             INSERT INTO mkt_equity_snapshots (
-                exchange, symbol, price, bid, ask, 
-                volume, vwap, high, low, timestamp
+                exchange, symbol, price, bid, ask,
+                bid_size, ask_size, volume, time, received_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            "#
+            ON CONFLICT (exchange, symbol, time) DO NOTHING
+            "#,
         )
-        // Wait, I need to match the SQL parameters exactly to the table columns from postgres.rs
-        // postgres.rs insert_equity_snapshot used 13 args.
-        // StandardMarketData has: price, bid, ask, high_24h, low_24h...
-        // It does NOT have bid_size, ask_size, vwap, open, prev_close explicitly (except raw_data).
-        // However, the COLLECTOR currently constructs StandardMarketData.
-        // If the Collector puts data into StandardMarketData, where does it put 'open'?
-        // 'open' is not in StandardMarketData!
-        // This is a disconnect.
-        // IBKRCollector currently constructs StandardMarketData AND calls insert_equity_snapshot separately?
-        // No, in my refactor I want generic storage.
-        // If StandardMarketData is the DTO, it must support all fields, or we accept data loss.
-        // OR the Repository logic can extract from raw_data if needed (messy).
-        // Solution: Update StandardMarketData to include 'open', 'prev_close', 'vwap'?
-        // Or keep PostgresWriter's specialized methods but on the trait?
-        // The Trait `insert_snapshot` takes `StandardMarketData`.
-        // If `StandardMarketData` is insufficient, I should improve it.
-        // "Best practice": Domain model should support the data we care about.
-        // I'll add fields to `StandardMarketData` in Phase 4 (Model improvement),
-        // or just map what we have now.
-        // Currently IBKRCollector (Step 1020) maps:
-        // price, quantity (volume), high_24h, low_24h, volume_24h.
-        // It sets generic params.
-        // It does NOT invoke `insert_equity_snapshot` in the `connect` loop for REALTIME bars?
-        // Wait, calling `postgresql.insert_equity_candle` for historical.
-        // For realtime, it sends to `tx` (channel).
-        // Where does `rx` go? `main.rs` listens to `rx`.
-        // `main.rs` loop calls `postgres.insert_equity_snapshot`?
-        // I should check `main.rs`.
-        // If `main.rs` extracts fields from `StandardMarketData`, then `StandardMarketData` MUST have them.
-        // If `StandardMarketData` lacks `open`, then `main.rs` can't insert it.
-        // So I'll check `main.rs` logic.
-        .bind(&data.exchange) // $1
-        .bind(&data.symbol)   // $2
-        .bind(data.price)     // $3
-        .bind(data.bid)       // $4
-        .bind(data.ask)       // $5
-        .bind(data.quantity.to_i64().unwrap_or(0)) // volume ($6)
-        .bind(None::<Decimal>) // vwap ($7)
-        .bind(data.high_24h) // high ($8)
-        .bind(data.low_24h) // low ($9)
-        .bind(ts) // timestamp ($10)
+        .bind(&data.exchange)
+        .bind(&data.symbol)
+        .bind(data.price)
+        .bind(data.bid)
+        .bind(data.ask)
+        .bind(data.bid_size)
+        .bind(data.ask_size)
+        .bind(data.quantity)
+        .bind(ts)
+        .bind(received)
         .execute(&self.pool)
         .await
-        .map_err(|e| DataEngineError::DatabaseError(format!("Failed to insert equity snapshot: {}", e)))?;
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!("Failed to insert equity snapshot: {}", e))
+        })?;
         Ok(())
     }
 
