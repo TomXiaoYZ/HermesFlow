@@ -19,36 +19,54 @@ impl CandleAggregator {
         }
     }
 
-    /// Run candle aggregation for the last N minutes of data
+    /// Run candle aggregation for the last N minutes of data.
+    ///
+    /// When `exchange_filter` is `Some`, only snapshots from that exchange are
+    /// fetched — significantly reducing scanned rows for large lookback windows
+    /// (1h, 4h, 1d, 1w resolutions).
     pub async fn aggregate_candles(
         &mut self,
         lookback_minutes: i64,
         resolution_str: &str,
         bucket_minutes: i64,
+        exchange_filter: Option<&str>,
     ) -> Result<(), DataEngineError> {
         info!(
-            "Starting candle aggregation (Res: {}, lookback: {}min)...",
-            resolution_str, lookback_minutes
+            "Starting candle aggregation (Res: {}, lookback: {}min, exchange: {:?})...",
+            resolution_str, lookback_minutes, exchange_filter
         );
 
         let end_time = Utc::now();
         let start_time = end_time - Duration::minutes(lookback_minutes);
 
-        // Fetch all snapshots in the time range
-        // Note: For larger aggregations (e.g. 1d), looking back just N minutes might be insufficient if snapshots are sparse.
-        // Ideally we should look back enough to cover the bucket.
-        let snapshots = sqlx::query(
-            r#"
-            SELECT exchange, symbol, time, price, volume, high, low
-            FROM mkt_equity_snapshots
-            WHERE time >= $1 AND time < $2
-            ORDER BY time ASC
-            "#,
-        )
-        .bind(start_time)
-        .bind(end_time)
-        .fetch_all(&self.pool)
-        .await
+        let snapshots = if let Some(exchange) = exchange_filter {
+            sqlx::query(
+                r#"
+                SELECT exchange, symbol, time, price, volume, high, low
+                FROM mkt_equity_snapshots
+                WHERE time >= $1 AND time < $2 AND exchange = $3
+                ORDER BY time ASC
+                "#,
+            )
+            .bind(start_time)
+            .bind(end_time)
+            .bind(exchange)
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query(
+                r#"
+                SELECT exchange, symbol, time, price, volume, high, low
+                FROM mkt_equity_snapshots
+                WHERE time >= $1 AND time < $2
+                ORDER BY time ASC
+                "#,
+            )
+            .bind(start_time)
+            .bind(end_time)
+            .fetch_all(&self.pool)
+            .await
+        }
         .map_err(|e| DataEngineError::DatabaseError(format!("Failed to fetch snapshots: {}", e)))?;
 
         if snapshots.is_empty() {

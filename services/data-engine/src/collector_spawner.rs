@@ -15,9 +15,9 @@ use tokio::sync::RwLock;
 use data_engine::{
     collectors::{
         birdeye::meta_collector::BirdeyeMetaCollector, circuit_breaker::CircuitBreaker,
-        AkShareCollector, BirdeyeConnector, BybitConnector, FutuConnector, HeliusConnector,
-        JupiterPriceCollector, MassiveConnector, OkxConnector, PolymarketCollector,
-        TwitterCollector,
+        AkShareCollector, BinanceConnector, BirdeyeConnector, BybitConnector, FutuConnector,
+        HeliusConnector, JupiterPriceCollector, MassiveConnector, OkxConnector,
+        PolymarketCollector, TwitterCollector,
     },
     config::AppConfig,
     models::StandardMarketData,
@@ -37,7 +37,7 @@ pub type CircuitBreakerMap = Arc<HashMap<String, Arc<CircuitBreaker>>>;
 /// Build the default set of circuit breakers (one per data source).
 pub fn build_circuit_breakers() -> CircuitBreakerMap {
     let sources = [
-        "birdeye", "helius", "jupiter", "akshare", "massive", "okx", "bybit", "futu",
+        "birdeye", "helius", "jupiter", "akshare", "massive", "okx", "bybit", "futu", "binance",
     ];
     let mut map = HashMap::new();
     for source in sources {
@@ -96,6 +96,7 @@ pub async fn spawn_all_collectors(deps: &CollectorDeps) {
     spawn_okx_collector(deps).await;
     spawn_bybit_collector(deps).await;
     spawn_futu_collector(deps).await;
+    spawn_binance_collector(deps).await;
 }
 
 async fn spawn_twitter_collector(deps: &CollectorDeps) {
@@ -672,6 +673,73 @@ async fn spawn_futu_collector(deps: &CollectorDeps) {
                     }
                     tracing::error!("Futu Connect failed: {}. Retrying...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                }
+            }
+        }
+    });
+}
+
+async fn spawn_binance_collector(deps: &CollectorDeps) {
+    let Some(binance_config) = deps.config.binance.clone() else {
+        return;
+    };
+    if !binance_config.enabled {
+        return;
+    }
+    if binance_config.symbols.is_empty() {
+        tracing::warn!("Binance collector enabled but no symbols configured, skipping");
+        return;
+    }
+
+    tracing::info!("Starting Binance collector");
+    let mut binance_collector = BinanceConnector::new(binance_config);
+    let mut shutdown_rx = deps.shutdown_tx.subscribe();
+    let repos = Arc::clone(&deps.postgres_repos);
+
+    let redis_publisher = get_redis_publisher(&deps.redis).await;
+    let tx_clone = deps.broadcast_tx.clone();
+
+    let cb = deps.circuit_breakers.get("binance").cloned();
+    tokio::spawn(async move {
+        loop {
+            if let Some(ref cb) = cb {
+                if !cb.allow_request().await {
+                    tracing::warn!(source = "binance", "Circuit breaker open, skipping connect");
+                    CIRCUIT_BREAKER_STATE
+                        .with_label_values(&["binance"])
+                        .set(cb.state_value() as i64);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
+            match binance_collector.connect().await {
+                Ok(mut rx) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_success(cb, "binance");
+                    }
+                    tracing::info!("Binance collector connection established");
+                    loop {
+                        tokio::select! {
+                            Some(msg) = rx.recv() => {
+                                if !validate_market_data(&msg, "binance") {
+                                    continue;
+                                }
+                                insert_with_retry(&repos, &msg, "binance").await;
+                                publish_market_update(&msg, "Binance", &tx_clone, &redis_publisher).await;
+                            }
+                            _ = shutdown_rx.recv() => {
+                                let _ = binance_collector.disconnect().await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_failure(cb, "binance").await;
+                    }
+                    tracing::error!("Binance Connect failed: {}. Retrying in 5s...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
         }

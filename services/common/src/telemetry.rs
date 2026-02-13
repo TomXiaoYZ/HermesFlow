@@ -47,14 +47,12 @@ fn init_otel_subscriber(
     let tracer = opentelemetry_otlp::new_pipeline()
         .tracing()
         .with_exporter(exporter)
-        .with_trace_config(
-            opentelemetry_sdk::trace::Config::default().with_resource(
-                opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
-                    "service.name",
-                    service_name.to_string(),
-                )]),
-            ),
-        )
+        .with_trace_config(opentelemetry_sdk::trace::Config::default().with_resource(
+            opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
+                "service.name",
+                service_name.to_string(),
+            )]),
+        ))
         .install_batch(Tokio)?;
 
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);

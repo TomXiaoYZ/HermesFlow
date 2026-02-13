@@ -1,4 +1,5 @@
 use crate::error::DataEngineError;
+use crate::monitoring::market_schedule;
 use crate::monitoring::metrics::{
     ACTIVE_SYMBOLS_COUNT, DQ_CROSS_SOURCE_DIVERGENCE, DQ_GAP_SYMBOLS, DQ_INCIDENTS_TOTAL,
     DQ_LOW_LIQ_SYMBOLS, DQ_SOURCE_SCORE, DQ_SPIKE_SYMBOLS, DQ_STALE_SYMBOLS, DQ_TIMESTAMP_DRIFT,
@@ -142,7 +143,8 @@ impl DataMonitor {
         })?;
 
         let threshold_minutes = self.config.freshness_threshold_sec / 60;
-        let stale_equities = sqlx::query(
+        let now = Utc::now();
+        let stale_equities_raw = sqlx::query(
             r#"
             SELECT symbol, exchange, MAX(time) as last_ts
             FROM mkt_equity_snapshots
@@ -157,6 +159,15 @@ impl DataMonitor {
         .map_err(|e| {
             DataEngineError::DatabaseError(format!("Freshness check (equities) failed: {}", e))
         })?;
+
+        // Filter out symbols whose exchange is currently closed (e.g. Polygon at night)
+        let stale_equities: Vec<_> = stale_equities_raw
+            .into_iter()
+            .filter(|r| {
+                let exchange: String = r.get("exchange");
+                market_schedule::is_market_open(&exchange, now)
+            })
+            .collect();
 
         let total_stale = stale_tokens.len() + stale_equities.len();
         DQ_STALE_SYMBOLS.set(total_stale as i64);
@@ -227,6 +238,7 @@ impl DataMonitor {
     async fn check_gaps(&self) -> Result<(), DataEngineError> {
         use sqlx::Row;
 
+        let now = Utc::now();
         let timeframes: &[(&str, i64, i64)] = &[
             ("1m", 4, 200),
             ("5m", 8, 80),
@@ -239,14 +251,14 @@ impl DataMonitor {
         let mut total_gap_symbols: i64 = 0;
 
         for &(resolution, lookback_hours, min_expected) in timeframes {
-            let cutoff = Utc::now() - Duration::hours(lookback_hours);
+            let cutoff = now - Duration::hours(lookback_hours);
 
             let rows = sqlx::query(
                 r#"
-                SELECT symbol, count(*) as count
+                SELECT symbol, exchange, count(*) as count
                 FROM mkt_equity_candles
                 WHERE resolution = $1 AND time > $2
-                GROUP BY symbol
+                GROUP BY symbol, exchange
                 HAVING count(*) < $3
                 "#,
             )
@@ -262,18 +274,31 @@ impl DataMonitor {
                 ))
             })?;
 
-            total_gap_symbols += rows.len() as i64;
+            // Only count gaps for exchanges whose market is currently open
+            let filtered: Vec<_> = rows
+                .into_iter()
+                .filter(|r| {
+                    let exchange: String = r.get("exchange");
+                    market_schedule::is_market_open(&exchange, now)
+                })
+                .collect();
 
-            if !rows.is_empty() {
-                let sample: Vec<String> = rows
+            total_gap_symbols += filtered.len() as i64;
+
+            if !filtered.is_empty() {
+                let sample: Vec<String> = filtered
                     .iter()
                     .take(3)
-                    .map(|r| r.get::<String, _>("symbol"))
+                    .map(|r| {
+                        let symbol: String = r.get("symbol");
+                        let exchange: String = r.get("exchange");
+                        format!("{}({})", symbol, exchange)
+                    })
                     .collect();
                 warn!(
                     "Stage 2 GAP ALERT [{}]: {} symbols missing candles in last {}h (expected >= {}). Examples: {:?}",
                     resolution,
-                    rows.len(),
+                    filtered.len(),
                     lookback_hours,
                     min_expected,
                     sample
@@ -480,6 +505,7 @@ impl DataMonitor {
     /// to the 7-day rolling average. This catches silent data feed failures.
     async fn check_volume_anomaly(&self) -> Result<(), DataEngineError> {
         use sqlx::Row;
+        let now = Utc::now();
         let ratio = self.config.volume_anomaly_ratio;
 
         let rows = sqlx::query(
@@ -487,25 +513,28 @@ impl DataMonitor {
             WITH hourly_counts AS (
                 SELECT
                     symbol,
+                    exchange,
                     date_trunc('hour', time) AS hour,
                     COUNT(*) AS cnt
                 FROM mkt_equity_snapshots
                 WHERE time > NOW() - INTERVAL '7 days'
-                GROUP BY symbol, date_trunc('hour', time)
+                GROUP BY symbol, exchange, date_trunc('hour', time)
             ),
             stats AS (
                 SELECT
                     symbol,
+                    exchange,
                     AVG(cnt) AS avg_cnt,
                     (SELECT cnt FROM hourly_counts hc2
                      WHERE hc2.symbol = hourly_counts.symbol
+                     AND hc2.exchange = hourly_counts.exchange
                      AND hc2.hour = date_trunc('hour', NOW())
                      LIMIT 1) AS current_cnt
                 FROM hourly_counts
-                GROUP BY symbol
+                GROUP BY symbol, exchange
                 HAVING AVG(cnt) > 10
             )
-            SELECT symbol, avg_cnt, COALESCE(current_cnt, 0) AS current_cnt
+            SELECT symbol, exchange, avg_cnt, COALESCE(current_cnt, 0) AS current_cnt
             FROM stats
             WHERE COALESCE(current_cnt, 0)::float8 < avg_cnt * $1
             LIMIT 50
@@ -518,22 +547,32 @@ impl DataMonitor {
             DataEngineError::DatabaseError(format!("Volume anomaly check failed: {}", e))
         })?;
 
-        DQ_VOLUME_ANOMALY.set(rows.len() as i64);
+        // Only flag anomalies for symbols whose exchange is currently trading
+        let filtered: Vec<_> = rows
+            .into_iter()
+            .filter(|r| {
+                let exchange: String = r.get("exchange");
+                market_schedule::is_market_open(&exchange, now)
+            })
+            .collect();
 
-        if !rows.is_empty() {
-            let sample: Vec<String> = rows
+        DQ_VOLUME_ANOMALY.set(filtered.len() as i64);
+
+        if !filtered.is_empty() {
+            let sample: Vec<String> = filtered
                 .iter()
                 .take(3)
                 .map(|r| {
                     let symbol: String = r.get("symbol");
+                    let exchange: String = r.get("exchange");
                     let avg: f64 = r.get("avg_cnt");
                     let cur: i64 = r.get("current_cnt");
-                    format!("{} (cur={}, avg={:.0})", symbol, cur, avg)
+                    format!("{}({}) (cur={}, avg={:.0})", symbol, exchange, cur, avg)
                 })
                 .collect();
             warn!(
                 "Stage 6 VOLUME ANOMALY: {} symbols below {:.0}% of 7d average. Examples: {:?}",
-                rows.len(),
+                filtered.len(),
                 ratio * 100.0,
                 sample
             );

@@ -58,7 +58,7 @@ async fn test_multi_exchange_aggregation() {
     // Lookback 10 min, 1m resolution, 1m bucket
     let mut aggregator = CandleAggregator::new(pool.clone());
     aggregator
-        .aggregate_candles(10, "1m", 1)
+        .aggregate_candles(10, "1m", 1, None)
         .await
         .expect("Aggregation failed");
 

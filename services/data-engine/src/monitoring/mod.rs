@@ -1,6 +1,7 @@
 pub mod dead_letter;
 pub mod health;
 pub mod logging;
+pub mod market_schedule;
 pub mod metrics;
 pub mod quality;
 

@@ -404,33 +404,32 @@ impl TaskManager {
 
         tokio::spawn(async move {
             let mut aggregator = crate::tasks::candle_aggregation::CandleAggregator::new(pool);
-            // 1. 1m Candles
-            if let Err(e) = aggregator.aggregate_candles(20, "1m", 1).await {
+            // Short resolutions: no exchange filter (small lookback, fast)
+            if let Err(e) = aggregator.aggregate_candles(20, "1m", 1, None).await {
                 error!("Agg 1m failed: {}", e);
             }
-            // 2. 5m Candles
-            if let Err(e) = aggregator.aggregate_candles(10, "5m", 5).await {
+            if let Err(e) = aggregator.aggregate_candles(10, "5m", 5, None).await {
                 error!("Agg 5m failed: {}", e);
             }
-            // 3. 15m Candles
-            if let Err(e) = aggregator.aggregate_candles(30, "15m", 15).await {
+            if let Err(e) = aggregator.aggregate_candles(30, "15m", 15, None).await {
                 error!("Agg 15m failed: {}", e);
             }
-            // 4. 1H Candles
-            if let Err(e) = aggregator.aggregate_candles(120, "1h", 60).await {
-                error!("Agg 1h failed: {}", e);
-            }
-            // 5. 4H Candles
-            if let Err(e) = aggregator.aggregate_candles(300, "4h", 240).await {
-                error!("Agg 4h failed: {}", e);
-            }
-            // 6. 1D Candles
-            if let Err(e) = aggregator.aggregate_candles(1500, "1d", 1440).await {
-                error!("Agg 1d failed: {}", e);
-            }
-            // 7. 1W Candles
-            if let Err(e) = aggregator.aggregate_candles(11520, "1w", 10080).await {
-                error!("Agg 1w failed: {}", e);
+            // Large resolutions: split by exchange to reduce scanned rows
+            let exchanges = ["Polygon", "Jupiter", "Birdeye", "Binance", "OKX", "Bybit"];
+            for (lookback, res, bucket) in [
+                (120, "1h", 60),
+                (300, "4h", 240),
+                (1500, "1d", 1440),
+                (11520, "1w", 10080),
+            ] {
+                for exchange in &exchanges {
+                    if let Err(e) = aggregator
+                        .aggregate_candles(lookback, res, bucket, Some(exchange))
+                        .await
+                    {
+                        error!("Agg {} ({}) failed: {}", res, exchange, e);
+                    }
+                }
             }
 
             info!("Manual Aggregation Completed.");
@@ -522,7 +521,7 @@ impl TaskManager {
         tokio::spawn(async move {
             let mut aggregator =
                 crate::tasks::candle_aggregation::CandleAggregator::new(pool_startup);
-            if let Err(e) = aggregator.aggregate_candles(48 * 60, "15m", 15).await {
+            if let Err(e) = aggregator.aggregate_candles(48 * 60, "15m", 15, None).await {
                 error!("Historical backfill failed: {}", e);
             } else {
                 info!("Historical candle backfill completed successfully");
@@ -535,31 +534,37 @@ impl TaskManager {
             let pool_clone = pool.clone();
             let running = guard.clone();
             Box::pin(async move {
-                guarded_task("candle_aggregation", &running, 50, || async {
+                guarded_task("candle_aggregation", &running, 120, || async {
                     info!("Running Candle Aggregation Task...");
                     let mut aggregator =
                         crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
 
-                    if let Err(e) = aggregator.aggregate_candles(20, "1m", 1).await {
+                    // Short resolutions: no exchange filter (small lookback, fast)
+                    if let Err(e) = aggregator.aggregate_candles(20, "1m", 1, None).await {
                         error!("Agg 1m failed: {}", e);
                     }
-                    if let Err(e) = aggregator.aggregate_candles(10, "5m", 5).await {
+                    if let Err(e) = aggregator.aggregate_candles(10, "5m", 5, None).await {
                         error!("Agg 5m failed: {}", e);
                     }
-                    if let Err(e) = aggregator.aggregate_candles(30, "15m", 15).await {
+                    if let Err(e) = aggregator.aggregate_candles(30, "15m", 15, None).await {
                         error!("Agg 15m failed: {}", e);
                     }
-                    if let Err(e) = aggregator.aggregate_candles(120, "1h", 60).await {
-                        error!("Agg 1h failed: {}", e);
-                    }
-                    if let Err(e) = aggregator.aggregate_candles(300, "4h", 240).await {
-                        error!("Agg 4h failed: {}", e);
-                    }
-                    if let Err(e) = aggregator.aggregate_candles(1500, "1d", 1440).await {
-                        error!("Agg 1d failed: {}", e);
-                    }
-                    if let Err(e) = aggregator.aggregate_candles(11520, "1w", 10080).await {
-                        error!("Agg 1w failed: {}", e);
+                    // Large resolutions: split by exchange to avoid scanning 31M+ rows
+                    let exchanges = ["Polygon", "Jupiter", "Birdeye", "Binance", "OKX", "Bybit"];
+                    for (lookback, res, bucket) in [
+                        (120, "1h", 60),
+                        (300, "4h", 240),
+                        (1500, "1d", 1440),
+                        (11520, "1w", 10080),
+                    ] {
+                        for exchange in &exchanges {
+                            if let Err(e) = aggregator
+                                .aggregate_candles(lookback, res, bucket, Some(exchange))
+                                .await
+                            {
+                                error!("Agg {} ({}) failed: {}", res, exchange, e);
+                            }
+                        }
                     }
 
                     info!("All resolutions aggregated.");
