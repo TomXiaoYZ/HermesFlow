@@ -2,6 +2,7 @@ pub mod akshare;
 pub mod binance;
 pub mod birdeye;
 pub mod bybit;
+pub mod circuit_breaker;
 pub mod dexscreener;
 pub mod futu;
 pub mod helius;

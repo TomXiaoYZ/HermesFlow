@@ -1,10 +1,54 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio_cron_scheduler::{Job, JobScheduler};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::AppConfig;
+use crate::monitoring::metrics::{TASK_DURATION_SECONDS, TASK_OVERLAP_SKIPPED, TASK_TIMEOUT_TOTAL};
 use crate::repository::postgres::PostgresRepositories;
+
+/// Run a named task with overlap prevention and timeout.
+///
+/// - If `running` is already `true`, the invocation is skipped (logged + metric).
+/// - Otherwise, the task runs with `timeout_secs` deadline.
+/// - Duration is recorded in `TASK_DURATION_SECONDS`.
+async fn guarded_task<F, Fut>(task_name: &str, running: &AtomicBool, timeout_secs: u64, f: F)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    // Overlap check
+    if running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        warn!(task = task_name, "Skipping overlapping execution");
+        TASK_OVERLAP_SKIPPED.with_label_values(&[task_name]).inc();
+        return;
+    }
+
+    let start = Instant::now();
+    let result = tokio::time::timeout(tokio::time::Duration::from_secs(timeout_secs), f()).await;
+
+    let elapsed = start.elapsed().as_secs_f64();
+    TASK_DURATION_SECONDS
+        .with_label_values(&[task_name])
+        .observe(elapsed);
+
+    running.store(false, Ordering::SeqCst);
+
+    if result.is_err() {
+        error!(
+            task = task_name,
+            timeout_secs = timeout_secs,
+            elapsed_secs = format!("{:.1}", elapsed),
+            "Task timed out"
+        );
+        TASK_TIMEOUT_TOTAL.with_label_values(&[task_name]).inc();
+    }
+}
 
 pub struct TaskManager {
     scheduler: Arc<RwLock<JobScheduler>>,
@@ -400,33 +444,53 @@ impl TaskManager {
         use crate::monitoring::quality::CheckTier;
         use crate::tasks::data_quality::DataQualityTask;
 
-        // ── Critical tier: every 30 seconds ────────────────────────────
+        // Overlap guards — shared across invocations via Arc
+        let critical_running = Arc::new(AtomicBool::new(false));
+        let warning_running = Arc::new(AtomicBool::new(false));
+        let audit_running = Arc::new(AtomicBool::new(false));
+
+        // ── Critical tier: every 30 seconds (25s timeout) ──────────────
         let repos_critical = self.repos.clone();
+        let guard_critical = critical_running.clone();
         let job_critical = Job::new_async("*/30 * * * * *", move |_uuid, _l| {
             let repos = repos_critical.clone();
+            let running = guard_critical.clone();
             Box::pin(async move {
-                let task = DataQualityTask::new(repos, CheckTier::Critical);
-                task.run().await;
+                guarded_task("dq_critical", &running, 25, || async {
+                    let task = DataQualityTask::new(repos, CheckTier::Critical);
+                    task.run().await;
+                })
+                .await;
             })
         })?;
 
-        // ── Warning tier: every 5 minutes ──────────────────────────────
+        // ── Warning tier: every 5 minutes (4min timeout) ───────────────
         let repos_warning = self.repos.clone();
+        let guard_warning = warning_running.clone();
         let job_warning = Job::new_async("0 */5 * * * *", move |_uuid, _l| {
             let repos = repos_warning.clone();
+            let running = guard_warning.clone();
             Box::pin(async move {
-                let task = DataQualityTask::new(repos, CheckTier::Warning);
-                task.run().await;
+                guarded_task("dq_warning", &running, 240, || async {
+                    let task = DataQualityTask::new(repos, CheckTier::Warning);
+                    task.run().await;
+                })
+                .await;
             })
         })?;
 
-        // ── Full audit tier: every hour ────────────────────────────────
+        // ── Full audit tier: every hour (50min timeout) ────────────────
         let repos_audit = self.repos.clone();
+        let guard_audit = audit_running.clone();
         let job_audit = Job::new_async("0 0 * * * *", move |_uuid, _l| {
             let repos = repos_audit.clone();
+            let running = guard_audit.clone();
             Box::pin(async move {
-                let task = DataQualityTask::new(repos, CheckTier::FullAudit);
-                task.run().await;
+                guarded_task("dq_full_audit", &running, 3000, || async {
+                    let task = DataQualityTask::new(repos, CheckTier::FullAudit);
+                    task.run().await;
+                })
+                .await;
             })
         })?;
 
@@ -447,12 +511,13 @@ impl TaskManager {
     }
 
     pub async fn register_candle_aggregation_job(&self) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Registering Candle Aggregation Job (Every 5 minutes)...");
+        info!("Registering Candle Aggregation Job (Every minute)...");
 
         let pool = self.repos.pool.clone();
+        let agg_running = Arc::new(AtomicBool::new(false));
 
         // ONE-TIME: Run historical backfill on startup (past 48 hours)
-        info!("🚀 Running ONE-TIME historical candle backfill (48 hours)...");
+        info!("Running ONE-TIME historical candle backfill (48 hours)...");
         let pool_startup = pool.clone();
         tokio::spawn(async move {
             let mut aggregator =
@@ -460,41 +525,46 @@ impl TaskManager {
             if let Err(e) = aggregator.aggregate_candles(48 * 60, "15m", 15).await {
                 error!("Historical backfill failed: {}", e);
             } else {
-                info!("✅ Historical candle backfill completed successfully");
+                info!("Historical candle backfill completed successfully");
             }
         });
 
-        // Schedule: Every 1 minute
+        // Schedule: Every 1 minute (50s timeout, overlap guarded)
+        let guard = agg_running.clone();
         let job = Job::new_async("0 * * * * *", move |_uuid, _l| {
             let pool_clone = pool.clone();
+            let running = guard.clone();
             Box::pin(async move {
-                info!("Running Candle Aggregation Task...");
-                let mut aggregator =
-                    crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
+                guarded_task("candle_aggregation", &running, 50, || async {
+                    info!("Running Candle Aggregation Task...");
+                    let mut aggregator =
+                        crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
 
-                if let Err(e) = aggregator.aggregate_candles(20, "1m", 1).await {
-                    error!("Agg 1m failed: {}", e);
-                }
-                if let Err(e) = aggregator.aggregate_candles(10, "5m", 5).await {
-                    error!("Agg 5m failed: {}", e);
-                }
-                if let Err(e) = aggregator.aggregate_candles(30, "15m", 15).await {
-                    error!("Agg 15m failed: {}", e);
-                }
-                if let Err(e) = aggregator.aggregate_candles(120, "1h", 60).await {
-                    error!("Agg 1h failed: {}", e);
-                }
-                if let Err(e) = aggregator.aggregate_candles(300, "4h", 240).await {
-                    error!("Agg 4h failed: {}", e);
-                }
-                if let Err(e) = aggregator.aggregate_candles(1500, "1d", 1440).await {
-                    error!("Agg 1d failed: {}", e);
-                }
-                if let Err(e) = aggregator.aggregate_candles(11520, "1w", 10080).await {
-                    error!("Agg 1w failed: {}", e);
-                }
+                    if let Err(e) = aggregator.aggregate_candles(20, "1m", 1).await {
+                        error!("Agg 1m failed: {}", e);
+                    }
+                    if let Err(e) = aggregator.aggregate_candles(10, "5m", 5).await {
+                        error!("Agg 5m failed: {}", e);
+                    }
+                    if let Err(e) = aggregator.aggregate_candles(30, "15m", 15).await {
+                        error!("Agg 15m failed: {}", e);
+                    }
+                    if let Err(e) = aggregator.aggregate_candles(120, "1h", 60).await {
+                        error!("Agg 1h failed: {}", e);
+                    }
+                    if let Err(e) = aggregator.aggregate_candles(300, "4h", 240).await {
+                        error!("Agg 4h failed: {}", e);
+                    }
+                    if let Err(e) = aggregator.aggregate_candles(1500, "1d", 1440).await {
+                        error!("Agg 1d failed: {}", e);
+                    }
+                    if let Err(e) = aggregator.aggregate_candles(11520, "1w", 10080).await {
+                        error!("Agg 1w failed: {}", e);
+                    }
 
-                info!("All resolutions aggregated.");
+                    info!("All resolutions aggregated.");
+                })
+                .await;
             })
         })?;
 

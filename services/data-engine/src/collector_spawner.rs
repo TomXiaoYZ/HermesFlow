@@ -7,22 +7,68 @@
 use chrono::{TimeZone, Utc};
 use common::events::MarketDataUpdate;
 use rust_decimal::prelude::ToPrimitive;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 use data_engine::{
     collectors::{
-        birdeye::meta_collector::BirdeyeMetaCollector, AkShareCollector, BirdeyeConnector,
-        BybitConnector, FutuConnector, HeliusConnector, JupiterPriceCollector, MassiveConnector,
-        OkxConnector, PolymarketCollector, TwitterCollector,
+        birdeye::meta_collector::BirdeyeMetaCollector, circuit_breaker::CircuitBreaker,
+        AkShareCollector, BirdeyeConnector, BybitConnector, FutuConnector, HeliusConnector,
+        JupiterPriceCollector, MassiveConnector, OkxConnector, PolymarketCollector,
+        TwitterCollector,
     },
     config::AppConfig,
     models::StandardMarketData,
-    monitoring::metrics::{DATA_ERRORS_BY_SOURCE, DATA_MESSAGES_BY_SOURCE, VALIDATION_FAILURES},
+    monitoring::metrics::{
+        CIRCUIT_BREAKER_STATE, CIRCUIT_BREAKER_TRIPS, DATA_E2E_FRESHNESS_SECONDS,
+        DATA_ERRORS_BY_SOURCE, DATA_MESSAGES_BY_SOURCE, VALIDATION_FAILURES,
+    },
     repository::{postgres::PostgresRepositories, MarketDataRepository, SocialRepository},
     storage::RedisCache,
     traits::DataSourceConnector,
 };
+
+/// Shared circuit breaker registry, keyed by source name.
+pub type CircuitBreakerMap = Arc<HashMap<String, Arc<CircuitBreaker>>>;
+
+/// Build the default set of circuit breakers (one per data source).
+pub fn build_circuit_breakers() -> CircuitBreakerMap {
+    let sources = [
+        "birdeye", "helius", "jupiter", "akshare", "massive", "okx", "bybit", "futu",
+    ];
+    let mut map = HashMap::new();
+    for source in sources {
+        map.insert(
+            source.to_string(),
+            Arc::new(CircuitBreaker::new(source, 5, Duration::from_secs(60))),
+        );
+    }
+    Arc::new(map)
+}
+
+/// Record a connection failure on the circuit breaker and update Prometheus metrics.
+async fn cb_record_failure(cb: &CircuitBreaker, source: &str) {
+    let before = cb.state_value();
+    cb.record_failure().await;
+    let after = cb.state_value();
+    CIRCUIT_BREAKER_STATE
+        .with_label_values(&[source])
+        .set(after as i64);
+    // Detect Closed→Open transition (trip)
+    if before != 1 && after == 1 {
+        CIRCUIT_BREAKER_TRIPS.with_label_values(&[source]).inc();
+    }
+}
+
+/// Record a successful connection and update Prometheus metrics.
+fn cb_record_success(cb: &CircuitBreaker, source: &str) {
+    cb.record_success();
+    CIRCUIT_BREAKER_STATE
+        .with_label_values(&[source])
+        .set(cb.state_value() as i64);
+}
 
 /// Dependencies required by all collectors.
 pub struct CollectorDeps {
@@ -31,6 +77,7 @@ pub struct CollectorDeps {
     pub redis: Option<Arc<RwLock<RedisCache>>>,
     pub broadcast_tx: tokio::sync::broadcast::Sender<String>,
     pub shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    pub circuit_breakers: CircuitBreakerMap,
 }
 
 /// Spawn all configured collectors as background tasks.
@@ -152,10 +199,24 @@ async fn spawn_birdeye_collector(deps: &CollectorDeps) {
         tracing::info!("Started Birdeye Meta Collector");
     }
 
+    let cb = deps.circuit_breakers.get("birdeye").cloned();
     tokio::spawn(async move {
         loop {
+            if let Some(ref cb) = cb {
+                if !cb.allow_request().await {
+                    tracing::warn!(source = "birdeye", "Circuit breaker open, skipping connect");
+                    CIRCUIT_BREAKER_STATE
+                        .with_label_values(&["birdeye"])
+                        .set(cb.state_value() as i64);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
             match birdeye_collector.connect(repos.token.clone()).await {
                 Ok(mut rx) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_success(cb, "birdeye");
+                    }
                     tracing::info!("Birdeye collector connection established");
                     loop {
                         tokio::select! {
@@ -174,6 +235,9 @@ async fn spawn_birdeye_collector(deps: &CollectorDeps) {
                     }
                 }
                 Err(e) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_failure(cb, "birdeye").await;
+                    }
                     tracing::error!("Birdeye Connect failed: {}. Retrying...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                 }
@@ -198,10 +262,24 @@ async fn spawn_helius_collector(deps: &CollectorDeps) {
     let redis_publisher = get_redis_publisher(&deps.redis).await;
     let tx_clone = deps.broadcast_tx.clone();
 
+    let cb = deps.circuit_breakers.get("helius").cloned();
     tokio::spawn(async move {
         loop {
+            if let Some(ref cb) = cb {
+                if !cb.allow_request().await {
+                    tracing::warn!(source = "helius", "Circuit breaker open, skipping connect");
+                    CIRCUIT_BREAKER_STATE
+                        .with_label_values(&["helius"])
+                        .set(cb.state_value() as i64);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
             match helius_collector.connect().await {
                 Ok(mut rx) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_success(cb, "helius");
+                    }
                     tracing::info!("Helius collector connection established");
                     loop {
                         tokio::select! {
@@ -220,6 +298,9 @@ async fn spawn_helius_collector(deps: &CollectorDeps) {
                     }
                 }
                 Err(e) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_failure(cb, "helius").await;
+                    }
                     tracing::error!("Helius Connect failed: {}. Retrying in 5s...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
@@ -251,10 +332,24 @@ async fn spawn_jupiter_collector(deps: &CollectorDeps) {
     let redis_publisher = get_redis_publisher(&deps.redis).await;
     let tx_clone = deps.broadcast_tx.clone();
 
+    let cb = deps.circuit_breakers.get("jupiter").cloned();
     tokio::spawn(async move {
         loop {
+            if let Some(ref cb) = cb {
+                if !cb.allow_request().await {
+                    tracing::warn!(source = "jupiter", "Circuit breaker open, skipping connect");
+                    CIRCUIT_BREAKER_STATE
+                        .with_label_values(&["jupiter"])
+                        .set(cb.state_value() as i64);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
             match jupiter_collector.connect(repos.token.clone()).await {
                 Ok(mut rx) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_success(cb, "jupiter");
+                    }
                     tracing::info!("Jupiter Price collector connection established");
                     loop {
                         tokio::select! {
@@ -273,6 +368,9 @@ async fn spawn_jupiter_collector(deps: &CollectorDeps) {
                     }
                 }
                 Err(e) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_failure(cb, "jupiter").await;
+                    }
                     tracing::error!("Jupiter Connect failed: {}. Retrying in 5s...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
@@ -297,21 +395,32 @@ async fn spawn_akshare_collector(deps: &CollectorDeps) {
     let redis_publisher = get_redis_publisher(&deps.redis).await;
     let tx_clone = deps.broadcast_tx.clone();
 
+    let cb = deps.circuit_breakers.get("akshare").cloned();
     tokio::spawn(async move {
         match ak_collector.connect().await {
-            Ok(mut rx) => loop {
-                tokio::select! {
-                    Some(msg) = rx.recv() => {
-                        if !validate_market_data(&msg, "akshare") {
-                            continue;
-                        }
-                        insert_with_retry(&repos, &msg, "akshare").await;
-                        publish_market_update(&msg, "akshare", &tx_clone, &redis_publisher).await;
-                    }
-                    _ = shutdown_rx.recv() => break,
+            Ok(mut rx) => {
+                if let Some(ref cb) = cb {
+                    cb_record_success(cb, "akshare");
                 }
-            },
-            Err(e) => tracing::error!("AkShare Connect failed: {}", e),
+                loop {
+                    tokio::select! {
+                        Some(msg) = rx.recv() => {
+                            if !validate_market_data(&msg, "akshare") {
+                                continue;
+                            }
+                            insert_with_retry(&repos, &msg, "akshare").await;
+                            publish_market_update(&msg, "akshare", &tx_clone, &redis_publisher).await;
+                        }
+                        _ = shutdown_rx.recv() => break,
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(ref cb) = cb {
+                    cb_record_failure(cb, "akshare").await;
+                }
+                tracing::error!("AkShare Connect failed: {}", e);
+            }
         }
     });
 }
@@ -332,10 +441,24 @@ async fn spawn_massive_collector(deps: &CollectorDeps) {
     let redis_publisher = get_redis_publisher(&deps.redis).await;
     let tx_clone = deps.broadcast_tx.clone();
 
+    let cb = deps.circuit_breakers.get("massive").cloned();
     tokio::spawn(async move {
         loop {
+            if let Some(ref cb) = cb {
+                if !cb.allow_request().await {
+                    tracing::warn!(source = "massive", "Circuit breaker open, skipping connect");
+                    CIRCUIT_BREAKER_STATE
+                        .with_label_values(&["massive"])
+                        .set(cb.state_value() as i64);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
             match massive_collector.connect().await {
                 Ok(mut rx) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_success(cb, "massive");
+                    }
                     tracing::info!("Massive/Polygon collector connection established");
                     loop {
                         tokio::select! {
@@ -354,6 +477,9 @@ async fn spawn_massive_collector(deps: &CollectorDeps) {
                     }
                 }
                 Err(e) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_failure(cb, "massive").await;
+                    }
                     tracing::error!("Massive Connect failed: {}. Retrying in 10s...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                 }
@@ -378,10 +504,24 @@ async fn spawn_okx_collector(deps: &CollectorDeps) {
     let redis_publisher = get_redis_publisher(&deps.redis).await;
     let tx_clone = deps.broadcast_tx.clone();
 
+    let cb = deps.circuit_breakers.get("okx").cloned();
     tokio::spawn(async move {
         loop {
+            if let Some(ref cb) = cb {
+                if !cb.allow_request().await {
+                    tracing::warn!(source = "okx", "Circuit breaker open, skipping connect");
+                    CIRCUIT_BREAKER_STATE
+                        .with_label_values(&["okx"])
+                        .set(cb.state_value() as i64);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
             match okx_collector.connect().await {
                 Ok(mut rx) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_success(cb, "okx");
+                    }
                     tracing::info!("OKX collector connection established");
                     loop {
                         tokio::select! {
@@ -400,6 +540,9 @@ async fn spawn_okx_collector(deps: &CollectorDeps) {
                     }
                 }
                 Err(e) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_failure(cb, "okx").await;
+                    }
                     tracing::error!("OKX Connect failed: {}. Retrying...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
@@ -424,10 +567,24 @@ async fn spawn_bybit_collector(deps: &CollectorDeps) {
     let redis_publisher = get_redis_publisher(&deps.redis).await;
     let tx_clone = deps.broadcast_tx.clone();
 
+    let cb = deps.circuit_breakers.get("bybit").cloned();
     tokio::spawn(async move {
         loop {
+            if let Some(ref cb) = cb {
+                if !cb.allow_request().await {
+                    tracing::warn!(source = "bybit", "Circuit breaker open, skipping connect");
+                    CIRCUIT_BREAKER_STATE
+                        .with_label_values(&["bybit"])
+                        .set(cb.state_value() as i64);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
             match bybit_collector.connect().await {
                 Ok(mut rx) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_success(cb, "bybit");
+                    }
                     tracing::info!("Bybit collector connection established");
                     loop {
                         tokio::select! {
@@ -446,6 +603,9 @@ async fn spawn_bybit_collector(deps: &CollectorDeps) {
                     }
                 }
                 Err(e) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_failure(cb, "bybit").await;
+                    }
                     tracing::error!("Bybit Connect failed: {}. Retrying...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
@@ -470,10 +630,24 @@ async fn spawn_futu_collector(deps: &CollectorDeps) {
     let redis_publisher = get_redis_publisher(&deps.redis).await;
     let tx_clone = deps.broadcast_tx.clone();
 
+    let cb = deps.circuit_breakers.get("futu").cloned();
     tokio::spawn(async move {
         loop {
+            if let Some(ref cb) = cb {
+                if !cb.allow_request().await {
+                    tracing::warn!(source = "futu", "Circuit breaker open, skipping connect");
+                    CIRCUIT_BREAKER_STATE
+                        .with_label_values(&["futu"])
+                        .set(cb.state_value() as i64);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
             match futu_collector.connect().await {
                 Ok(mut rx) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_success(cb, "futu");
+                    }
                     tracing::info!("Futu collector connection established (Placeholder)");
                     loop {
                         tokio::select! {
@@ -492,6 +666,9 @@ async fn spawn_futu_collector(deps: &CollectorDeps) {
                     }
                 }
                 Err(e) => {
+                    if let Some(ref cb) = cb {
+                        cb_record_failure(cb, "futu").await;
+                    }
                     tracing::error!("Futu Connect failed: {}. Retrying...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                 }
@@ -505,7 +682,7 @@ const INSERT_INITIAL_DELAY_MS: u64 = 200;
 
 /// Insert a snapshot with retry and dead-letter fallback.
 ///
-/// Retries up to 3 times with exponential backoff (200ms → 400ms → 800ms).
+/// Retries up to 3 times with exponential backoff (200ms -> 400ms -> 800ms).
 /// If all retries fail, logs a dead-letter record for later investigation.
 async fn insert_with_retry(repos: &PostgresRepositories, msg: &StandardMarketData, source: &str) {
     let mut delay_ms = INSERT_INITIAL_DELAY_MS;
@@ -590,6 +767,16 @@ async fn publish_market_update(
 
     // Track per-source message count
     DATA_MESSAGES_BY_SOURCE.with_label_values(&[source]).inc();
+
+    // Track end-to-end data freshness (source timestamp to now)
+    let now_ms = Utc::now().timestamp_millis();
+    let lag_seconds = (now_ms - msg.timestamp) as f64 / 1000.0;
+    if lag_seconds >= 0.0 {
+        let source_lower = source.to_lowercase();
+        DATA_E2E_FRESHNESS_SECONDS
+            .with_label_values(&[&source_lower])
+            .set(lag_seconds);
+    }
 
     if let Ok(json) = serde_json::to_string(&update) {
         let _ = broadcast_tx.send(json.clone());

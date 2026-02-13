@@ -175,6 +175,72 @@ lazy_static! {
         .buckets(vec![0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]),
         &["source"]
     ).expect("Failed to create DATA_LATENCY_BY_SOURCE histogram vec");
+
+    // ── Phase 2: Timeliness & Resilience metrics ─────────────────────
+
+    /// Circuit breaker state per source (0=closed, 1=open, 2=half_open)
+    pub static ref CIRCUIT_BREAKER_STATE: prometheus::IntGaugeVec = prometheus::IntGaugeVec::new(
+        prometheus::Opts::new(
+            "data_engine_circuit_breaker_state",
+            "Circuit breaker state per source (0=closed, 1=open, 2=half_open)"
+        ),
+        &["source"]
+    ).expect("Failed to create CIRCUIT_BREAKER_STATE gauge vec");
+
+    /// Circuit breaker trip counter per source
+    pub static ref CIRCUIT_BREAKER_TRIPS: CounterVec = CounterVec::new(
+        Opts::new(
+            "data_engine_circuit_breaker_trips_total",
+            "Total circuit breaker trips per source"
+        ),
+        &["source"]
+    ).expect("Failed to create CIRCUIT_BREAKER_TRIPS counter vec");
+
+    /// Task execution duration per task name
+    pub static ref TASK_DURATION_SECONDS: HistogramVec = HistogramVec::new(
+        prometheus::HistogramOpts::new(
+            "data_engine_task_duration_seconds",
+            "Task execution duration in seconds"
+        )
+        .buckets(vec![0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0]),
+        &["task"]
+    ).expect("Failed to create TASK_DURATION_SECONDS histogram vec");
+
+    /// Task timeout counter per task name
+    pub static ref TASK_TIMEOUT_TOTAL: CounterVec = CounterVec::new(
+        Opts::new(
+            "data_engine_task_timeout_total",
+            "Total task timeouts per task name"
+        ),
+        &["task"]
+    ).expect("Failed to create TASK_TIMEOUT_TOTAL counter vec");
+
+    /// Task overlap skip counter per task name
+    pub static ref TASK_OVERLAP_SKIPPED: CounterVec = CounterVec::new(
+        Opts::new(
+            "data_engine_task_overlap_skipped_total",
+            "Total task executions skipped due to overlap"
+        ),
+        &["task"]
+    ).expect("Failed to create TASK_OVERLAP_SKIPPED counter vec");
+
+    /// End-to-end data freshness: seconds since newest snapshot per source
+    pub static ref DATA_E2E_FRESHNESS_SECONDS: prometheus::GaugeVec = prometheus::GaugeVec::new(
+        prometheus::Opts::new(
+            "data_engine_e2e_freshness_seconds",
+            "Seconds since newest snapshot per source"
+        ),
+        &["source"]
+    ).expect("Failed to create DATA_E2E_FRESHNESS_SECONDS gauge vec");
+
+    /// DQ incidents recorded
+    pub static ref DQ_INCIDENTS_TOTAL: CounterVec = CounterVec::new(
+        Opts::new(
+            "data_engine_dq_incidents_total",
+            "Total data quality incidents recorded"
+        ),
+        &["check_type", "severity"]
+    ).expect("Failed to create DQ_INCIDENTS_TOTAL counter vec");
 }
 
 /// Initializes Prometheus metrics by registering them with the registry
@@ -203,6 +269,13 @@ pub fn init_metrics() -> Result<(), prometheus::Error> {
     REGISTRY.register(Box::new(DATA_MESSAGES_BY_SOURCE.clone()))?;
     REGISTRY.register(Box::new(DATA_ERRORS_BY_SOURCE.clone()))?;
     REGISTRY.register(Box::new(DATA_LATENCY_BY_SOURCE.clone()))?;
+    REGISTRY.register(Box::new(CIRCUIT_BREAKER_STATE.clone()))?;
+    REGISTRY.register(Box::new(CIRCUIT_BREAKER_TRIPS.clone()))?;
+    REGISTRY.register(Box::new(TASK_DURATION_SECONDS.clone()))?;
+    REGISTRY.register(Box::new(TASK_TIMEOUT_TOTAL.clone()))?;
+    REGISTRY.register(Box::new(TASK_OVERLAP_SKIPPED.clone()))?;
+    REGISTRY.register(Box::new(DATA_E2E_FRESHNESS_SECONDS.clone()))?;
+    REGISTRY.register(Box::new(DQ_INCIDENTS_TOTAL.clone()))?;
 
     // Set service as up initially
     SERVICE_UP.set(1);

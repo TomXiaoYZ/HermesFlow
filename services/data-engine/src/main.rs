@@ -211,12 +211,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
     // Spawn all market data collectors
+    let circuit_breakers = collector_spawner::build_circuit_breakers();
     let collector_deps = CollectorDeps {
         config: config.clone(),
         postgres_repos: postgres_repos.clone(),
         redis: redis.clone(),
         broadcast_tx: broadcast_tx.clone(),
         shutdown_tx: shutdown_tx.clone(),
+        circuit_breakers,
     };
     collector_spawner::spawn_all_collectors(&collector_deps).await;
 

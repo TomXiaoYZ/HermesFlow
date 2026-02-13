@@ -1,7 +1,8 @@
 use crate::error::DataEngineError;
 use crate::monitoring::metrics::{
-    ACTIVE_SYMBOLS_COUNT, DQ_CROSS_SOURCE_DIVERGENCE, DQ_GAP_SYMBOLS, DQ_LOW_LIQ_SYMBOLS,
-    DQ_SOURCE_SCORE, DQ_SPIKE_SYMBOLS, DQ_STALE_SYMBOLS, DQ_TIMESTAMP_DRIFT, DQ_VOLUME_ANOMALY,
+    ACTIVE_SYMBOLS_COUNT, DQ_CROSS_SOURCE_DIVERGENCE, DQ_GAP_SYMBOLS, DQ_INCIDENTS_TOTAL,
+    DQ_LOW_LIQ_SYMBOLS, DQ_SOURCE_SCORE, DQ_SPIKE_SYMBOLS, DQ_STALE_SYMBOLS, DQ_TIMESTAMP_DRIFT,
+    DQ_VOLUME_ANOMALY,
 };
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
@@ -172,6 +173,19 @@ impl DataMonitor {
                 self.config.freshness_threshold_sec,
                 sample
             );
+            self.record_incident(
+                "freshness",
+                "critical",
+                None,
+                None,
+                Some(serde_json::json!({
+                    "type": "token",
+                    "stale_count": stale_tokens.len(),
+                    "threshold_sec": self.config.freshness_threshold_sec,
+                    "sample": sample,
+                })),
+            )
+            .await;
         }
 
         if !stale_equities.is_empty() {
@@ -190,6 +204,19 @@ impl DataMonitor {
                 threshold_minutes,
                 sample
             );
+            self.record_incident(
+                "freshness",
+                "warning",
+                None,
+                None,
+                Some(serde_json::json!({
+                    "type": "equity",
+                    "stale_count": stale_equities.len(),
+                    "threshold_min": threshold_minutes,
+                    "sample": sample,
+                })),
+            )
+            .await;
         }
 
         Ok(())
@@ -351,6 +378,18 @@ impl DataMonitor {
                 threshold * 100.0,
                 sample
             );
+            self.record_incident(
+                "price_spike",
+                "warning",
+                None,
+                None,
+                Some(serde_json::json!({
+                    "count": results.len(),
+                    "threshold_pct": threshold * 100.0,
+                    "sample": sample,
+                })),
+            )
+            .await;
         }
 
         Ok(results)
@@ -418,6 +457,18 @@ impl DataMonitor {
                 threshold * 100.0,
                 sample
             );
+            self.record_incident(
+                "cross_source_divergence",
+                "warning",
+                None,
+                None,
+                Some(serde_json::json!({
+                    "count": rows.len(),
+                    "threshold_pct": threshold * 100.0,
+                    "sample": sample,
+                })),
+            )
+            .await;
         }
 
         Ok(())
@@ -548,6 +599,38 @@ impl DataMonitor {
         }
 
         Ok(())
+    }
+
+    // ── Incident Recording ────────────────────────────────────────────────
+
+    /// Record a data quality incident to the `dq_incidents` table and bump the
+    /// `DQ_INCIDENTS_TOTAL` counter.  Best-effort: DB errors are logged, not propagated.
+    async fn record_incident(
+        &self,
+        check_type: &str,
+        severity: &str,
+        symbol: Option<&str>,
+        source: Option<&str>,
+        details: Option<serde_json::Value>,
+    ) {
+        if let Err(e) = sqlx::query(
+            "INSERT INTO dq_incidents (check_type, severity, symbol, source, details) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(check_type)
+        .bind(severity)
+        .bind(symbol)
+        .bind(source)
+        .bind(&details)
+        .execute(&self.pool)
+        .await
+        {
+            error!("Failed to record DQ incident: {}", e);
+        }
+
+        DQ_INCIDENTS_TOTAL
+            .with_label_values(&[check_type, severity])
+            .inc();
     }
 
     // ── Per-Source Scoring ───────────────────────────────────────────────
