@@ -18,24 +18,36 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting Strategy Generator (Evolutionary Optimizer)...");
 
+    // Load exchange/resolution config
+    let exchange = env::var("GENERATOR_EXCHANGE").unwrap_or_else(|_| "Birdeye".to_string());
+    let resolution = env::var("GENERATOR_RESOLUTION").unwrap_or_else(|_| "15m".to_string());
+
+    // Configurable ports for multi-instance support
+    let health_port: u16 = env::var("GENERATOR_HEALTH_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8084);
+    let api_port: u16 = env::var("GENERATOR_API_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8082);
+
+    let service_name = format!("strategy-generator-{}", exchange.to_lowercase());
+    info!(
+        "Asset mode: exchange={}, resolution={}, api_port={}, health_port={}",
+        exchange, resolution, api_port, health_port
+    );
+
     // Spawn health check server
-    tokio::spawn(common::health::start_health_server(
-        "strategy-generator",
-        8084,
-    ));
+    let health_name = service_name.clone();
+    tokio::spawn(async move {
+        common::health::start_health_server(&health_name, health_port).await;
+    });
 
     // 2. Connect to Infrastructure
     let db_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:hermesflow@localhost:5432/hermesflow".to_string());
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
-
-    // Load exchange/resolution config
-    let exchange = env::var("GENERATOR_EXCHANGE").unwrap_or_else(|_| "Birdeye".to_string());
-    let resolution = env::var("GENERATOR_RESOLUTION").unwrap_or_else(|_| "15m".to_string());
-    info!(
-        "Asset mode: exchange={}, resolution={}",
-        exchange, resolution
-    );
 
     // Load Factor Config
     let config_path =
@@ -107,7 +119,13 @@ async fn main() -> anyhow::Result<()> {
     let mut redis_conn = client.get_async_connection().await?;
 
     // Start Heartbeat Task
-    common::heartbeat::spawn_heartbeat("strategy-generator", &redis_url);
+    common::heartbeat::spawn_heartbeat(&service_name, &redis_url);
+
+    // Exchange-namespaced Redis keys
+    let exchange_lower = exchange.to_lowercase();
+    let redis_key_status = format!("strategy:{}:status", exchange_lower);
+    let redis_key_population = format!("strategy:{}:population", exchange_lower);
+    let redis_channel = format!("strategy_updates:{}", exchange_lower);
 
     // 2.1 Spawn API Server
     let pool_api = pool.clone();
@@ -115,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
     let exchange_api = exchange.clone();
     let resolution_api = resolution.clone();
     tokio::spawn(async move {
-        api::start_api_server(pool_api, config_api, exchange_api, resolution_api).await;
+        api::start_api_server(pool_api, config_api, exchange_api, resolution_api, api_port).await;
     });
 
     // 3. Initialize Components
@@ -187,10 +205,11 @@ async fn main() -> anyhow::Result<()> {
         warn!("Backtester will have no data - all fitness will be 0.0");
     }
 
-    // 4.1 Load Strategy State (Generation & Population)
+    // 4.1 Load Strategy State — filtered by exchange
     let last_gen_row = sqlx::query(
-        "SELECT generation, best_genome FROM strategy_generations ORDER BY generation DESC LIMIT 1",
+        "SELECT generation, best_genome FROM strategy_generations WHERE exchange = $1 ORDER BY generation DESC LIMIT 1",
     )
+    .bind(&exchange)
     .fetch_optional(&pool)
     .await;
 
@@ -232,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Payload for Redis/Frontend
             let payload = serde_json::json!({
-                "strategy_id": "alphagpt_evo_v2",
+                "strategy_id": format!("{}_alphagpt_evo_v2", exchange_lower),
                 "timestamp": chrono::Utc::now().timestamp(),
                 "formula": best.tokens,
                 "generation": gen,
@@ -249,17 +268,17 @@ async fn main() -> anyhow::Result<()> {
 
             let payload_str = payload.to_string();
 
-            // 1. Publish to PubSub (Realtime)
+            // 1. Publish to PubSub (Realtime) — exchange-namespaced channel
             let _: () = redis_conn
-                .publish("strategy_updates", &payload_str)
+                .publish(&redis_channel, &payload_str)
                 .await
                 .unwrap_or_else(|e| {
                     error!("Failed to publish strategy: {}", e);
                 });
 
-            // 2. Persist to Redis (History/Status API)
+            // 2. Persist to Redis — exchange-namespaced keys
             let _: () = redis_conn
-                .set("strategy:status", &payload_str)
+                .set(&redis_key_status, &payload_str)
                 .await
                 .unwrap_or(());
 
@@ -278,16 +297,17 @@ async fn main() -> anyhow::Result<()> {
 
             let pop_payload = serde_json::to_string(&population_view).unwrap_or_default();
             let _: () = redis_conn
-                .set("strategy:population", &pop_payload)
+                .set(&redis_key_population, &pop_payload)
                 .await
                 .unwrap_or(());
 
-            // 3. Persist to DB (Permanent History)
+            // 3. Persist to DB — with exchange column
             let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
-            let strategy_id = format!("alphagpt_gen_{}", gen);
+            let strategy_id = format!("{}_alphagpt_gen_{}", exchange_lower, gen);
             let _ = sqlx::query(
-                "INSERT INTO strategy_generations (generation, fitness, best_genome, metadata, strategy_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (generation) DO UPDATE SET strategy_id = $5"
+                "INSERT INTO strategy_generations (exchange, generation, fitness, best_genome, metadata, strategy_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (exchange, generation) DO UPDATE SET fitness = $3, best_genome = $4, metadata = $5, strategy_id = $6"
             )
+            .bind(&exchange)
             .bind(gen as i32)
             .bind(best.fitness)
             .bind(&tokens_i32)
@@ -356,14 +376,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Cleanup old generations (Keep last 1000)
+            // Cleanup old generations (Keep last 1000 per exchange)
             if gen.is_multiple_of(10) && gen > 1000 {
                 let cutoff = gen as i32 - 1000;
-                let _ = sqlx::query("DELETE FROM strategy_generations WHERE generation < $1")
-                    .bind(cutoff)
-                    .execute(&pool)
-                    .await
-                    .map_err(|e| error!("Failed to cleanup old generations: {}", e));
+                let _ = sqlx::query(
+                    "DELETE FROM strategy_generations WHERE exchange = $1 AND generation < $2",
+                )
+                .bind(&exchange)
+                .bind(cutoff)
+                .execute(&pool)
+                .await
+                .map_err(|e| error!("Failed to cleanup old generations: {}", e));
             }
         }
 

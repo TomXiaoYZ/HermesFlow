@@ -255,6 +255,10 @@ services:
       - RUST_LOG=info
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
+      - GENERATOR_EXCHANGE=Birdeye
+      - GENERATOR_RESOLUTION=15m
+      - GENERATOR_API_PORT=8082
+      - GENERATOR_HEALTH_PORT=8084
     ports:
       - "8082:8082"
     volumes:
@@ -267,6 +271,37 @@ services:
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8084/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  strategy-generator-stock:
+    build:
+      context: .
+      dockerfile: services/strategy-generator/Dockerfile
+    environment:
+      - RUST_LOG=info
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
+      - GENERATOR_EXCHANGE=Polygon
+      - GENERATOR_RESOLUTION=1d
+      - GENERATOR_LOOKBACK_DAYS=365
+      - FACTOR_CONFIG=config/factors-stock.yaml
+      - GENERATOR_API_PORT=8085
+      - GENERATOR_HEALTH_PORT=8087
+    ports:
+      - "8085:8085"
+    volumes:
+      - ./config:/app/config:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8087/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

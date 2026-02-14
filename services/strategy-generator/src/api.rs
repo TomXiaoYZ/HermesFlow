@@ -29,6 +29,7 @@ pub async fn start_api_server(
     factor_config: FactorConfig,
     exchange: String,
     resolution: String,
+    port: u16,
 ) {
     let state = ApiState {
         pool,
@@ -42,7 +43,7 @@ pub async fn start_api_server(
         .route("/config/factors", get(get_factor_config))
         .with_state(state);
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8082));
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Generator API listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
