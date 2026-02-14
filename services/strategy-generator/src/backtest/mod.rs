@@ -581,8 +581,11 @@ impl Backtester {
             }
         }
 
-        let mut pb =
-            portfolio::PortfolioBacktester::new(self.exchange.clone(), self.resolution.clone());
+        let mut pb = portfolio::PortfolioBacktester::new(
+            &self.factor_config,
+            self.exchange.clone(),
+            self.resolution.clone(),
+        );
         pb.run(genome, &self.cache, days).await
     }
 }

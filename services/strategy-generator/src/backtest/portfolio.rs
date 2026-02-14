@@ -1,6 +1,7 @@
 use crate::backtest::data_frame::TimeDataFrame;
 use crate::backtest::CachedData;
 use anyhow;
+use backtest_engine::config::FactorConfig;
 use backtest_engine::vm::vm::StackVM;
 use serde_json::json;
 use std::collections::HashMap;
@@ -13,9 +14,9 @@ pub struct PortfolioBacktester {
 }
 
 impl PortfolioBacktester {
-    pub fn new(exchange: String, resolution: String) -> Self {
+    pub fn new(factor_config: &FactorConfig, exchange: String, resolution: String) -> Self {
         Self {
-            vm: StackVM::new(),
+            vm: StackVM::from_config(factor_config),
             exchange,
             resolution,
         }
