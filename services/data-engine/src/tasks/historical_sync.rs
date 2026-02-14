@@ -25,6 +25,12 @@ const SYNC_RESOLUTIONS: &[ResolutionConfig] = &[
         chunk_days: 20,
         default_lookback_days: 365,
     },
+    ResolutionConfig {
+        resolution: "1d",
+        candle_seconds: 24 * 60 * 60,
+        chunk_days: 120,
+        default_lookback_days: 365,
+    },
 ];
 
 struct ResolutionConfig {
