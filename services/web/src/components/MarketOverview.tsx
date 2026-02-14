@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Search, TrendingUp, TrendingDown, Clock, BarChart2, RefreshCw } from "lucide-react";
 import { createChart, CandlestickSeries } from 'lightweight-charts';
+import type { IChartApi, ISeriesApi } from 'lightweight-charts';
 import { cn } from "@/lib/utils";
 
 // Types
@@ -45,31 +46,24 @@ export default function MarketOverview() {
     const [loading, setLoading] = useState(false);
     const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
     const [exchange, setExchange] = useState("Birdeye");
+    const [chartReady, setChartReady] = useState(false);
 
-    const chartRef = useRef<any>(null);
-    const candlestickSeriesRef = useRef<any>(null);
+    const chartContainerRef = useRef<HTMLDivElement>(null);
+    const chartRef = useRef<IChartApi | null>(null);
+    const candlestickSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
 
-    // Callback ref to initialize chart when container is ready
-    const chartContainerRef = useCallback((container: HTMLDivElement | null) => {
-        console.log('[Chart Init Callback] Container ref callback triggered');
-        console.log('[Chart Init Callback] Container exists:', !!container);
-        console.log('[Chart Init Callback] Chart already initialized:', !!chartRef.current);
+    // Initialize chart when container mounts via ResizeObserver (avoids 0x0 dimensions)
+    useEffect(() => {
+        const container = chartContainerRef.current;
+        if (!container) return;
 
-        if (!container) {
-            console.log('[Chart Init Callback] Container is null, skipping');
-            return;
-        }
+        let observer: ResizeObserver | null = null;
 
-        if (chartRef.current) {
-            console.log('[Chart Init Callback] Chart already exists, skipping re-initialization');
-            return;
-        }
+        const initChart = () => {
+            if (chartRef.current) return;
 
-        console.log('[Chart Init Callback] Initializing chart...');
-
-        try {
             const { width, height } = container.getBoundingClientRect();
-            console.log('[Chart Init Callback] Container dimensions:', { width, height });
+            if (width === 0 || height === 0) return; // Wait for layout
 
             const chart = createChart(container, {
                 width: Math.floor(width),
@@ -91,12 +85,8 @@ export default function MarketOverview() {
                 },
             });
 
-            console.log('[Chart Init Callback] Chart created successfully');
-
-            const candlestickSeries = chart.addSeries(CandlestickSeries);
-            console.log('[Chart Init Callback] Candlestick series created');
-
-            candlestickSeries.applyOptions({
+            const series = chart.addSeries(CandlestickSeries);
+            series.applyOptions({
                 upColor: '#22c55e',
                 downColor: '#ef4444',
                 borderUpColor: '#22c55e',
@@ -105,33 +95,36 @@ export default function MarketOverview() {
                 wickDownColor: '#ef4444',
             });
 
-            console.log('[Chart Init Callback] Series options applied');
-
             chartRef.current = chart;
-            candlestickSeriesRef.current = candlestickSeries;
+            candlestickSeriesRef.current = series;
+            setChartReady(true);
+        };
 
-            console.log('[Chart Init Callback] Refs stored');
-
-            // Handle resize
-            const handleResize = () => {
-                console.log('[Chart Resize] Triggered');
-                if (container && chartRef.current) {
-                    const newWidth = container.clientWidth;
-                    const newHeight = container.clientHeight;
+        observer = new ResizeObserver((entries) => {
+            for (const entry of entries) {
+                const { width, height } = entry.contentRect;
+                if (!chartRef.current) {
+                    initChart();
+                } else {
                     chartRef.current.applyOptions({
-                        width: Math.floor(newWidth),
-                        height: Math.floor(newHeight),
+                        width: Math.floor(width),
+                        height: Math.floor(height),
                     });
                 }
-            };
+            }
+        });
+        observer.observe(container);
 
-            window.addEventListener('resize', handleResize);
-            console.log('[Chart Init Callback] Complete!');
-
-        } catch (error) {
-            console.error('[Chart Init Callback] Error creating chart:', error);
-        }
-    }, []);
+        return () => {
+            observer?.disconnect();
+            if (chartRef.current) {
+                chartRef.current.remove();
+                chartRef.current = null;
+                candlestickSeriesRef.current = null;
+                setChartReady(false);
+            }
+        };
+    }, [selectedSymbol]);
 
     // Fetch Tokens
     useEffect(() => {
@@ -141,37 +134,35 @@ export default function MarketOverview() {
                 const json = await res.json();
                 if (json.tokens) {
                     setTokens(json.tokens);
-                    if (!selectedSymbol && json.tokens.length > 0) {
-                        setSelectedSymbol(json.tokens[0].symbol);
-                    }
                 }
-            } catch (e) {
-                console.error("Failed to fetch tokens", e);
+            } catch {
+                // Token fetch failed — will retry on next interval
             }
         };
         fetchTokens();
         const interval = setInterval(fetchTokens, 60000);
         return () => clearInterval(interval);
-    }, [selectedSymbol]);
+    }, []);
+
+    // Auto-select first matching token when exchange changes or tokens load
+    useEffect(() => {
+        if (tokens.length === 0) return;
+        const isStock = exchange === "Polygon";
+        const matching = tokens.filter(t =>
+            isStock ? t.token_type === "stock" : t.token_type !== "stock"
+        );
+        if (matching.length > 0 && !matching.find(t => t.symbol === selectedSymbol)) {
+            setSelectedSymbol(matching[0].symbol);
+        }
+    }, [exchange, tokens, selectedSymbol]);
 
 
 
     // Fetch Candles
     useEffect(() => {
-        console.log('[Candles Effect] Triggered with:', {
-            selectedSymbol,
-            resolution,
-            exchange,
-            tokensLength: tokens.length
-        });
-
-        if (!selectedSymbol) {
-            console.log('[Candles Effect] No symbol selected, returning');
-            return;
-        }
+        if (!selectedSymbol) return;
 
         const fetchCandles = async () => {
-            console.log('[Candles Effect] Starting fetch for:', selectedSymbol, 'resolution:', resolution);
             setLoading(true);
             try {
                 const now = Date.now();
@@ -183,29 +174,17 @@ export default function MarketOverview() {
                 else if (resolution === "1d") start = now - 365 * 24 * 60 * 60 * 1000;
 
                 const token = tokens.find(t => t.symbol === selectedSymbol);
-                if (!token) {
-                    console.warn('[Candles Effect] Token not found for symbol:', selectedSymbol);
-                    return;
-                }
+                if (!token) return;
 
                 const url = `${API_BASE}/api/v1/data/market/${token.address}/history?resolution=${resolution}&exchange=${exchange}&start=${start}&end=${now}&limit=5000`;
-                console.log('[Candles Effect] Fetching URL:', url);
-
                 const res = await fetch(url);
                 const json = await res.json();
-
-                console.log('[Candles Effect] Response:', {
-                    dataLength: json.data?.length || 0,
-                    resolution,
-                    symbol: selectedSymbol
-                });
 
                 if (json.data) {
                     setCandles(json.data);
                     setLastUpdated(new Date());
                 }
-            } catch (e) {
-                console.error('[Candles Effect] Fetch error:', e);
+            } catch {
                 setCandles([]);
             } finally {
                 setLoading(false);
@@ -213,79 +192,27 @@ export default function MarketOverview() {
         };
         fetchCandles();
         const interval = setInterval(fetchCandles, 60000);
-        return () => {
-            console.log('[Candles Effect] Cleanup for:', selectedSymbol, resolution);
-            clearInterval(interval);
-        };
-    }, [selectedSymbol, resolution, exchange, tokens]); // CHANGED: Added `tokens` back as it's needed for `token.address`
-
-    // Cleanup effect when component unmounts
-    useEffect(() => {
-        const handleResize = () => {
-            console.log('[Chart Resize] Global handler triggered');
-            if (chartRef.current) {
-                const container = document.querySelector('[data-chart-container]') as HTMLDivElement;
-                if (container) {
-                    const newWidth = container.clientWidth;
-                    const newHeight = container.clientHeight;
-                    chartRef.current.applyOptions({
-                        width: Math.floor(newWidth),
-                        height: Math.floor(newHeight),
-                    });
-                }
-            }
-        };
-
-        // Note: resize listener is now added in callback ref
-        // This effect is only for cleanup on unmount
-
-        return () => {
-            console.log('[Chart Cleanup] Component unmounting, removing resize listener');
-            window.removeEventListener('resize', handleResize);
-            if (chartRef.current) {
-                console.log('[Chart Cleanup] Removing chart instance');
-                chartRef.current.remove();
-                chartRef.current = null;
-                candlestickSeriesRef.current = null;
-            }
-        };
-    }, []);
+        return () => clearInterval(interval);
+    }, [selectedSymbol, resolution, exchange, tokens]);
 
     // Derived: Selected Token
     const selectedToken = tokens.find(t => t.symbol === selectedSymbol);
 
     // Update chart data when candles change
     useEffect(() => {
-        console.log('[Chart Data Update] Effect triggered with candles.length:', candles.length);
-        console.log('[Chart Data Update] candlestickSeriesRef.current exists:', !!candlestickSeriesRef.current);
-
-        if (!candlestickSeriesRef.current || candles.length === 0) {
-            console.warn('[Chart Data Update] Returning early - no series or no candles');
-            return;
-        }
+        if (!candlestickSeriesRef.current || candles.length === 0) return;
 
         const formattedData = candles.map(candle => ({
-            time: Math.floor(candle.timestamp / 1000) as any,
+            time: Math.floor(candle.timestamp / 1000) as unknown as number,
             open: candle.open,
             high: candle.high,
             low: candle.low,
             close: candle.close,
         }));
 
-        console.log('[Chart Data Update] Setting data with', formattedData.length, 'candles');
-        console.log('[Chart Data Update] First candle:', formattedData[0]);
-        console.log('[Chart Data Update] Last candle:', formattedData[formattedData.length - 1]);
-
         candlestickSeriesRef.current.setData(formattedData);
-
-        // Auto-fit the timeScale to show all data
-        if (chartRef.current) {
-            console.log('[Chart Data Update] Fitting time scale to content');
-            chartRef.current.timeScale().fitContent();
-        }
-
-        console.log('[Chart Data Update] Complete!');
-    }, [candles]);
+        chartRef.current?.timeScale().fitContent();
+    }, [candles, chartReady]);
 
     const filteredTokens = useMemo(() => {
         return tokens.filter(t => {
@@ -416,10 +343,7 @@ export default function MarketOverview() {
                                 {RESOLUTIONS.map(res => (
                                     <button
                                         key={res.value}
-                                        onClick={() => {
-                                            console.log('[Resolution] Changing from', resolution, 'to', res.value);
-                                            setResolution(res.value);
-                                        }}
+                                        onClick={() => setResolution(res.value)}
                                         className={cn(
                                             "px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200",
                                             resolution === res.value ? "bg-indigo-500 text-white shadow" : "text-slate-400 hover:text-white hover:bg-white/5"
