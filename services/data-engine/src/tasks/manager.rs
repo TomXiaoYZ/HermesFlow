@@ -129,11 +129,13 @@ impl TaskManager {
                             let connector = MassiveConnector::new(massive_cfg);
 
                             for symbol in symbols {
-                                match connector
+                                let fetch_result = connector
                                     .fetch_history_candles(&symbol, 1, "day", &date_str, &date_str)
-                                    .await
-                                {
+                                    .await;
+
+                                let (status, err_msg) = match &fetch_result {
                                     Ok(candles) => {
+                                        let mut insert_ok = true;
                                         for data in candles {
                                             let meta_value =
                                                 serde_json::from_str::<Value>(&data.raw_data).ok();
@@ -174,14 +176,46 @@ impl TaskManager {
                                                     "EOD: Failed to insert {} for {}: {}",
                                                     symbol, date_str, e
                                                 );
+                                                insert_ok = false;
                                             }
                                         }
+                                        if insert_ok {
+                                            ("completed", None)
+                                        } else {
+                                            ("failed", Some("Insert errors".to_string()))
+                                        }
                                     }
-                                    Err(e) => error!(
-                                        "EOD: Failed to fetch {} for {}: {}",
-                                        symbol, date_str, e
-                                    ),
+                                    Err(e) => {
+                                        error!(
+                                            "EOD: Failed to fetch {} for {}: {}",
+                                            symbol, date_str, e
+                                        );
+                                        ("failed", Some(e.to_string()))
+                                    }
+                                };
+
+                                // Update sync status
+                                if let Err(e) = sqlx::query(
+                                    r#"
+                                    INSERT INTO market_sync_status (exchange, symbol, resolution, last_synced_time, last_sync_at, status, error_message)
+                                    VALUES ('Polygon', $1, '1d', NOW(), NOW(), $2, $3)
+                                    ON CONFLICT (exchange, symbol, resolution) DO UPDATE SET
+                                        last_synced_time = NOW(),
+                                        last_sync_at = NOW(),
+                                        status = $2,
+                                        error_message = $3,
+                                        retry_count = CASE WHEN $2 = 'failed' THEN market_sync_status.retry_count + 1 ELSE 0 END
+                                    "#,
+                                )
+                                .bind(&symbol)
+                                .bind(status)
+                                .bind(&err_msg)
+                                .execute(&repos.pool)
+                                .await
+                                {
+                                    error!("EOD: Failed to update sync status for {}: {}", symbol, e);
                                 }
+
                                 // Rate limit sleep
                                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                             }

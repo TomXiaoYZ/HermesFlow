@@ -3,7 +3,7 @@ use crate::monitoring::market_schedule;
 use crate::monitoring::metrics::{
     ACTIVE_SYMBOLS_COUNT, DQ_CROSS_SOURCE_DIVERGENCE, DQ_GAP_SYMBOLS, DQ_INCIDENTS_TOTAL,
     DQ_LOW_LIQ_SYMBOLS, DQ_SOURCE_SCORE, DQ_SPIKE_SYMBOLS, DQ_STALE_SYMBOLS, DQ_TIMESTAMP_DRIFT,
-    DQ_VOLUME_ANOMALY,
+    DQ_VOLUME_ANOMALY, DQ_WATCHLIST_MISSING, DQ_WATCHLIST_STALE,
 };
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
@@ -82,6 +82,7 @@ impl DataMonitor {
                 self.check_gaps().await?;
                 self.check_price_spikes().await?;
                 self.check_cross_source_divergence().await?;
+                self.check_watchlist_completeness().await?;
             }
             CheckTier::FullAudit => {
                 self.update_active_metrics().await?;
@@ -90,6 +91,7 @@ impl DataMonitor {
                 self.check_liquidity().await?;
                 self.check_price_spikes().await?;
                 self.check_cross_source_divergence().await?;
+                self.check_watchlist_completeness().await?;
                 self.check_volume_anomaly().await?;
                 self.check_timestamp_drift().await?;
                 self.calculate_source_scores().await?;
@@ -635,6 +637,109 @@ impl DataMonitor {
                 threshold_sec,
                 sample
             );
+        }
+
+        Ok(())
+    }
+
+    // ── Stage 8: Watchlist Completeness ─────────────────────────────────
+
+    /// Check that every active symbol in market_watchlist has recent candle data.
+    /// Detects two categories:
+    /// - "missing": symbol has zero candle data in mkt_equity_candles
+    /// - "stale": latest 1d candle is older than 4 calendar days (covers weekends)
+    async fn check_watchlist_completeness(&self) -> Result<(), DataEngineError> {
+        use sqlx::Row;
+
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                w.symbol,
+                w.exchange,
+                MAX(c.time) as latest_candle
+            FROM market_watchlist w
+            LEFT JOIN mkt_equity_candles c
+                ON c.symbol = w.symbol
+                AND c.exchange = w.exchange
+                AND c.resolution = '1d'
+            WHERE w.is_active = true
+            GROUP BY w.symbol, w.exchange
+            HAVING MAX(c.time) IS NULL
+                OR MAX(c.time) < NOW() - INTERVAL '4 days'
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            DataEngineError::DatabaseError(format!("Watchlist completeness check failed: {}", e))
+        })?;
+
+        let mut missing_count: i64 = 0;
+        let mut stale_count: i64 = 0;
+        let mut missing_sample: Vec<String> = Vec::new();
+        let mut stale_sample: Vec<String> = Vec::new();
+
+        for row in &rows {
+            let symbol: String = row.get("symbol");
+            let exchange: String = row.get("exchange");
+            let latest: Option<chrono::DateTime<chrono::Utc>> =
+                row.try_get("latest_candle").ok().flatten();
+
+            if latest.is_none() {
+                missing_count += 1;
+                if missing_sample.len() < 5 {
+                    missing_sample.push(format!("{}({})", symbol, exchange));
+                }
+            } else {
+                stale_count += 1;
+                if stale_sample.len() < 5 {
+                    stale_sample.push(format!("{}({})", symbol, exchange));
+                }
+            }
+        }
+
+        DQ_WATCHLIST_MISSING.set(missing_count);
+        DQ_WATCHLIST_STALE.set(stale_count);
+
+        if missing_count > 0 {
+            warn!(
+                "Stage 8 WATCHLIST MISSING: {} symbols have NO candle data. Examples: {:?}",
+                missing_count, missing_sample
+            );
+            self.record_incident(
+                "watchlist_missing",
+                "critical",
+                None,
+                None,
+                Some(serde_json::json!({
+                    "missing_count": missing_count,
+                    "sample": missing_sample,
+                })),
+            )
+            .await;
+        }
+
+        if stale_count > 0 {
+            warn!(
+                "Stage 8 WATCHLIST STALE: {} symbols have candle data older than 4 days. Examples: {:?}",
+                stale_count, stale_sample
+            );
+            self.record_incident(
+                "watchlist_stale",
+                "warning",
+                None,
+                None,
+                Some(serde_json::json!({
+                    "stale_count": stale_count,
+                    "threshold_days": 4,
+                    "sample": stale_sample,
+                })),
+            )
+            .await;
+        }
+
+        if missing_count == 0 && stale_count == 0 {
+            info!("Stage 8 WATCHLIST OK: All watchlist symbols have recent candle data.");
         }
 
         Ok(())

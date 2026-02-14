@@ -264,6 +264,38 @@ lazy_static! {
         "data_engine_redis_cache_misses_total",
         "Total Redis cache misses"
     ).expect("Failed to create REDIS_CACHE_MISSES counter");
+
+    // ── Phase 4: Watchlist completeness metrics ──────────────────────
+
+    /// Watchlist symbols with NO candle data at all
+    pub static ref DQ_WATCHLIST_MISSING: IntGauge = IntGauge::new(
+        "data_engine_dq_watchlist_missing_symbols",
+        "Number of watchlist symbols with no candle data"
+    ).expect("Failed to create DQ_WATCHLIST_MISSING gauge");
+
+    /// Watchlist symbols with stale candle data (>4 calendar days for 1d)
+    pub static ref DQ_WATCHLIST_STALE: IntGauge = IntGauge::new(
+        "data_engine_dq_watchlist_stale_symbols",
+        "Number of watchlist symbols with stale candle data"
+    ).expect("Failed to create DQ_WATCHLIST_STALE gauge");
+
+    /// Polygon sync failures per resolution
+    pub static ref POLYGON_SYNC_FAILURES: CounterVec = CounterVec::new(
+        Opts::new(
+            "data_engine_polygon_sync_failures_total",
+            "Total Polygon sync failures per resolution"
+        ),
+        &["resolution"]
+    ).expect("Failed to create POLYGON_SYNC_FAILURES counter vec");
+
+    /// Polygon sync successes per resolution
+    pub static ref POLYGON_SYNC_SUCCESS: CounterVec = CounterVec::new(
+        Opts::new(
+            "data_engine_polygon_sync_success_total",
+            "Total Polygon sync successes per resolution"
+        ),
+        &["resolution"]
+    ).expect("Failed to create POLYGON_SYNC_SUCCESS counter vec");
 }
 
 /// Initializes Prometheus metrics by registering them with the registry
@@ -302,6 +334,10 @@ pub fn init_metrics() -> Result<(), prometheus::Error> {
     REGISTRY.register(Box::new(COLLECTOR_LAST_MESSAGE_TS.clone()))?;
     REGISTRY.register(Box::new(REDIS_CACHE_HITS.clone()))?;
     REGISTRY.register(Box::new(REDIS_CACHE_MISSES.clone()))?;
+    REGISTRY.register(Box::new(DQ_WATCHLIST_MISSING.clone()))?;
+    REGISTRY.register(Box::new(DQ_WATCHLIST_STALE.clone()))?;
+    REGISTRY.register(Box::new(POLYGON_SYNC_FAILURES.clone()))?;
+    REGISTRY.register(Box::new(POLYGON_SYNC_SUCCESS.clone()))?;
 
     // Set service as up initially
     SERVICE_UP.set(1);

@@ -1,14 +1,16 @@
 use crate::collectors::MassiveConnector;
 use crate::config::MassiveConfig;
 use crate::models::Candle;
+use crate::monitoring::metrics::{POLYGON_SYNC_FAILURES, POLYGON_SYNC_SUCCESS};
 use crate::repository::postgres::PostgresRepositories;
 use crate::repository::MarketDataRepository;
 use chrono::{TimeZone, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::{sleep, Duration};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Resolutions to sync from the Polygon aggregate API.
 /// 1d is already handled by the EOD job — no need to duplicate.
@@ -121,10 +123,30 @@ impl PolygonSyncTask {
                 (now.timestamp() - start_ts) as f64 / 86400.0
             );
 
-            if !self
+            let sync_start = Instant::now();
+            let success = self
                 .fetch_and_insert(symbol, rc, start_ts, now.timestamp())
-                .await
-            {
+                .await;
+            let duration_ms = sync_start.elapsed().as_millis() as i32;
+
+            if success {
+                POLYGON_SYNC_SUCCESS
+                    .with_label_values(&[rc.resolution])
+                    .inc();
+                self.update_sync_status(symbol, rc.resolution, "completed", None, duration_ms)
+                    .await;
+            } else {
+                POLYGON_SYNC_FAILURES
+                    .with_label_values(&[rc.resolution])
+                    .inc();
+                self.update_sync_status(
+                    symbol,
+                    rc.resolution,
+                    "failed",
+                    Some("Fetch failed after max retries"),
+                    duration_ms,
+                )
+                .await;
                 warn!(
                     "[Polygon {}] Failed to sync {}, moving to next symbol",
                     rc.resolution, symbol
@@ -263,5 +285,55 @@ impl PolygonSyncTask {
         }
 
         true
+    }
+
+    /// Update the market_sync_status table to track sync progress per symbol/resolution.
+    async fn update_sync_status(
+        &self,
+        symbol: &str,
+        resolution: &str,
+        status: &str,
+        error_msg: Option<&str>,
+        duration_ms: i32,
+    ) {
+        // Get total candle count for this symbol/resolution
+        let total_candles: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM mkt_equity_candles WHERE exchange = 'Polygon' AND symbol = $1 AND resolution = $2",
+        )
+        .bind(symbol)
+        .bind(resolution)
+        .fetch_one(&self.repos.pool)
+        .await
+        .unwrap_or(0);
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO market_sync_status (exchange, symbol, resolution, last_synced_time, total_candles, last_sync_at, status, error_message, sync_duration_ms)
+            VALUES ('Polygon', $1, $2, NOW(), $3, NOW(), $4, $5, $6)
+            ON CONFLICT (exchange, symbol, resolution) DO UPDATE SET
+                last_synced_time = NOW(),
+                total_candles = $3,
+                last_sync_at = NOW(),
+                status = $4,
+                error_message = $5,
+                sync_duration_ms = $6,
+                retry_count = CASE WHEN $4 = 'failed' THEN market_sync_status.retry_count + 1 ELSE 0 END
+            "#,
+        )
+        .bind(symbol)
+        .bind(resolution)
+        .bind(total_candles as i32)
+        .bind(status)
+        .bind(error_msg)
+        .bind(duration_ms)
+        .execute(&self.repos.pool)
+        .await;
+
+        if let Err(e) = result {
+            error!(
+                "Failed to update sync status for {} ({}): {}",
+                symbol, resolution, e
+            );
+        }
     }
 }
