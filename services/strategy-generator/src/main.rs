@@ -8,9 +8,8 @@ mod api;
 mod backtest;
 mod genetic;
 
-use backtest_engine::config::FactorConfig; // Standard one for portfolio sim? No, wait.
-                                           // Backtester here is the local one.
 use backtest::Backtester;
+use backtest_engine::config::FactorConfig;
 use genetic::GeneticAlgorithm;
 
 #[tokio::main]
@@ -30,6 +29,14 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "postgres://postgres:hermesflow@localhost:5432/hermesflow".to_string());
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
 
+    // Load exchange/resolution config
+    let exchange = env::var("GENERATOR_EXCHANGE").unwrap_or_else(|_| "Birdeye".to_string());
+    let resolution = env::var("GENERATOR_RESOLUTION").unwrap_or_else(|_| "15m".to_string());
+    info!(
+        "Asset mode: exchange={}, resolution={}",
+        exchange, resolution
+    );
+
     // Load Factor Config
     let config_path =
         env::var("FACTOR_CONFIG").unwrap_or_else(|_| "config/factors.yaml".to_string());
@@ -45,7 +52,6 @@ async fn main() -> anyhow::Result<()> {
                 "Failed to load factor config: {}. Falling back to default AlphaGPT 6-factor mode.",
                 e
             );
-            // Fallback to default 6 factors
             FactorConfig {
                 active_factors: vec![
                     backtest_engine::config::FactorDefinition {
@@ -89,6 +95,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    let feat_offset = factor_config.feat_offset();
+    info!("Feature offset (feat_count): {}", feat_offset);
+
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
@@ -103,32 +112,57 @@ async fn main() -> anyhow::Result<()> {
     // 2.1 Spawn API Server
     let pool_api = pool.clone();
     let config_api = factor_config.clone();
+    let exchange_api = exchange.clone();
+    let resolution_api = resolution.clone();
     tokio::spawn(async move {
-        api::start_api_server(pool_api, config_api).await;
+        api::start_api_server(pool_api, config_api, exchange_api, resolution_api).await;
     });
 
     // 3. Initialize Components
-    let mut backtester = Backtester::new(pool.clone(), factor_config.clone());
-    let mut ga = GeneticAlgorithm::new(100); // Population 100
+    let mut backtester = Backtester::new(
+        pool.clone(),
+        factor_config.clone(),
+        exchange.clone(),
+        resolution.clone(),
+    );
+    let mut ga = GeneticAlgorithm::new(100, feat_offset);
 
-    // 4. Load Data
-    // Fetch top active symbols from DB
+    // 4. Load Data — exchange-aware symbol loading
     use sqlx::Row;
-    let rows = sqlx::query("SELECT address FROM active_tokens WHERE is_active = true")
+    let mut symbols: Vec<String> = if exchange == "Polygon" {
+        let rows = sqlx::query(
+            "SELECT symbol FROM market_watchlist WHERE exchange = 'Polygon' AND is_active = true",
+        )
         .fetch_all(&pool)
         .await
         .unwrap_or_default();
-
-    let mut symbols: Vec<String> = rows.into_iter().map(|r| r.get("address")).collect();
+        rows.into_iter().map(|r| r.get("symbol")).collect()
+    } else {
+        let rows = sqlx::query("SELECT address FROM active_tokens WHERE is_active = true")
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+        rows.into_iter().map(|r| r.get("address")).collect()
+    };
 
     if symbols.is_empty() {
-        warn!("No active tokens found in DB. Falling back to default list.");
-        symbols = vec![
-            "So11111111111111111111111111111111111111112".to_string(), // SOL
-            "JUPyiwrYJFskUPiHa7hkeR8VUtkPHCLkdP9KcJQUE85".to_string(), // JUP
-            "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263".to_string(), // BONK
-            "EKpQGSJmxSWojVRHgWN2EWH18dPBfJCs8J6QW2K2pump".to_string(), // PENGU
-        ];
+        if exchange == "Polygon" {
+            warn!("No active stocks found in DB. Falling back to default list.");
+            symbols = vec![
+                "AAPL".to_string(),
+                "NVDA".to_string(),
+                "MSFT".to_string(),
+                "GOOGL".to_string(),
+            ];
+        } else {
+            warn!("No active tokens found in DB. Falling back to default list.");
+            symbols = vec![
+                "So11111111111111111111111111111111111111112".to_string(),
+                "JUPyiwrYJFskUPiHa7hkeR8VUtkPHCLkdP9KcJQUE85".to_string(),
+                "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263".to_string(),
+                "EKpQGSJmxSWojVRHgWN2EWH18dPBfJCs8J6QW2K2pump".to_string(),
+            ];
+        }
     } else {
         info!(
             "Fetched {} active symbols from DB: {:?}",
@@ -137,14 +171,23 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    info!("Loading historical data for {} symbols...", symbols.len());
-    if let Err(e) = backtester.load_data(&symbols, 7).await {
+    // Configurable lookback
+    let lookback_days: i64 = env::var("GENERATOR_LOOKBACK_DAYS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(if exchange == "Polygon" { 365 } else { 7 });
+
+    info!(
+        "Loading historical data for {} symbols ({} days lookback)...",
+        symbols.len(),
+        lookback_days
+    );
+    if let Err(e) = backtester.load_data(&symbols, lookback_days).await {
         error!("Failed to load historical data: {}", e);
         warn!("Backtester will have no data - all fitness will be 0.0");
     }
 
     // 4.1 Load Strategy State (Generation & Population)
-    // Check DB for last generation
     let last_gen_row = sqlx::query(
         "SELECT generation, best_genome FROM strategy_generations ORDER BY generation DESC LIMIT 1",
     )
@@ -157,17 +200,10 @@ async fn main() -> anyhow::Result<()> {
             ga.generation = max_gen as usize + 1;
         }
 
-        // Load the best genome to preserve logic!
         if let Ok(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome") {
             info!("Restoring best genome from DB: {:?}", best_tokens);
-            // Replace the first random genome with the saved best one
-            // We need to cast i32 back to i32 (it matches).
-            // Genome struct expects Vec<i32> usually.
-            // Let's check Genome definition. Assuming it has `tokens: Vec<i32>`.
-            // Modify GA to accept injection? Or just direct access.
             if !ga.population.is_empty() {
                 ga.population[0].tokens = best_tokens.into_iter().map(|x| x as usize).collect();
-                // Fitness will be re-evaluated in the loop
             }
         }
     }
@@ -186,9 +222,12 @@ async fn main() -> anyhow::Result<()> {
         ga.evolve();
 
         if let Some(best) = &ga.best_genome {
+            // OOS IC for monitoring (not used in selection)
+            let oos_ic = backtester.evaluate_oos(best);
+
             info!(
-                "Generation {} Best Fitness: {:.4} (Tokens: {:?})",
-                gen, best.fitness, best.tokens
+                "Generation {} Best Fitness: {:.4} (OOS IC: {:.4}, Tokens: {:?})",
+                gen, best.fitness, oos_ic, best.tokens
             );
 
             // Payload for Redis/Frontend
@@ -196,9 +235,12 @@ async fn main() -> anyhow::Result<()> {
                 "strategy_id": "alphagpt_evo_v2",
                 "timestamp": chrono::Utc::now().timestamp(),
                 "formula": best.tokens,
-                "generation": gen, // Explicitly include generation for easier parsing
+                "generation": gen,
                 "fitness": best.fitness,
-                "best_tokens": best.tokens, // Include duplicate field for compatibility
+                "oos_ic": oos_ic,
+                "best_tokens": best.tokens,
+                "exchange": exchange,
+                "resolution": resolution,
                 "meta": {
                     "name": format!("Evo-Gen{}-{:.2}", gen, best.fitness),
                     "description": format!("Evolved Strategy. Sharpe: {:.2}", best.fitness)
@@ -255,16 +297,15 @@ async fn main() -> anyhow::Result<()> {
             .await
             .map_err(|e| error!("Failed to persist generation: {}", e));
 
-            // PubSub & Logging ...
-
             // 4. Persistence: Run Detailed Backtest & Save to backtest_results
             if gen.is_multiple_of(5) {
-                // Universal Portfolio Simulation
                 let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
 
-                match backtester.run_portfolio_simulation(&tokens_i32, 30).await {
+                match backtester
+                    .run_portfolio_simulation(&tokens_i32, lookback_days)
+                    .await
+                {
                     Ok(sim_result) => {
-                        // Extract metrics
                         let metrics = sim_result["metrics"].as_object().unwrap();
                         let total_ret = metrics["total_return"].as_f64().unwrap_or(0.0);
                         let win_rate = metrics["win_rate"].as_f64().unwrap_or(0.0);
@@ -286,8 +327,6 @@ async fn main() -> anyhow::Result<()> {
                             trades_count
                         );
 
-                        // Insert
-                        // handle genome array
                         let _ = sqlx::query(
                             r#"
                                INSERT INTO backtest_results (
@@ -328,8 +367,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Sleep between generations to avoid pegging CPU in loop?
-        // Evolution is CPU intensive. We should run continuously but maybe yield to runtime.
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }

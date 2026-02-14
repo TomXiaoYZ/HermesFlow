@@ -4,15 +4,63 @@ use anyhow;
 use backtest_engine::vm::vm::StackVM;
 use serde_json::json;
 use std::collections::HashMap;
-use tracing::{info, warn}; // Explicit import
+use tracing::{info, warn};
 
 pub struct PortfolioBacktester {
     vm: StackVM,
+    exchange: String,
+    resolution: String,
 }
 
 impl PortfolioBacktester {
-    pub fn new() -> Self {
-        Self { vm: StackVM::new() }
+    pub fn new(exchange: String, resolution: String) -> Self {
+        Self {
+            vm: StackVM::new(),
+            exchange,
+            resolution,
+        }
+    }
+
+    /// Base transaction fee for the exchange.
+    fn base_fee(&self) -> f64 {
+        if self.exchange == "Polygon" {
+            0.0001
+        } else {
+            0.001
+        }
+    }
+
+    /// Estimate trade capacity.
+    fn capacity(&self, liquidity: f64, amount: f64) -> f64 {
+        if self.exchange == "Polygon" {
+            amount.max(1e6)
+        } else if liquidity > 0.0 {
+            liquidity
+        } else {
+            amount * 0.1
+        }
+    }
+
+    /// Annualization factor for Sharpe ratio.
+    fn annualization_factor(&self) -> f64 {
+        match self.resolution.as_str() {
+            "1d" => 252.0_f64.sqrt(),
+            "1h" => {
+                if self.exchange == "Polygon" {
+                    (252.0_f64 * 6.5).sqrt()
+                } else {
+                    (365.0_f64 * 24.0).sqrt()
+                }
+            }
+            "15m" => {
+                if self.exchange == "Polygon" {
+                    (252.0_f64 * 6.5 * 4.0).sqrt()
+                } else {
+                    (365.0_f64 * 96.0).sqrt()
+                }
+            }
+            _ => (252.0_f64 * 96.0).sqrt(),
+        }
     }
 
     /// Run a portfolio simulation across ALL cached symbols.
@@ -40,8 +88,8 @@ impl PortfolioBacktester {
         // 2. Simulation State
         let mut equity_curve = Vec::with_capacity(len);
         let mut current_equity = 1.0;
-        let portfolio_size = 10_000.0; // Base capital
-        let base_fee = 0.001; // 0.1%
+        let portfolio_size = 10_000.0;
+        let fee = self.base_fee();
 
         // Pre-convert genome for VM
         let genome_usize: Vec<usize> = genome.iter().map(|&x| x as usize).collect();
@@ -52,34 +100,24 @@ impl PortfolioBacktester {
             prev_weights.insert(sym.clone(), 0.0);
         }
 
-        // 4. Restarting Logic Structure
-        // Step 1: Pre-calculate Signals for all symbols
+        // Pre-calculate Signals for all symbols
         let mut all_signals: HashMap<String, Vec<f64>> = HashMap::new();
 
         for (symbol, data) in cache {
             if let Some(signal) = self.vm.execute(&genome_usize, &data.features) {
-                // Convert Array to Vec
                 all_signals.insert(symbol.clone(), signal.into_raw_vec());
             } else {
                 warn!("VM execution failed for {}", symbol);
             }
         }
 
-        // Step 2: Align SIGNALS (not just returns)
-        // We reuse TimeDataFrame logic but extended to signals.
-        // Actually `TimeDataFrame` struct has `returns`, `amounts`.
-        // We can add `signals` to it?
-        // Or create a new helper `align_signals`.
-        // Let's just do it inline here for now using `df` timestamps.
-
+        // Align signals to global timestamps
         let mut aligned_signals: HashMap<String, Vec<f64>> = HashMap::new();
 
         for (symbol, signal_vec) in &all_signals {
             let data = cache.get(symbol).unwrap();
             let mut aligned = vec![0.0; len];
 
-            // Map: timestamp -> value
-            // source indicies
             let mut ts_to_val: HashMap<i64, f64> = HashMap::new();
             for (i, &ts) in data.timestamps.iter().enumerate() {
                 if i < signal_vec.len() {
@@ -93,25 +131,17 @@ impl PortfolioBacktester {
             aligned_signals.insert(symbol.clone(), aligned);
         }
 
-        // Step 3: Loop Time (Now we have aligned signals & returns)
+        // Loop over time
         for t in 0..len {
-            // A. Calculate Allocation Weights
             let mut total_abs = 0.0;
 
-            // Collect active signals
             for sigs in aligned_signals.values() {
                 let s = sigs[t].clamp(-1.0, 1.0);
                 if s.abs() > 0.1 {
-                    // Threshold
                     total_abs += s.abs();
                 }
             }
 
-            // Normalize
-            // If total_abs > 1.0, scale down.
-            // If total_abs <= 1.0, keep as is? (Leverage < 1).
-            // Strategy: Alloc = Signal / Max(1.0, Total_Abs).
-            // This ensures Sum(|Alloc|) <= 1.0.
             let scaler = 1.0f64.max(total_abs);
 
             let mut step_pnl = 0.0;
@@ -129,30 +159,24 @@ impl PortfolioBacktester {
                 let prev_w = *prev_weights.get(sym).unwrap_or(&0.0);
                 let turnover = (w - prev_w).abs();
 
-                // Cost
-                // Estimate impact? (Need aligned liquidity).
-                // `TimeDataFrame` has `df.liquidity`.
                 let liq_vec = df.liquidity.get(sym).unwrap();
                 let amt_vec = df.amounts.get(sym).unwrap();
                 let liq = liq_vec[t];
                 let amt = amt_vec[t];
-                let capacity = if liq > 0.0 { liq } else { amt * 0.1 };
+                let cap = self.capacity(liq, amt);
 
                 let trade_val = turnover * portfolio_size;
-                let impact = trade_val / (capacity + 1e-9);
+                let impact = trade_val / (cap + 1e-9);
 
                 let cost = if turnover > 0.0 {
-                    turnover * (base_fee + impact)
+                    turnover * (fee + impact)
                 } else {
                     0.0
                 };
 
-                // Return
                 let ret_vec = df.returns.get(sym).unwrap();
                 let r = ret_vec[t];
 
-                // PnL contribution
-                // w * r - cost
                 let contrib = w * r - cost;
 
                 step_pnl += contrib;
@@ -164,7 +188,6 @@ impl PortfolioBacktester {
 
             current_equity *= 1.0 + step_pnl;
 
-            // Bankruptcy check
             if current_equity <= 0.0 {
                 current_equity = 0.0;
                 equity_curve.push(json!({
@@ -182,20 +205,17 @@ impl PortfolioBacktester {
                 "equity": current_equity,
                 "pnl": step_pnl,
                 "cost": step_cost,
-                "active_assets": total_abs, // Rough count proxy
+                "active_assets": total_abs,
             }));
         }
 
         // Metrics Calculation
         let total_ret = current_equity - 1.0;
 
-        // Calculate Drawdown & Sharpe
         let mut max_equity = 1.0;
         let mut max_drawdown = 0.0;
         let mut returns = Vec::with_capacity(equity_curve.len());
 
-        // Skip first element (no return)
-        // Use actual equity_curve length (may be shorter if bankruptcy occurred)
         for i in 1..equity_curve.len() {
             let eq_curr = equity_curve[i]["equity"].as_f64().unwrap_or(1.0);
             let eq_prev = equity_curve[i - 1]["equity"].as_f64().unwrap_or(1.0);
@@ -226,7 +246,7 @@ impl PortfolioBacktester {
         let std_ret = var_ret.sqrt();
 
         let sharpe = if std_ret > 1e-9 {
-            mean_ret / std_ret * (252.0f64 * 96.0f64).sqrt() // 96 bars per day (15m)
+            mean_ret / std_ret * self.annualization_factor()
         } else {
             0.0
         };
@@ -239,8 +259,8 @@ impl PortfolioBacktester {
                 "final_equity": current_equity,
                 "sharpe_ratio": sharpe,
                 "max_drawdown": max_drawdown,
-                "total_trades": len, // Treat every step as potential rebalance
-                "win_rate": 0.0 // Hard to define for portfolio rebalancing
+                "total_trades": len,
+                "win_rate": 0.0
             },
             "equity_curve": equity_curve
         }))

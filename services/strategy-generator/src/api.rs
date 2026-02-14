@@ -13,6 +13,8 @@ use sqlx::postgres::PgPool;
 pub struct ApiState {
     pub pool: PgPool,
     pub factor_config: FactorConfig,
+    pub exchange: String,
+    pub resolution: String,
 }
 
 #[derive(Deserialize)]
@@ -22,16 +24,23 @@ pub struct BacktestRequest {
     pub days: Option<i64>,
 }
 
-pub async fn start_api_server(pool: PgPool, factor_config: FactorConfig) {
+pub async fn start_api_server(
+    pool: PgPool,
+    factor_config: FactorConfig,
+    exchange: String,
+    resolution: String,
+) {
     let state = ApiState {
         pool,
         factor_config,
+        exchange,
+        resolution,
     };
 
     let app = Router::new()
         .route("/backtest", post(handle_backtest))
         .route("/config/factors", get(get_factor_config))
-        .with_state(state); // No Arc needed for State unless struct is large, but Router handles it.
+        .with_state(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8082));
     tracing::info!("Generator API listening on {}", addr);
@@ -48,13 +57,15 @@ async fn handle_backtest(
     State(state): State<ApiState>,
     Json(payload): Json<BacktestRequest>,
 ) -> Json<Value> {
-    // 1. Create fresh backtester (stateless for on-demand)
-    // Now passes factor_config from state
-    let mut backtester = Backtester::new(state.pool.clone(), state.factor_config.clone());
+    let mut backtester = Backtester::new(
+        state.pool.clone(),
+        state.factor_config.clone(),
+        state.exchange.clone(),
+        state.resolution.clone(),
+    );
 
     let days = payload.days.unwrap_or(7);
 
-    // 2. Run
     let result = if payload.token_address == "ALL" || payload.token_address == "UNIVERSAL" {
         backtester
             .run_portfolio_simulation(&payload.genome, days)
@@ -67,8 +78,6 @@ async fn handle_backtest(
 
     match result {
         Ok(result) => {
-            // 3. Save to DB (backtest_results)
-            // Extract metrics from result
             let metrics = result.get("metrics").cloned().unwrap_or(json!({}));
             let equity = result.get("equity_curve").cloned().unwrap_or(json!([]));
             let pnl = metrics
@@ -92,11 +101,9 @@ async fn handle_backtest(
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            // Convert metrics/equity to jsonb
-            // Insert
             let _ = sqlx::query(
                 r#"
-                INSERT INTO backtest_results 
+                INSERT INTO backtest_results
                 (genome, token_address, metrics, equity_curve, pnl_percent, win_rate, total_trades, sharpe_ratio, max_drawdown)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 "#
@@ -111,7 +118,7 @@ async fn handle_backtest(
             .bind(sharpe)
             .bind(drawdown)
             .execute(&state.pool)
-            .await; // Fire and forget logging or handle error? Best to log.
+            .await;
 
             Json(result)
         }

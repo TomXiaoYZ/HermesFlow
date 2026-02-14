@@ -19,6 +19,7 @@ pub async fn start_health_server(service_name: &str, port: u16) {
         }
     };
 
+    #[allow(unused_mut)]
     let mut app = Router::new().route("/health", get(handler));
 
     #[cfg(feature = "metrics")]

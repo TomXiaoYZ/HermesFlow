@@ -8,56 +8,50 @@ pub struct Genome {
 }
 
 impl Genome {
-    pub fn new_random() -> Self {
+    pub fn new_random(feat_offset: usize) -> Self {
         Self {
-            tokens: generate_random_rpn(5),
+            tokens: generate_random_rpn(5, feat_offset),
             fitness: 0.0,
         }
     }
 }
 
-// Configuration matching Backtest Engine
-// Features: 0-13 (14 dims)
-// Offset: 14
-// Ops: 0-18 (19 ops)
+/// Build operator token vectors dynamically from feat_offset.
+/// Op indices match the StackVM dispatch (vm.rs):
+///   Unary:   4(NEG), 5(ABS), 6(SIGN), 8(JUMP), 9(DECAY), 10(DELAY),
+///            11(MAX3), 12(TS_MEAN), 13(TS_STD), 14(TS_RANK), 15(TS_SUM),
+///            17(CS_RANK), 18(CS_MEAN), 19(LOG), 20(SQRT), 21(INV), 22(TS_DELTA)
+///   Binary:  0(ADD), 1(SUB), 2(MUL), 3(DIV), 16(TS_CORR)
+///   Ternary: 7(GATE)
+fn build_ops(feat_offset: usize) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let unary_op_indices: Vec<usize> = vec![
+        4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22,
+    ];
+    let binary_op_indices: Vec<usize> = vec![0, 1, 2, 3, 16];
+    let ternary_op_indices: Vec<usize> = vec![7];
 
-const FEAT_OFFSET: usize = 14;
+    let ops_1: Vec<usize> = unary_op_indices
+        .into_iter()
+        .map(|idx| idx + feat_offset)
+        .collect();
+    let ops_2: Vec<usize> = binary_op_indices
+        .into_iter()
+        .map(|idx| idx + feat_offset)
+        .collect();
+    let ops_3: Vec<usize> = ternary_op_indices
+        .into_iter()
+        .map(|idx| idx + feat_offset)
+        .collect();
 
-fn generate_random_rpn(max_depth: usize) -> Vec<usize> {
+    (ops_1, ops_2, ops_3)
+}
+
+fn generate_random_rpn(max_depth: usize, feat_offset: usize) -> Vec<usize> {
     let mut rng = rand::thread_rng();
 
-    // Features 0-13
-    let features: Vec<usize> = (0..14).collect();
-
-    // Ops by Arity
-    // Offset 14.
-    // Arity 1: NEG(4), ABS(5), SIGN(6), JUMP(8), DECAY(9), DELAY(10), MAX3(11)
-    //          TS_MEAN(12), TS_STD(13), TS_RANK(14), TS_SUM(15), CS_RANK(17), CS_MEAN(18)
-    //          New: LOG(19), SQRT(20), INV(21), TS_DELTA(22)
-    let ops_1: Vec<usize> = vec![
-        18, 19, 20, 22, 23, 24,
-        25, // Basic (Note: indices in genetic.rs were: 4->18, 5->19... wait, offset=14)
-        // vm.rs dispatch: 4=NEG. But in RPN token = 4 + 14 = 18.
-        // So existing 18=NEG, 19=ABS, 20=SIGN.
-        // 8=JUMP -> 8+14=22. 9=DECAY -> 23. 10=DELAY -> 24. 11=MAX3 -> 25.
-        // 12=TS_MEAN -> 26. 13=TS_STD -> 27. 14=TS_RANK -> 28. 15=TS_SUM -> 29.
-        // 17=CS_RANK -> 31. 18=CS_MEAN -> 32.
-
-        // New Ops indices in VM:
-        // 19=LOG -> 19+14=33
-        // 20=SQRT -> 20+14=34
-        // 21=INV -> 21+14=35
-        // 22=TS_DELTA -> 22+14=36
-        18, 19, 20, 22, 23, 24, 25, // Basic: NEG..MAX3
-        26, 27, 28, 29, 31, 32, // TS/CS ops
-        33, 34, 35, 36, // New: LOG, SQRT, INV, DELAY
-    ];
-
-    // Arity 2: ADD(0), SUB(1), MUL(2), DIV(3), TS_CORR(16)
-    let ops_2: Vec<usize> = vec![14, 15, 16, 17, 30];
-
-    // Arity 3: GATE(7)
-    let ops_3: Vec<usize> = vec![21];
+    // Features: 0..feat_offset
+    let features: Vec<usize> = (0..feat_offset).collect();
+    let (ops_1, ops_2, ops_3) = build_ops(feat_offset);
 
     let mut tokens = Vec::new();
 
@@ -100,8 +94,7 @@ fn generate_random_rpn(max_depth: usize) -> Vec<usize> {
             } else if stack_depth >= 2 {
                 choices.push("OP2");
             } else {
-                choices.push("OP1"); // Can't reduce depth 1. Just mutate or break?
-                                     // If depth is 1, we are done. Be handled below.
+                choices.push("OP1");
             }
 
             if stack_depth == 1 {
@@ -113,7 +106,6 @@ fn generate_random_rpn(max_depth: usize) -> Vec<usize> {
             break;
         }
 
-        // Fix: Use slice for choose
         let action = choices[rng.gen_range(0..choices.len())];
 
         match action {
@@ -145,19 +137,21 @@ pub struct GeneticAlgorithm {
     pub population: Vec<Genome>,
     pub generation: usize,
     pub best_genome: Option<Genome>,
+    pub feat_offset: usize,
 }
 
 impl GeneticAlgorithm {
-    pub fn new(pop_size: usize) -> Self {
+    pub fn new(pop_size: usize, feat_offset: usize) -> Self {
         let mut population = Vec::with_capacity(pop_size);
         for _ in 0..pop_size {
-            population.push(Genome::new_random());
+            population.push(Genome::new_random(feat_offset));
         }
 
         Self {
             population,
             generation: 0,
             best_genome: None,
+            feat_offset,
         }
     }
 
@@ -197,22 +191,13 @@ impl GeneticAlgorithm {
             let parent1 = self.tournament_select();
             let parent2 = self.tournament_select();
 
-            // Crossover logic (simplified: random choice)
-            // Or just mutate parent1?
-            // For MVP: 50% Crossover, 50% Mutation
             if rng.gen_bool(0.5) {
-                // Crossover
-                // Single point? RPN crossover is hard because validity.
-                // Safer: Just pick one parent and Clone + Mutate heavily.
-                // Or specialized RPN crossover (swap subtrees). Implementation is complex.
-                // Fallback: Clone parent and Mutate.
                 let mut child = parent1.clone();
-                Self::mutate(&mut child);
+                Self::mutate(&mut child, self.feat_offset);
                 new_pop.push(child);
             } else {
-                // Clone + Mutate.
                 let mut child = parent2.clone();
-                Self::mutate(&mut child);
+                Self::mutate(&mut child, self.feat_offset);
                 new_pop.push(child);
             }
         }
@@ -236,30 +221,23 @@ impl GeneticAlgorithm {
         best.unwrap()
     }
 
-    fn mutate(genome: &mut Genome) {
+    fn mutate(genome: &mut Genome, feat_offset: usize) {
         let mut rng = rand::thread_rng();
-        // 1. Change a token (Point mutation)
+        // 1. Point mutation on a feature token
         if !genome.tokens.is_empty() {
             let idx = rng.gen_range(0..genome.tokens.len());
             let old = genome.tokens[idx];
 
-            if old < FEAT_OFFSET {
+            if old < feat_offset {
                 // Mutate feature to another feature
-                genome.tokens[idx] = rng.gen_range(0..FEAT_OFFSET);
+                genome.tokens[idx] = rng.gen_range(0..feat_offset);
             }
-            // Mutating Op is risky unless same arity.
-            // Simplified: Just mutate features for now.
         }
 
-        // 2. Append new random logic? (Growth)
+        // 2. Growth mutation: append Feature + BinaryOp (stack-neutral)
         if rng.gen_bool(0.1) {
-            // Add: Feature + BinaryOp (maintain stack)
-            // Push Feat(1), Op(pop 2 push 1) -> Net -1? No.
-            // Stack: [Old] -> [Old, Feat] -> [Op(Old, Feat)]
-            // Net effect: 1 in -> 1 out.
-            // So we append: FEAT, OP2.
-            let feat = rng.gen_range(0..FEAT_OFFSET);
-            let ops_2: Vec<usize> = vec![14, 15, 16, 17, 30]; // Same as above
+            let feat = rng.gen_range(0..feat_offset);
+            let (_, ops_2, _) = build_ops(feat_offset);
             let op = ops_2[rng.gen_range(0..ops_2.len())];
 
             genome.tokens.push(feat);
