@@ -130,6 +130,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = tm.register_polymarket_job().await {
                 tracing::warn!("Failed to register Polymarket job: {}", e);
             }
+            if let Err(e) = tm.register_birdeye_sync_job().await {
+                tracing::warn!("Failed to register Birdeye sync job: {}", e);
+            }
             Some(tm)
         }
         Err(e) => {

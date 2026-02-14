@@ -613,4 +613,34 @@ impl TaskManager {
 
         Ok(())
     }
+
+    pub async fn register_birdeye_sync_job(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let birdeye_config = match &self.config.birdeye {
+            Some(c) if c.enabled => c.clone(),
+            _ => {
+                info!("Birdeye not configured/enabled, skipping periodic sync job");
+                return Ok(());
+            }
+        };
+
+        info!("Registering Birdeye OHLCV Sync Job (Every 30 minutes)...");
+
+        let repos = self.repos.clone();
+
+        // Cron: every 30 minutes (at :05 and :35 to offset from other jobs)
+        let job = Job::new_async("0 5,35 * * * *", move |_uuid, _l| {
+            let config = birdeye_config.clone();
+            let repos = repos.clone();
+            Box::pin(async move {
+                info!("Running periodic Birdeye OHLCV sync...");
+                let task = crate::tasks::historical_sync::HistoricalSyncTask::new(config, repos);
+                task.run().await;
+            })
+        })?;
+
+        let scheduler = self.scheduler.write().await;
+        scheduler.add(job).await?;
+
+        Ok(())
+    }
 }

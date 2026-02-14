@@ -11,6 +11,29 @@ use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 
+/// Resolutions to sync from the Birdeye OHLCV API.
+const SYNC_RESOLUTIONS: &[ResolutionConfig] = &[
+    ResolutionConfig {
+        resolution: "15m",
+        candle_seconds: 15 * 60,
+        chunk_days: 5,
+        default_lookback_days: 365,
+    },
+    ResolutionConfig {
+        resolution: "1h",
+        candle_seconds: 60 * 60,
+        chunk_days: 20,
+        default_lookback_days: 365,
+    },
+];
+
+struct ResolutionConfig {
+    resolution: &'static str,
+    candle_seconds: i64,
+    chunk_days: i64,
+    default_lookback_days: i64,
+}
+
 pub struct HistoricalSyncTask {
     birdeye_client: BirdeyeClient,
     repos: Arc<PostgresRepositories>,
@@ -29,8 +52,8 @@ impl HistoricalSyncTask {
         }
     }
 
+    /// Full startup sync: syncs all resolutions for all active symbols.
     pub async fn run(&self) {
-        // Fetch active symbols from database instead of config
         let symbols = match self.token_repo.get_active_addresses().await {
             Ok(s) => s,
             Err(e) => {
@@ -39,151 +62,172 @@ impl HistoricalSyncTask {
             }
         };
 
-        info!(
-            "Starting Candle Collection (Incremental) for {} symbols...",
-            symbols.len()
-        );
-
         if symbols.is_empty() {
             info!("No active symbols to collect");
             return;
         }
 
-        let now = Utc::now().timestamp();
-        let resolution = "15m";
-        let default_lookback_days = 365;
-        let one_day = 24 * 60 * 60;
-        let chunk_size_days = 5; // Birdeye limit
+        for rc in SYNC_RESOLUTIONS {
+            info!(
+                "Starting Birdeye {} sync for {} symbols...",
+                rc.resolution,
+                symbols.len()
+            );
+            self.sync_resolution(&symbols, rc).await;
+        }
 
-        for symbol in &symbols {
-            // Check latest candle time in DB
+        info!("Birdeye Candle Collection Task Completed.");
+    }
+
+    /// Incremental sync for a single resolution across all symbols.
+    async fn sync_resolution(&self, symbols: &[String], rc: &ResolutionConfig) {
+        let now = Utc::now().timestamp();
+        let one_day: i64 = 24 * 60 * 60;
+
+        for symbol in symbols {
             let last_time = match self
                 .repos
                 .market_data
-                .get_latest_candle_time("Birdeye", symbol, resolution)
+                .get_latest_candle_time("Birdeye", symbol, rc.resolution)
                 .await
             {
                 Ok(t) => t,
                 Err(e) => {
-                    warn!("Failed to get latest candle time for {}: {}", symbol, e);
+                    warn!(
+                        "Failed to get latest candle time for {} ({}): {}",
+                        symbol, rc.resolution, e
+                    );
                     None
                 }
             };
 
             let start_ts = if let Some(lt) = last_time {
-                // If we have data, start from the next candle
-                lt.timestamp() + (15 * 60)
+                lt.timestamp() + rc.candle_seconds
             } else {
-                // If no data, start from 365 days ago
-                now - (default_lookback_days * one_day)
+                now - (rc.default_lookback_days * one_day)
             };
 
-            // Check if we are up to date (within 30 mins)
-            if now - start_ts < 30 * 60 {
-                info!("Symbol {} is up to date. Skipping.", symbol);
+            // Up to date if gap < 2 candle periods
+            if now - start_ts < rc.candle_seconds * 2 {
                 continue;
             }
 
             info!(
-                "Syncing {} from {} to {} (Gap: {:.1} days)",
+                "[{}] Syncing {} — gap {:.1} days",
+                rc.resolution,
                 symbol,
-                start_ts,
-                now,
                 (now - start_ts) as f64 / 86400.0
             );
 
-            // Fetch in chunks
-            let mut current_start = start_ts;
-            while current_start < now {
-                let mut current_end = current_start + (chunk_size_days * one_day);
-                if current_end > now {
-                    current_end = now;
-                }
-
-                if current_end <= current_start {
-                    break;
-                }
-
-                let mut attempts = 0;
-                let max_attempts = 3;
-                let mut success = false;
-
-                while attempts < max_attempts {
-                    match self
-                        .birdeye_client
-                        .get_history(symbol, current_start, current_end, resolution)
-                        .await
-                    {
-                        Ok(items) => {
-                            let count = items.len();
-                            if count > 0 {
-                                info!("    Fetched {} candles for {}. Inserting...", count, symbol);
-
-                                let mut candles_to_insert = Vec::with_capacity(count);
-
-                                for item in items {
-                                    let candle = Candle {
-                                        exchange: "Birdeye".to_string(),
-                                        symbol: symbol.clone(),
-                                        resolution: resolution.to_string(),
-                                        open: Decimal::from_f64(item.open).unwrap_or(Decimal::ZERO),
-                                        high: Decimal::from_f64(item.high).unwrap_or(Decimal::ZERO),
-                                        low: Decimal::from_f64(item.low).unwrap_or(Decimal::ZERO),
-                                        close: Decimal::from_f64(item.close)
-                                            .unwrap_or(Decimal::ZERO),
-                                        volume: Decimal::from_f64(item.volume)
-                                            .unwrap_or(Decimal::ZERO),
-                                        amount: Some(
-                                            Decimal::from_f64(item.close * item.volume)
-                                                .unwrap_or(Decimal::ZERO),
-                                        ),
-                                        liquidity: None,
-                                        fdv: None, // History API lacks FDV
-                                        metadata: None,
-                                        time: Utc.timestamp_opt(item.unix_time, 0).unwrap(),
-                                    };
-                                    candles_to_insert.push(candle);
-                                }
-
-                                if let Err(e) = self
-                                    .repos
-                                    .market_data
-                                    .insert_candles(&candles_to_insert)
-                                    .await
-                                {
-                                    warn!("Failed to insert batch candles for {}: {}", symbol, e);
-                                }
-                            }
-                            success = true;
-                            break;
-                        }
-                        Err(e) => {
-                            attempts += 1;
-                            warn!(
-                                "    Failed to fetch history (Attempt {}/{}): {}",
-                                attempts, max_attempts, e
-                            );
-                            sleep(Duration::from_secs(2)).await;
-                        }
-                    }
-                }
-
-                if !success {
-                    warn!(
-                        "Failed to fetch chunk for {}, skipping remaining chunks for this symbol",
-                        symbol
-                    );
-                    break;
-                }
-
-                current_start = current_end;
-                // Rate limit between chunks
-                sleep(Duration::from_millis(500)).await;
+            if !self
+                .fetch_and_insert(symbol, rc.resolution, start_ts, now, rc.chunk_days * one_day)
+                .await
+            {
+                warn!(
+                    "[{}] Failed to sync {}, moving to next symbol",
+                    rc.resolution, symbol
+                );
             }
-            // Rate limit between symbols
+
             sleep(Duration::from_millis(200)).await;
         }
+    }
 
-        info!("Candle Collection Task Completed.");
+    /// Fetch OHLCV data from Birdeye API in chunks and insert into DB.
+    /// Returns true on success, false if a chunk failed after retries.
+    async fn fetch_and_insert(
+        &self,
+        symbol: &str,
+        resolution: &str,
+        from_ts: i64,
+        to_ts: i64,
+        chunk_duration: i64,
+    ) -> bool {
+        let mut current_start = from_ts;
+
+        while current_start < to_ts {
+            let current_end = (current_start + chunk_duration).min(to_ts);
+            if current_end <= current_start {
+                break;
+            }
+
+            let mut attempts = 0;
+            let max_attempts = 3;
+            let mut success = false;
+
+            while attempts < max_attempts {
+                match self
+                    .birdeye_client
+                    .get_history(symbol, current_start, current_end, resolution)
+                    .await
+                {
+                    Ok(items) => {
+                        if !items.is_empty() {
+                            let candles: Vec<Candle> = items
+                                .into_iter()
+                                .map(|item| Candle {
+                                    exchange: "Birdeye".to_string(),
+                                    symbol: symbol.to_string(),
+                                    resolution: resolution.to_string(),
+                                    open: Decimal::from_f64(item.open)
+                                        .unwrap_or(Decimal::ZERO),
+                                    high: Decimal::from_f64(item.high)
+                                        .unwrap_or(Decimal::ZERO),
+                                    low: Decimal::from_f64(item.low)
+                                        .unwrap_or(Decimal::ZERO),
+                                    close: Decimal::from_f64(item.close)
+                                        .unwrap_or(Decimal::ZERO),
+                                    volume: Decimal::from_f64(item.volume)
+                                        .unwrap_or(Decimal::ZERO),
+                                    amount: Some(
+                                        Decimal::from_f64(item.close * item.volume)
+                                            .unwrap_or(Decimal::ZERO),
+                                    ),
+                                    liquidity: None,
+                                    fdv: None,
+                                    metadata: None,
+                                    time: Utc.timestamp_opt(item.unix_time, 0).unwrap(),
+                                })
+                                .collect();
+
+                            info!(
+                                "[{}] Fetched {} candles for {}",
+                                resolution,
+                                candles.len(),
+                                symbol
+                            );
+
+                            if let Err(e) =
+                                self.repos.market_data.insert_candles(&candles).await
+                            {
+                                warn!(
+                                    "[{}] Failed to insert candles for {}: {}",
+                                    resolution, symbol, e
+                                );
+                            }
+                        }
+                        success = true;
+                        break;
+                    }
+                    Err(e) => {
+                        attempts += 1;
+                        warn!(
+                            "[{}] Fetch failed for {} (attempt {}/{}): {}",
+                            resolution, symbol, attempts, max_attempts, e
+                        );
+                        sleep(Duration::from_secs(2)).await;
+                    }
+                }
+            }
+
+            if !success {
+                return false;
+            }
+
+            current_start = current_end;
+            sleep(Duration::from_millis(500)).await;
+        }
+
+        true
     }
 }
