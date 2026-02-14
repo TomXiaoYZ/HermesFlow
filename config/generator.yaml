@@ -1,0 +1,13 @@
+# Strategy Generator — multi-exchange configuration
+# Each entry spawns an independent evolution loop within the same process.
+
+exchanges:
+  - exchange: Birdeye
+    resolution: "15m"
+    lookback_days: 7
+    factor_config: "config/factors.yaml"
+
+  - exchange: Polygon
+    resolution: "1d"
+    lookback_days: 365
+    factor_config: "config/factors-stock.yaml"
