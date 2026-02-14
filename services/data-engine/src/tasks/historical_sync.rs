@@ -126,7 +126,13 @@ impl HistoricalSyncTask {
             );
 
             if !self
-                .fetch_and_insert(symbol, rc.resolution, start_ts, now, rc.chunk_days * one_day)
+                .fetch_and_insert(
+                    symbol,
+                    rc.resolution,
+                    start_ts,
+                    now,
+                    rc.chunk_days * one_day,
+                )
                 .await
             {
                 warn!(
@@ -175,16 +181,11 @@ impl HistoricalSyncTask {
                                     exchange: "Birdeye".to_string(),
                                     symbol: symbol.to_string(),
                                     resolution: resolution.to_string(),
-                                    open: Decimal::from_f64(item.open)
-                                        .unwrap_or(Decimal::ZERO),
-                                    high: Decimal::from_f64(item.high)
-                                        .unwrap_or(Decimal::ZERO),
-                                    low: Decimal::from_f64(item.low)
-                                        .unwrap_or(Decimal::ZERO),
-                                    close: Decimal::from_f64(item.close)
-                                        .unwrap_or(Decimal::ZERO),
-                                    volume: Decimal::from_f64(item.volume)
-                                        .unwrap_or(Decimal::ZERO),
+                                    open: Decimal::from_f64(item.open).unwrap_or(Decimal::ZERO),
+                                    high: Decimal::from_f64(item.high).unwrap_or(Decimal::ZERO),
+                                    low: Decimal::from_f64(item.low).unwrap_or(Decimal::ZERO),
+                                    close: Decimal::from_f64(item.close).unwrap_or(Decimal::ZERO),
+                                    volume: Decimal::from_f64(item.volume).unwrap_or(Decimal::ZERO),
                                     amount: Some(
                                         Decimal::from_f64(item.close * item.volume)
                                             .unwrap_or(Decimal::ZERO),
@@ -203,9 +204,7 @@ impl HistoricalSyncTask {
                                 symbol
                             );
 
-                            if let Err(e) =
-                                self.repos.market_data.insert_candles(&candles).await
-                            {
+                            if let Err(e) = self.repos.market_data.insert_candles(&candles).await {
                                 warn!(
                                     "[{}] Failed to insert candles for {}: {}",
                                     resolution, symbol, e

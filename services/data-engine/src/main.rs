@@ -133,6 +133,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = tm.register_birdeye_sync_job().await {
                 tracing::warn!("Failed to register Birdeye sync job: {}", e);
             }
+            if let Err(e) = tm.register_polygon_sync_job().await {
+                tracing::warn!("Failed to register Polygon sync job: {}", e);
+            }
             Some(tm)
         }
         Err(e) => {

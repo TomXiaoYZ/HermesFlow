@@ -407,15 +407,31 @@ pub async fn get_active_tokens(State(state): State<AppState>) -> Response {
         
         UNION ALL
 
-        SELECT 
+        SELECT
             w.symbol as address,
             w.symbol,
             w.name as name,
-            0.0 as price, 
-            0.0 as volume_24h, 
-            0.0 as price_change_24h,
+            COALESCE(c.close, 0.0) as price,
+            COALESCE(c.volume, 0.0) as volume_24h,
+            CASE
+                WHEN c.close IS NOT NULL AND prev.close IS NOT NULL AND prev.close > 0
+                THEN ((c.close - prev.close) / prev.close * 100)
+                ELSE 0.0
+            END as price_change_24h,
             'stock' as asset_type
         FROM market_watchlist w
+        LEFT JOIN LATERAL (
+            SELECT close, volume, time
+            FROM mkt_equity_candles
+            WHERE symbol = w.symbol AND exchange = 'Polygon' AND resolution = '1d'
+            ORDER BY time DESC LIMIT 1
+        ) c ON true
+        LEFT JOIN LATERAL (
+            SELECT close
+            FROM mkt_equity_candles
+            WHERE symbol = w.symbol AND exchange = 'Polygon' AND resolution = '1d'
+            ORDER BY time DESC LIMIT 1 OFFSET 1
+        ) prev ON true
         WHERE w.is_active = true
         
         ORDER BY asset_type DESC, volume_24h DESC 
@@ -426,7 +442,7 @@ pub async fn get_active_tokens(State(state): State<AppState>) -> Response {
 
     match rows_res {
         Ok(rows) => {
-            let mut tokens: Vec<TokenSummary> = rows
+            let tokens: Vec<TokenSummary> = rows
                 .into_iter()
                 .map(|row| {
                     use rust_decimal::prelude::ToPrimitive;
@@ -446,56 +462,6 @@ pub async fn get_active_tokens(State(state): State<AppState>) -> Response {
                     }
                 })
                 .collect();
-
-            // 2. Hydrate Stock prices from ClickHouse if available
-            if let Some(ch_lock) = &state.clickhouse {
-                let stock_symbols: Vec<String> = tokens
-                    .iter()
-                    .filter(|t| t.token_type.as_deref() == Some("stock"))
-                    .map(|t| t.symbol.clone())
-                    .collect();
-
-                if !stock_symbols.is_empty() {
-                    let ch = ch_lock.read().await;
-                    let client = ch.client();
-
-                    // Helper struct for ClickHouse result
-                    #[derive(clickhouse::Row, Deserialize)]
-                    struct PriceRow {
-                        symbol: String,
-                        price: f64,
-                    }
-
-                    let symbols_formatted = stock_symbols
-                        .iter()
-                        .map(|s| format!("'{}'", s))
-                        .collect::<Vec<_>>()
-                        .join(",");
-
-                    let ch_query = format!(
-                         "SELECT symbol, argMax(close, time) as price FROM mkt_equity_ohlcv WHERE symbol IN ({}) GROUP BY symbol", 
-                         symbols_formatted
-                     );
-
-                    match client.query(&ch_query).fetch_all::<PriceRow>().await {
-                        Ok(prices) => {
-                            let price_map: std::collections::HashMap<String, f64> =
-                                prices.into_iter().map(|r| (r.symbol, r.price)).collect();
-
-                            for token in &mut tokens {
-                                if token.token_type.as_deref() == Some("stock") {
-                                    if let Some(price) = price_map.get(&token.symbol) {
-                                        token.price = Some(*price);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to fetch stock prices from ClickHouse: {}", e);
-                        }
-                    }
-                }
-            }
 
             (
                 StatusCode::OK,

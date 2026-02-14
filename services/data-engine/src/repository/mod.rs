@@ -17,6 +17,8 @@ pub trait MarketDataRepository: Send + Sync {
     async fn insert_candles(&self, data: &[Candle]) -> Result<(), DataEngineError>;
     /// fetch distinct symbols that have data (or are configured)
     async fn get_active_symbols(&self) -> Result<Vec<String>, DataEngineError>;
+    /// fetch all active stock symbols from the watchlist
+    async fn get_watchlist_symbols(&self) -> Result<Vec<String>, DataEngineError>;
     /// fetch the timestamp of the latest candle for a symbol/resolution
     async fn get_latest_candle_time(
         &self,

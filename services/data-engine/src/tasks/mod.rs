@@ -4,3 +4,4 @@ pub mod token_discovery;
 pub use manager::TaskManager;
 pub mod candle_aggregation;
 pub mod data_quality;
+pub mod polygon_sync;

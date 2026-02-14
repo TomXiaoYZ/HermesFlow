@@ -161,6 +161,23 @@ impl MarketDataRepository for PostgresMarketDataRepository {
             .collect())
     }
 
+    async fn get_watchlist_symbols(&self) -> Result<Vec<String>, DataEngineError> {
+        let rows = sqlx::query(r#"SELECT symbol FROM market_watchlist WHERE is_active = true"#)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| {
+                DataEngineError::DatabaseError(format!("Failed to fetch watchlist symbols: {}", e))
+            })?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                use sqlx::Row;
+                row.get::<String, _>("symbol")
+            })
+            .collect())
+    }
+
     async fn get_latest_candle_time(
         &self,
         exchange: &str,

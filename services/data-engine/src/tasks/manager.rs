@@ -119,9 +119,12 @@ impl TaskManager {
                 let yesterday = Utc::now().date_naive().pred_opt().unwrap();
                 let date_str = yesterday.format("%Y-%m-%d").to_string();
 
-                match repos.market_data.get_active_symbols().await {
+                match repos.market_data.get_watchlist_symbols().await {
                     Ok(symbols) => {
-                        info!("Found {} active symbols for EOD correction", symbols.len());
+                        info!(
+                            "Found {} watchlist symbols for EOD collection",
+                            symbols.len()
+                        );
                         if let Some(massive_cfg) = config.massive {
                             let connector = MassiveConnector::new(massive_cfg);
 
@@ -194,6 +197,112 @@ impl TaskManager {
 
         let scheduler = self.scheduler.write().await;
         scheduler.add(job).await?;
+
+        // ONE-TIME: Backfill last 30 days of EOD data for all watchlist symbols on startup
+        let repos_backfill = self.repos.clone();
+        let config_backfill = self.config.clone();
+        tokio::spawn(async move {
+            use crate::collectors::MassiveConnector;
+            use crate::models::Candle;
+            use crate::repository::MarketDataRepository;
+            use chrono::{TimeZone, Utc};
+            use rust_decimal::Decimal;
+            use serde_json::Value;
+
+            info!("Running ONE-TIME stock EOD backfill (30 days)...");
+
+            let symbols = match repos_backfill.market_data.get_watchlist_symbols().await {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Backfill: Failed to fetch watchlist: {}", e);
+                    return;
+                }
+            };
+
+            if symbols.is_empty() {
+                info!("Backfill: No watchlist symbols found, skipping.");
+                return;
+            }
+
+            let massive_cfg = match config_backfill.massive {
+                Some(cfg) => cfg,
+                None => {
+                    error!("Backfill: Massive/Polygon not configured, skipping.");
+                    return;
+                }
+            };
+
+            let connector = MassiveConnector::new(massive_cfg);
+            let now = Utc::now();
+            let mut total_inserted = 0u64;
+
+            for day_offset in 1..=30 {
+                let date = (now - chrono::Duration::days(day_offset)).date_naive();
+                let date_str = date.format("%Y-%m-%d").to_string();
+
+                for symbol in &symbols {
+                    match connector
+                        .fetch_history_candles(symbol, 1, "day", &date_str, &date_str)
+                        .await
+                    {
+                        Ok(candles) => {
+                            for data in candles {
+                                let meta_value = serde_json::from_str::<Value>(&data.raw_data).ok();
+                                let open = if let Some(json) = &meta_value {
+                                    json.get("open")
+                                        .and_then(|v| v.as_f64())
+                                        .map(|f| Decimal::from_f64_retain(f).unwrap_or_default())
+                                        .unwrap_or(data.price)
+                                } else {
+                                    data.price
+                                };
+
+                                let candle = Candle {
+                                    exchange: "Polygon".to_string(),
+                                    symbol: data.symbol.clone(),
+                                    resolution: "1d".to_string(),
+                                    open,
+                                    high: data.high_24h.unwrap_or(data.price),
+                                    low: data.low_24h.unwrap_or(data.price),
+                                    close: data.price,
+                                    volume: data.quantity,
+                                    amount: None,
+                                    liquidity: None,
+                                    fdv: None,
+                                    metadata: meta_value,
+                                    time: Utc.timestamp_opt(data.timestamp / 1000, 0).unwrap(),
+                                };
+
+                                if let Err(e) =
+                                    repos_backfill.market_data.insert_candle(&candle).await
+                                {
+                                    error!(
+                                        "Backfill: Failed to insert {} for {}: {}",
+                                        symbol, date_str, e
+                                    );
+                                } else {
+                                    total_inserted += 1;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Backfill: Failed to fetch {} for {}: {}",
+                                symbol, date_str, e
+                            );
+                        }
+                    }
+                    // Rate limit
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                }
+            }
+
+            info!(
+                "Stock EOD backfill completed. Inserted {} candles for {} symbols.",
+                total_inserted,
+                symbols.len()
+            );
+        });
 
         Ok(())
     }
@@ -610,6 +719,52 @@ impl TaskManager {
 
         let scheduler = self.scheduler.write().await;
         scheduler.add(job).await?;
+
+        Ok(())
+    }
+
+    pub async fn register_polygon_sync_job(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let massive_config = match &self.config.massive {
+            Some(c) if c.enabled => c.clone(),
+            _ => {
+                info!("Massive/Polygon not configured/enabled, skipping Polygon sync job");
+                return Ok(());
+            }
+        };
+
+        info!("Registering Polygon OHLCV Sync Job (Every 30 minutes)...");
+
+        let repos = self.repos.clone();
+
+        // Cron: every 30 min at :10 and :40 (offset from Birdeye at :05 and :35)
+        let job = Job::new_async("0 10,40 * * * *", move |_uuid, _l| {
+            let config = massive_config.clone();
+            let repos = repos.clone();
+            Box::pin(async move {
+                info!("Running periodic Polygon OHLCV sync...");
+                let task = crate::tasks::polygon_sync::PolygonSyncTask::new(config, repos);
+                task.run().await;
+            })
+        })?;
+
+        let scheduler = self.scheduler.write().await;
+        scheduler.add(job).await?;
+
+        // Run initial sync on startup
+        if let Some(massive_cfg) = &self.config.massive {
+            if massive_cfg.enabled {
+                let repos_startup = self.repos.clone();
+                let cfg_startup = massive_cfg.clone();
+                tokio::spawn(async move {
+                    info!("Triggering startup Polygon OHLCV sync...");
+                    let task = crate::tasks::polygon_sync::PolygonSyncTask::new(
+                        cfg_startup,
+                        repos_startup,
+                    );
+                    task.run().await;
+                });
+            }
+        }
 
         Ok(())
     }
