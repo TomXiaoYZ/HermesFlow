@@ -390,6 +390,7 @@ pub async fn get_active_tokens(State(state): State<AppState>) -> Response {
         WITH LatestPrices AS (
             SELECT DISTINCT ON (symbol) symbol, price, volume, time
             FROM mkt_equity_snapshots
+            WHERE time > NOW() - INTERVAL '2 hours'
             ORDER BY symbol, time DESC
         )
         SELECT 

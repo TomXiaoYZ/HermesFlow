@@ -33,6 +33,9 @@ const RESOLUTIONS = [
     { label: "1d", value: "1d" },
 ];
 
+// Use gateway URL directly from browser to bypass Next.js dev rewrite proxy issues
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+
 export default function MarketOverview() {
     const [tokens, setTokens] = useState<TokenSummary[]>([]);
     const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
@@ -134,7 +137,7 @@ export default function MarketOverview() {
     useEffect(() => {
         const fetchTokens = async () => {
             try {
-                const res = await fetch("/api/v1/data/market/tokens");
+                const res = await fetch(`${API_BASE}/api/v1/data/market/tokens`);
                 const json = await res.json();
                 if (json.tokens) {
                     setTokens(json.tokens);
@@ -185,7 +188,7 @@ export default function MarketOverview() {
                     return;
                 }
 
-                const url = `/api/v1/data/market/${token.address}/history?resolution=${resolution}&exchange=${exchange}&start=${start}&end=${now}&limit=5000`;
+                const url = `${API_BASE}/api/v1/data/market/${token.address}/history?resolution=${resolution}&exchange=${exchange}&start=${start}&end=${now}&limit=5000`;
                 console.log('[Candles Effect] Fetching URL:', url);
 
                 const res = await fetch(url);
