@@ -53,9 +53,9 @@ fn token_arity(token: usize, feat_offset: usize) -> usize {
     }
     let op_idx = token - feat_offset;
     match op_idx {
-        0..=3 | 16 => 2,  // binary: ADD, SUB, MUL, DIV, TS_CORR
-        7 => 3,           // ternary: GATE
-        _ => 1,           // unary: everything else
+        0..=3 | 16 => 2, // binary: ADD, SUB, MUL, DIV, TS_CORR
+        7 => 3,          // ternary: GATE
+        _ => 1,          // unary: everything else
     }
 }
 

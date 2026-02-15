@@ -46,27 +46,40 @@ function initOperators(offset: number) {
 // Initial call with default offset
 initOperators(6);
 
+// Cache factor configs per exchange to avoid repeated fetches
+const factorConfigCache: Record<string, boolean> = {};
+
 export async function loadFactorConfig() {
     try {
         const res = await fetch("/api/v1/config/factors");
         if (res.ok) {
-            const config = await res.json();
-
-            // Rebuild Feature Map
-            FEATURE_MAP = {};
-            let maxId = 0;
-            if (config.active_factors) {
-                config.active_factors.forEach((f: any) => {
-                    FEATURE_MAP[f.id] = f.name;
-                    if (f.id >= maxId) maxId = f.id;
-                });
-                // Update specific operator offset
-                initOperators(config.active_factors.length);
-            }
+            applyFactorConfig(await res.json());
         }
-    } catch (e) {
-        console.error("Failed to load factor config, using defaults", e);
+    } catch {
+        // Factor config unavailable, using defaults
     }
+}
+
+export async function loadFactorConfigForExchange(exchange: string) {
+    if (factorConfigCache[exchange]) return;
+    try {
+        const res = await fetch(`/api/v1/evolution/${exchange}/config/factors`);
+        if (res.ok) {
+            applyFactorConfig(await res.json());
+            factorConfigCache[exchange] = true;
+        }
+    } catch {
+        // Factor config unavailable for exchange, using defaults
+    }
+}
+
+function applyFactorConfig(config: { active_factors?: { id: number; name: string }[] }) {
+    if (!config.active_factors) return;
+    FEATURE_MAP = {};
+    config.active_factors.forEach((f) => {
+        FEATURE_MAP[f.id] = f.name;
+    });
+    initOperators(config.active_factors.length);
 }
 
 

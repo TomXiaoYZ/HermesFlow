@@ -203,6 +203,7 @@ async fn main() {
         .route("/api/v1/data/*path", axum::routing::any(data_engine_proxy))
         .route("/api/v1/watchlist", axum::routing::any(watchlist_proxy))
         .route("/api/v1/jobs/*path", axum::routing::any(jobs_proxy))
+        .route("/api/v1/evolution/*path", get(evolution_proxy))
         .route("/api/auth/login", axum::routing::any(auth_handler::proxy_handler))
         .layer(CorsLayer::permissive()) // Enable CORS for local dev
         .with_state(app_state);
@@ -676,6 +677,57 @@ async fn jobs_proxy(
             (
                 axum::http::StatusCode::BAD_GATEWAY,
                 json!({"error": "Data Engine unavailable"}).to_string(),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn evolution_proxy(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(path): axum::extract::Path<String>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let (parts, _body) = req.into_parts();
+    let query_string = parts
+        .uri
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
+    let target_url = format!("http://strategy-generator:8082/{}{}", path, query_string);
+
+    match state.http_client.get(&target_url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let body = resp.bytes().await.unwrap_or_default();
+            let mut response = (status, body).into_response();
+            *response.headers_mut() = headers;
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["strategy-generator"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["strategy-generator"])
+                .set(1);
+            response
+        }
+        Err(e) => {
+            let elapsed = start.elapsed().as_secs_f64();
+            metrics::UPSTREAM_LATENCY_SECONDS
+                .with_label_values(&["strategy-generator"])
+                .observe(elapsed);
+            metrics::UPSTREAM_HEALTH
+                .with_label_values(&["strategy-generator"])
+                .set(0);
+            error!("Failed to proxy to strategy-generator: {}", e);
+            metrics::PROXY_ERRORS_TOTAL
+                .with_label_values(&["strategy-generator"])
+                .inc();
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                json!({"error": "Strategy generator unavailable"}).to_string(),
             )
                 .into_response()
         }

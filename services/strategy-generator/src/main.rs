@@ -59,7 +59,10 @@ async fn main() -> anyhow::Result<()> {
     info!(
         "Loaded {} exchange configs: {:?}",
         exchange_configs.len(),
-        exchange_configs.iter().map(|c| &c.exchange).collect::<Vec<_>>()
+        exchange_configs
+            .iter()
+            .map(|c| &c.exchange)
+            .collect::<Vec<_>>()
     );
 
     // Build per-exchange factor configs for the API
@@ -122,10 +125,8 @@ fn load_exchange_configs(path: &str) -> Vec<ExchangeConfig> {
                 path, e
             );
             // Backward-compat: single exchange from env vars
-            let exchange =
-                env::var("GENERATOR_EXCHANGE").unwrap_or_else(|_| "Birdeye".to_string());
-            let resolution =
-                env::var("GENERATOR_RESOLUTION").unwrap_or_else(|_| "15m".to_string());
+            let exchange = env::var("GENERATOR_EXCHANGE").unwrap_or_else(|_| "Birdeye".to_string());
+            let resolution = env::var("GENERATOR_RESOLUTION").unwrap_or_else(|_| "15m".to_string());
             let lookback_days: i64 = env::var("GENERATOR_LOOKBACK_DAYS")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -221,8 +222,10 @@ async fn run_evolution(
     let resolution = &config.resolution;
     let exchange_lower = exchange.to_lowercase();
 
-    info!("[{}] Starting evolution: resolution={}, lookback={}d, factors={}",
-        exchange, resolution, config.lookback_days, config.factor_config);
+    info!(
+        "[{}] Starting evolution: resolution={}, lookback={}d, factors={}",
+        exchange, resolution, config.lookback_days, config.factor_config
+    );
 
     let factor_config = load_factor_config(&config.factor_config);
     let feat_offset = factor_config.feat_offset();
@@ -247,20 +250,32 @@ async fn run_evolution(
     // Load symbols
     use sqlx::Row;
     let mut symbols: Vec<String> = if exchange == "Polygon" {
-        sqlx::query("SELECT symbol FROM market_watchlist WHERE exchange = 'Polygon' AND is_active = true")
-            .fetch_all(&pool).await.unwrap_or_default()
-            .into_iter().map(|r| r.get("symbol")).collect()
+        sqlx::query(
+            "SELECT symbol FROM market_watchlist WHERE exchange = 'Polygon' AND is_active = true",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.get("symbol"))
+        .collect()
     } else {
         sqlx::query("SELECT address FROM active_tokens WHERE is_active = true")
-            .fetch_all(&pool).await.unwrap_or_default()
-            .into_iter().map(|r| r.get("address")).collect()
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.get("address"))
+            .collect()
     };
 
     if symbols.is_empty() {
         if exchange == "Polygon" {
             warn!("[{}] No active stocks in DB. Using defaults.", exchange);
             symbols = vec!["AAPL", "NVDA", "MSFT", "GOOGL"]
-                .into_iter().map(String::from).collect();
+                .into_iter()
+                .map(String::from)
+                .collect();
         } else {
             warn!("[{}] No active tokens in DB. Using defaults.", exchange);
             symbols = vec![
@@ -268,14 +283,21 @@ async fn run_evolution(
                 "JUPyiwrYJFskUPiHa7hkeR8VUtkPHCLkdP9KcJQUE85",
                 "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
                 "EKpQGSJmxSWojVRHgWN2EWH18dPBfJCs8J6QW2K2pump",
-            ].into_iter().map(String::from).collect();
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect();
         }
     } else {
         info!("[{}] Loaded {} symbols from DB", exchange, symbols.len());
     }
 
-    info!("[{}] Loading {} days of data for {} symbols...",
-        exchange, config.lookback_days, symbols.len());
+    info!(
+        "[{}] Loading {} days of data for {} symbols...",
+        exchange,
+        config.lookback_days,
+        symbols.len()
+    );
     if let Err(e) = backtester.load_data(&symbols, config.lookback_days).await {
         error!("[{}] Failed to load data: {}", exchange, e);
     }
@@ -311,8 +333,10 @@ async fn run_evolution(
 
         if let Some(best) = &ga.best_genome {
             let oos_ic = backtester.evaluate_oos(best);
-            info!("[{}] Gen {} Fitness: {:.4} OOS IC: {:.4}",
-                exchange, gen, best.fitness, oos_ic);
+            info!(
+                "[{}] Gen {} Fitness: {:.4} OOS IC: {:.4}",
+                exchange, gen, best.fitness, oos_ic
+            );
 
             let payload = serde_json::json!({
                 "strategy_id": format!("{}_alphagpt_evo_v2", exchange_lower),
@@ -332,14 +356,23 @@ async fn run_evolution(
             let payload_str = payload.to_string();
 
             // Redis pub/sub + state
-            let _: () = redis_conn.publish(&redis_channel, &payload_str).await.unwrap_or(());
-            let _: () = redis_conn.set(&redis_key_status, &payload_str).await.unwrap_or(());
+            let _: () = redis_conn
+                .publish(&redis_channel, &payload_str)
+                .await
+                .unwrap_or(());
+            let _: () = redis_conn
+                .set(&redis_key_status, &payload_str)
+                .await
+                .unwrap_or(());
 
             let population_view: Vec<_> = ga.population.iter().map(|g| {
                 serde_json::json!({"fitness": g.fitness, "tokens": g.tokens, "generation": gen})
             }).collect();
             let pop_str = serde_json::to_string(&population_view).unwrap_or_default();
-            let _: () = redis_conn.set(&redis_key_population, &pop_str).await.unwrap_or(());
+            let _: () = redis_conn
+                .set(&redis_key_population, &pop_str)
+                .await
+                .unwrap_or(());
 
             // DB persist
             let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
@@ -362,13 +395,20 @@ async fn run_evolution(
             // Portfolio simulation every 5 generations
             if gen.is_multiple_of(5) {
                 let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
-                match backtester.run_portfolio_simulation(&tokens_i32, config.lookback_days).await {
+                match backtester
+                    .run_portfolio_simulation(&tokens_i32, config.lookback_days)
+                    .await
+                {
                     Ok(sim) => {
                         let m = sim["metrics"].as_object().unwrap();
-                        info!("[{}] Portfolio: PnL={:.2}%, Sharpe={:.2}",
+                        info!(
+                            "[{}] Portfolio: PnL={:.2}%, Sharpe={:.2}",
                             exchange,
                             m["total_return"].as_f64().unwrap_or(0.0) * 100.0,
-                            m.get("sharpe_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0));
+                            m.get("sharpe_ratio")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0)
+                        );
 
                         let _ = sqlx::query(
                             "INSERT INTO backtest_results (strategy_id, genome, token_address, pnl_percent, win_rate, total_trades, sharpe_ratio, max_drawdown, equity_curve, created_at) \

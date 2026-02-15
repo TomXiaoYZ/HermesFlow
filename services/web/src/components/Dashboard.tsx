@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Activity, TrendingUp, Database, Zap, AlertCircle, LogOut, LayoutDashboard, Beaker, Search, Server, Settings } from "lucide-react";
+import { Activity, TrendingUp, Database, Zap, LogOut, LayoutDashboard, Beaker, Search, Server, Settings } from "lucide-react";
 import { useRouter } from "next/navigation";
-import StrategyMonitor from "@/components/StrategyMonitor";
+import EvolutionExplorer from "@/components/EvolutionExplorer";
 import DataPipeline, { DataMetrics } from "@/components/DataPipeline";
 import TradeExecutionPanel from "@/components/TradeExecutionPanel";
 import SystemLogs, { LogEntry } from "@/components/SystemLogs";
@@ -55,12 +55,6 @@ export default function Dashboard() {
         gapSymbols: 0,
         lowLiqSymbols: 0,
     });
-
-    // Strategy State
-    const [currentGen, setCurrentGen] = useState(0);
-    const [currentFitness, setCurrentFitness] = useState<number | null>(null);
-    const [bestFormula, setBestFormula] = useState<number[]>([]);
-    const [fitnessHistory, setFitnessHistory] = useState<{ gen: number; fitness: number }[]>([]);
 
     useEffect(() => {
         // WebSocket connection to data-engine via Gateway
@@ -137,16 +131,7 @@ export default function Dashboard() {
                     }
                 }
 
-                if (type === "log" || data.strategy_id === "EvolutionaryKernel") {
-                    // Handle Strategy Status
-                    if (data.action === "Evolving") {
-                        const genMatch = data.message?.match(/Gen (\d+)/);
-                        if (genMatch) {
-                            setCurrentGen(parseInt(genMatch[1]));
-                        }
-                    }
-
-                    // Add to System Logs
+                if (type === "log") {
                     const log: LogEntry = {
                         timestamp: new Date().toLocaleTimeString(),
                         level: data.level === "ERROR" ? "ERROR" : (data.level === "WARN" ? "WARN" : "INFO"),
@@ -289,27 +274,19 @@ export default function Dashboard() {
                     )}
 
                     {activeTab === "overview" && (
-                        <div className="grid grid-cols-12 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                            {/* Left Column: Strategy Monitor */}
-                            <div className="col-span-12 xl:col-span-4 space-y-6">
-                                <StrategyMonitor
-                                    currentGen={currentGen}
-                                    currentFitness={currentFitness}
-                                    bestFormula={bestFormula}
-                                    fitnessHistory={fitnessHistory}
-                                    evolutionRate={0} // TODO: calc rate
-                                    isEvolving={currentGen > 0}
-                                />
-                            </div>
-
-                            {/* Middle Column: Data Pipeline + Execution (Expanded) */}
-                            <div className="col-span-12 xl:col-span-8 space-y-6">
-                                <DataPipeline metrics={metrics} />
-                                <TradeExecutionPanel
-                                    signals={signals}
-                                    portfolioValue={portfolioValue}
-                                    pnl24h={pnl24h}
-                                />
+                        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            <EvolutionExplorer />
+                            <div className="grid grid-cols-12 gap-6">
+                                <div className="col-span-12">
+                                    <DataPipeline metrics={metrics} />
+                                </div>
+                                <div className="col-span-12">
+                                    <TradeExecutionPanel
+                                        signals={signals}
+                                        portfolioValue={portfolioValue}
+                                        pnl24h={pnl24h}
+                                    />
+                                </div>
                             </div>
                         </div>
                     )}
