@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Search, TrendingUp, TrendingDown, Clock, BarChart2, RefreshCw } from "lucide-react";
 import { createChart, CandlestickSeries } from 'lightweight-charts';
-import type { IChartApi, ISeriesApi } from 'lightweight-charts';
+import type { IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts';
 import { cn } from "@/lib/utils";
 
 // Types
@@ -203,7 +203,7 @@ export default function MarketOverview() {
         if (!candlestickSeriesRef.current || candles.length === 0) return;
 
         const formattedData = candles.map(candle => ({
-            time: Math.floor(candle.timestamp / 1000) as unknown as number,
+            time: Math.floor(candle.timestamp / 1000) as UTCTimestamp,
             open: candle.open,
             high: candle.high,
             low: candle.low,
