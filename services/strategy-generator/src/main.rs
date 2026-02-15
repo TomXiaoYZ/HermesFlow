@@ -241,7 +241,8 @@ async fn run_evolution(
         exchange.clone(),
         resolution.clone(),
     );
-    let mut ga = GeneticAlgorithm::new(100, feat_offset);
+    let pop_size = if exchange == "Polygon" { 200 } else { 100 };
+    let mut ga = GeneticAlgorithm::new(pop_size, feat_offset);
 
     // Load symbols
     use sqlx::Row;

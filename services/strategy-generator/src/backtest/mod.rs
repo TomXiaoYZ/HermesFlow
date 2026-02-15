@@ -245,7 +245,8 @@ impl Backtester {
         }
 
         let mut total_score = 0.0;
-        let count = self.cache.len() as f64;
+        let mut valid_count = 0.0;
+        let total_symbols = self.cache.len() as f64;
 
         for data in self.cache.values() {
             if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
@@ -268,6 +269,7 @@ impl Backtester {
                     OptimizationMetric::IC => {
                         let ic = spearman_rank_corr(s, r);
                         total_score += ic;
+                        valid_count += 1.0;
                     }
                     OptimizationMetric::Sharpe => {
                         let liq_slice = data.liquidity.as_slice().unwrap();
@@ -311,6 +313,7 @@ impl Backtester {
 
                         if trade_count < 5 {
                             total_score -= 5.0;
+                            valid_count += 1.0;
                             continue;
                         }
 
@@ -330,15 +333,20 @@ impl Backtester {
                         };
 
                         total_score += sharpe;
+                        valid_count += 1.0;
                     }
                 }
-            } else {
-                genome.fitness = -1000.0;
-                return;
             }
+            // VM failure: skip symbol instead of aborting entire evaluation
         }
 
-        let avg_score = total_score / count;
+        // Require at least 20% of symbols to produce valid signals
+        if valid_count < 1.0 || valid_count / total_symbols < 0.2 {
+            genome.fitness = -1000.0;
+            return;
+        }
+
+        let avg_score = total_score / valid_count;
         if avg_score.is_nan() {
             genome.fitness = -999.0;
         } else {
