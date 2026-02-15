@@ -1,43 +1,43 @@
 # Factor Configuration for US Stocks (Polygon data)
-# OHLCV-pure factors only — no liquidity_health (requires FDV, unavailable for stocks)
+# OHLCV-pure factors — no liquidity_health (requires FDV, unavailable for stocks)
 
 active_factors:
   - id: 0
     name: "return"
-    description: "Log return (normalized)"
+    description: "Log return"
     normalization: "robust"
 
   - id: 1
     name: "buy_sell_pressure"
-    description: "Buy/sell imbalance from OHLC (raw)"
+    description: "Buy/sell imbalance from OHLC"
     normalization: "none"
 
   - id: 2
-    name: "fomo_acceleration"
-    description: "Volume acceleration (normalized)"
+    name: "volume_ratio"
+    description: "Volume relative to 20-period SMA"
     normalization: "robust"
 
   - id: 3
     name: "pump_deviation"
-    description: "Deviation from MA (normalized)"
+    description: "Deviation from 20-period MA"
     normalization: "robust"
 
   - id: 4
     name: "log_volume"
-    description: "Log of volume (normalized)"
+    description: "Log of volume"
     normalization: "robust"
 
   - id: 5
     name: "volatility_clustering"
-    description: "Volatility clustering (normalized)"
+    description: "20-period realized volatility"
     normalization: "robust"
 
   - id: 6
-    name: "momentum_reversal"
-    description: "Momentum reversal (normalized)"
+    name: "momentum"
+    description: "20-period price momentum"
     normalization: "robust"
 
   - id: 7
     name: "relative_strength"
-    description: "RSI (14) (normalized)"
+    description: "RSI (14)"
     normalization: "robust"

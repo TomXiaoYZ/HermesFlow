@@ -8,6 +8,6 @@ exchanges:
     factor_config: "config/factors.yaml"
 
   - exchange: Polygon
-    resolution: "1d"
-    lookback_days: 365
+    resolution: "1h"
+    lookback_days: 730
     factor_config: "config/factors-stock.yaml"

@@ -63,6 +63,8 @@ impl FeatureEngineer {
                 MemeIndicators::volatility_clustering(&ret, 20)
             }
             "momentum_reversal" => MemeIndicators::momentum_reversal(d.close, 20),
+            "volume_ratio" => MemeIndicators::volume_ratio(d.volume, 20),
+            "momentum" => MemeIndicators::momentum(d.close, 20),
             "relative_strength" => MemeIndicators::relative_strength(d.close, 14),
             _ => {
                 info!("Warning: Unknown factor '{}', returning zeros", name);

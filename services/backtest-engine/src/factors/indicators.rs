@@ -83,6 +83,25 @@ impl MemeIndicators {
         prod.mapv(|v| if v < 0.0 { 1.0 } else { 0.0 })
     }
 
+    /// Volume Ratio: volume / SMA(volume, window)
+    /// Measures current volume relative to recent average.
+    /// Values > 1 indicate above-average activity.
+    pub fn volume_ratio(volume: &Array2<f64>, window: usize) -> Array2<f64> {
+        let mut sum: Array2<f64> = Array2::zeros(volume.dim());
+        for i in 0..window {
+            sum = sum + ts_delay(volume, i);
+        }
+        let ma = sum / (window as f64);
+        (volume / (&ma + 1e-9)).mapv(|v| v.clamp(0.0, 10.0))
+    }
+
+    /// Momentum: (close - close[t-window]) / close[t-window]
+    /// Continuous price momentum over a lookback window.
+    pub fn momentum(close: &Array2<f64>, window: usize) -> Array2<f64> {
+        let delayed = ts_delay(close, window);
+        (close - &delayed) / (&delayed + 1e-9)
+    }
+
     /// Relative Strength (RSI-like)
     pub fn relative_strength(close: &Array2<f64>, window: usize) -> Array2<f64> {
         let diff = close - &ts_delay(close, 1);
@@ -150,5 +169,30 @@ mod tests {
 
         let expected = arr2(&[[1.0, 0.047619, 0.043478]]);
         assert_abs_diff_eq!(res, expected, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_volume_ratio() {
+        // volume = [100, 200, 300], window=2
+        // t=0: ma = (100+0)/2 = 50, ratio = 100/50 = 2.0
+        // t=1: ma = (200+100)/2 = 150, ratio = 200/150 = 1.333
+        // t=2: ma = (300+200)/2 = 250, ratio = 300/250 = 1.2
+        let vol = arr2(&[[100., 200., 300.]]);
+        let res = MemeIndicators::volume_ratio(&vol, 2);
+        let expected = arr2(&[[2.0, 1.3333, 1.2]]);
+        assert_abs_diff_eq!(res, expected, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn test_momentum() {
+        // close = [100, 110, 105], window=1
+        // t=0: (100 - 0) / (0 + 1e-9) → clamped huge, but delay pads with 0
+        // t=1: (110 - 100) / 100 = 0.1
+        // t=2: (105 - 110) / 110 = -0.04545
+        let close = arr2(&[[100., 110., 105.]]);
+        let res = MemeIndicators::momentum(&close, 1);
+        // t=0 is distorted by zero padding, check t=1 and t=2
+        assert_abs_diff_eq!(res[[0, 1]], 0.1, epsilon = 1e-6);
+        assert_abs_diff_eq!(res[[0, 2]], -0.04545, epsilon = 1e-4);
     }
 }
