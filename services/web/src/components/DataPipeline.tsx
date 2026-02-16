@@ -37,19 +37,19 @@ export default function DataPipeline({ metrics }: { metrics: DataMetrics }) {
             {/* Connection Status */}
             <div className="space-y-4 mb-6">
                 <StatusRow
-                    label="Helius WebSocket"
+                    label="Data Engine"
                     status={metrics.heliusConnected ? "Connected" : "Disconnected"}
                     icon={<CloudLightning className="w-4 h-4" />}
                     healthy={metrics.heliusConnected}
                 />
                 <StatusRow
-                    label="Active Tokens"
+                    label="Active Symbols"
                     status={`${metrics.activeTokens} tracked`}
                     icon={<Database className="w-4 h-4" />}
                     healthy={metrics.activeTokens > 0}
                 />
                 <StatusRow
-                    label="BirdEye API Usage"
+                    label="Polygon API"
                     status={`${metrics.birdeyeRequests || 0} requests`}
                     icon={<Activity className="w-4 h-4" />}
                     healthy={true}

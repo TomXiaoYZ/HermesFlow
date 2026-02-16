@@ -260,11 +260,11 @@ export default function Dashboard() {
                                 {activeTab === "strategy-lab" && "Alpha Strategy Lab"}
                                 {activeTab === "data-discovery" && "Data Intelligence"}
                                 {activeTab === "system" && "System Operations"}
+                                {activeTab === "settings" && "Settings"}
                             </h2>
                             <p className="text-slate-400 mt-1">
                                 {activeTab === "overview" && "Real-time market surveillance and execution monitoring."}
                                 {activeTab === "strategy-lab" && "Design, backtest, and optimize trading strategies."}
-                                {activeTab === "data-discovery" && "Explore market data, active tokens, and quality metrics."}
                                 {activeTab === "data-discovery" && "Explore market data, active tokens, and quality metrics."}
                                 {activeTab === "system" && "Monitor infrastructure health and system logs."}
                                 {activeTab === "settings" && "Configure external exchange connections and data preferences."}

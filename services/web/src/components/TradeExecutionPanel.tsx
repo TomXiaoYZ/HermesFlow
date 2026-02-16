@@ -40,7 +40,7 @@ export default function TradeExecutionPanel({ signals, portfolioValue, pnl24h }:
             <div className="grid grid-cols-2 gap-4 mb-6">
                 <div className="p-4 rounded-xl bg-gradient-to-br from-emerald-500/10 to-teal-600/10 border border-emerald-500/30">
                     <div className="text-xs text-slate-400 mb-1">Total Equity</div>
-                    <div className="text-2xl font-bold text-white">{portfolioValue.toFixed(2)} SOL</div>
+                    <div className="text-2xl font-bold text-white">${portfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                 </div>
                 <div className={`p-4 rounded-xl ${pnl24h >= 0 ? "bg-emerald-500/10 border-emerald-500/30" : "bg-red-500/10 border-red-500/30"} border`}>
                     <div className="text-xs text-slate-400 mb-1">PnL (24h)</div>
