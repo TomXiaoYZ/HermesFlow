@@ -45,7 +45,7 @@ export default function MarketOverview() {
     const [candles, setCandles] = useState<Candle[]>([]);
     const [loading, setLoading] = useState(false);
     const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
-    const [exchange, setExchange] = useState("Birdeye");
+    const [exchange, setExchange] = useState("Polygon");
     const [chartReady, setChartReady] = useState(false);
 
     const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -249,7 +249,7 @@ export default function MarketOverview() {
                 <div className="space-y-2">
                     <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Exchange</label>
                     <div className="flex gap-1 bg-slate-900/50 p-1 rounded-lg border border-white/5">
-                        {["Birdeye", "Jupiter", "Polygon"].map(ex => (
+                        {["Polygon"].map(ex => (
                             <button
                                 key={ex}
                                 onClick={() => setExchange(ex)}

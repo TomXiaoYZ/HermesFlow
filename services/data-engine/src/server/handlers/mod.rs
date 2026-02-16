@@ -423,14 +423,15 @@ pub async fn get_active_tokens(State(state): State<AppState>) -> Response {
         LEFT JOIN LATERAL (
             SELECT close, volume, time
             FROM mkt_equity_candles
-            WHERE symbol = w.symbol AND exchange = 'Polygon' AND resolution = '1d'
+            WHERE symbol = w.symbol AND exchange = 'Polygon'
             ORDER BY time DESC LIMIT 1
         ) c ON true
         LEFT JOIN LATERAL (
             SELECT close
             FROM mkt_equity_candles
-            WHERE symbol = w.symbol AND exchange = 'Polygon' AND resolution = '1d'
-            ORDER BY time DESC LIMIT 1 OFFSET 1
+            WHERE symbol = w.symbol AND exchange = 'Polygon'
+              AND time <= c.time - INTERVAL '24 hours'
+            ORDER BY time DESC LIMIT 1
         ) prev ON true
         WHERE w.is_active = true
         

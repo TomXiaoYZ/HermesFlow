@@ -125,7 +125,17 @@ export default function EvolutionExplorer() {
             );
             const data = await res.json();
             if (data.backtest) {
-                setExpandedDetail(data.backtest);
+                // Transform equity_curve from backend format {t, equity} to frontend {timestamp, value}
+                const bt = data.backtest;
+                if (bt.equity_curve && Array.isArray(bt.equity_curve)) {
+                    bt.equity_curve = bt.equity_curve.map(
+                        (pt: { t?: number; equity?: number }) => ({
+                            timestamp: (pt.t || 0) * 1000,
+                            value: pt.equity ?? 0,
+                        })
+                    );
+                }
+                setExpandedDetail(bt);
             }
         } catch {
             // Detail fetch failed - row still shows summary

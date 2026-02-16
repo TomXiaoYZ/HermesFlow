@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { loadFactorConfig } from '@/utils/genome';
 import { FACTOR_DATA, SENTIMENT_FEED, FACTOR_LIBRARY, SENTIMENT_MOVERS, HOT_TOPICS } from '../constants';
 import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line, AreaChart, Area, Legend, ComposedChart, ReferenceLine, ScatterChart, Scatter } from 'recharts';
+import EvolutionExplorer from '@/components/EvolutionExplorer';
 
 // --- Quick Trade Modal Component ---
 const QuickTradeModal = ({ item, onClose }: { item: typeof SENTIMENT_FEED[0], onClose: () => void }) => {
@@ -1137,7 +1138,7 @@ const TabButton = ({ label, icon, isActive, onClick }: { label: string, icon: st
 );
 
 const StrategyLab: React.FC = () => {
-   const [activeTab, setActiveTab] = useState('factor');
+   const [activeTab, setActiveTab] = useState('evolution');
 
    useEffect(() => {
       loadFactorConfig().catch(console.error);
@@ -1166,6 +1167,7 @@ const StrategyLab: React.FC = () => {
          {/* Tab Navigation */}
          <div className="h-10 bg-surface-900 border-b border-surface-800 flex items-center px-4">
             <div className="flex gap-2 h-full">
+               <TabButton label="进化迭代 (Evolution)" icon="genetics" isActive={activeTab === 'evolution'} onClick={() => setActiveTab('evolution')} />
                <TabButton label="因子研究 (Alpha)" icon="science" isActive={activeTab === 'factor'} onClick={() => setActiveTab('factor')} />
                <TabButton label="舆情情报" icon="psychology" isActive={activeTab === 'sentiment'} onClick={() => setActiveTab('sentiment')} />
                <TabButton label="代码编辑" icon="code" isActive={activeTab === 'editor'} onClick={() => setActiveTab('editor')} />
@@ -1175,6 +1177,7 @@ const StrategyLab: React.FC = () => {
 
          {/* Content Area */}
          <div className="flex-1 min-h-0 relative">
+            {activeTab === 'evolution' && <div className="p-6 overflow-y-auto h-full"><EvolutionExplorer /></div>}
             {activeTab === 'factor' && <FactorResearch />}
             {activeTab === 'sentiment' && <SentimentAnalysis />}
             {activeTab === 'editor' && <CodeEditor />}
