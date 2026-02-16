@@ -29,7 +29,7 @@ VALUES
     ('Polygon', 'QQQ', 'Nasdaq 100 ETF', 'stock', true, 80, true, true, true, '2022-01-01'),
     ('Polygon', 'DIA', 'Dow Jones ETF', 'stock', true, 80, true, true, true, '2022-01-01'),
     ('Polygon', 'IWM', 'Russell 2000 ETF', 'stock', true, 80, true, true, true, '2022-01-01'),
-    ('Polygon', 'VIX', 'Volatility Index', 'stock', true, 70, true, true, true, '2022-01-01'),
+    ('Polygon', 'UVXY', 'ProShares Ultra VIX Short-Term Futures ETF', 'stock', true, 70, true, true, true, '2022-01-01'),
     ('Polygon', 'GLD', 'SPDR Gold Shares', 'stock', true, 70, true, true, true, '2022-01-01')
 ON CONFLICT (exchange, symbol) DO UPDATE SET
     is_active = true, priority = EXCLUDED.priority, name = EXCLUDED.name;
@@ -37,4 +37,4 @@ ON CONFLICT (exchange, symbol) DO UPDATE SET
 -- 5. Deactivate non-target active_tokens
 UPDATE active_tokens SET is_active = false
 WHERE symbol NOT IN ('AAPL','MSFT','GOOGL','AMZN','META','NVDA','TSLA',
-                     'SPY','QQQ','DIA','IWM','VIX','GLD');
+                     'SPY','QQQ','DIA','IWM','UVXY','GLD');

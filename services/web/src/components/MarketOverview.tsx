@@ -37,7 +37,7 @@ const RESOLUTIONS = [
 const STOCK_GROUPS = [
     { label: "Magnificent 7", symbols: ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"] },
     { label: "Indices", symbols: ["SPY", "QQQ", "DIA", "IWM"] },
-    { label: "Commodities", symbols: ["GLD", "VIX"] },
+    { label: "Commodities & Volatility", symbols: ["GLD", "UVXY"] },
 ];
 
 // Use gateway URL directly from browser to bypass Next.js dev rewrite proxy issues

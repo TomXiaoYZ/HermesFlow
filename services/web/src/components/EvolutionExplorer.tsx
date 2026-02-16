@@ -70,7 +70,7 @@ const SYMBOL_NAMES: Record<string, string> = {
     QQQ: "Nasdaq 100 ETF",
     DIA: "Dow Jones ETF",
     IWM: "Russell 2000 ETF",
-    VIX: "Volatility Index",
+    UVXY: "Ultra VIX Short-Term Futures ETF",
     GLD: "Gold Shares",
 };
 
