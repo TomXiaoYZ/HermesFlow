@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from "react";
 import { Activity, TrendingUp, Database, Zap, LogOut, LayoutDashboard, Beaker, Search, Server, Settings } from "lucide-react";
 import { useRouter } from "next/navigation";
-import EvolutionExplorer from "@/components/EvolutionExplorer";
 import DataPipeline, { DataMetrics } from "@/components/DataPipeline";
 import TradeExecutionPanel from "@/components/TradeExecutionPanel";
 import SystemLogs, { LogEntry } from "@/components/SystemLogs";
@@ -275,7 +274,6 @@ export default function Dashboard() {
 
                     {activeTab === "overview" && (
                         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                            <EvolutionExplorer />
                             <div className="grid grid-cols-12 gap-6">
                                 <div className="col-span-12">
                                     <DataPipeline metrics={metrics} />

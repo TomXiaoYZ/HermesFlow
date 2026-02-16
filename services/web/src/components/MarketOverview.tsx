@@ -158,31 +158,48 @@ export default function MarketOverview() {
 
 
 
+    // Resolution-aware time windows and limits
+    const RESOLUTION_CONFIG: Record<string, { windowMs: number; limit: number }> = {
+        "1m":  { windowMs: 6 * 60 * 60 * 1000, limit: 360 },
+        "15m": { windowMs: 3 * 24 * 60 * 60 * 1000, limit: 288 },
+        "1h":  { windowMs: 14 * 24 * 60 * 60 * 1000, limit: 336 },
+        "4h":  { windowMs: 30 * 24 * 60 * 60 * 1000, limit: 180 },
+        "1d":  { windowMs: 365 * 24 * 60 * 60 * 1000, limit: 365 },
+    };
+
+    // Simple in-memory candle cache to avoid re-fetching on tab switches
+    const candleCacheRef = useRef<Map<string, { data: Candle[]; ts: number }>>(new Map());
+
     // Fetch Candles
     useEffect(() => {
         if (!selectedSymbol) return;
 
         const fetchCandles = async () => {
+            const token = tokens.find(t => t.symbol === selectedSymbol);
+            if (!token) return;
+
+            const cacheKey = `${token.address}:${resolution}:${exchange}`;
+            const cached = candleCacheRef.current.get(cacheKey);
+            const CACHE_TTL = resolution === "1m" ? 30000 : 60000;
+            if (cached && Date.now() - cached.ts < CACHE_TTL) {
+                setCandles(cached.data);
+                return;
+            }
+
             setLoading(true);
             try {
                 const now = Date.now();
-                let start = now - 24 * 60 * 60 * 1000;
-                if (resolution === "1m") start = now - 6 * 60 * 60 * 1000;
-                else if (resolution === "15m") start = now - 3 * 24 * 60 * 60 * 1000;
-                else if (resolution === "1h") start = now - 14 * 24 * 60 * 60 * 1000;
-                else if (resolution === "4h") start = now - 30 * 24 * 60 * 60 * 1000;
-                else if (resolution === "1d") start = now - 365 * 24 * 60 * 60 * 1000;
+                const config = RESOLUTION_CONFIG[resolution] || { windowMs: 24 * 60 * 60 * 1000, limit: 500 };
+                const start = now - config.windowMs;
 
-                const token = tokens.find(t => t.symbol === selectedSymbol);
-                if (!token) return;
-
-                const url = `${API_BASE}/api/v1/data/market/${token.address}/history?resolution=${resolution}&exchange=${exchange}&start=${start}&end=${now}&limit=5000`;
+                const url = `${API_BASE}/api/v1/data/market/${token.address}/history?resolution=${resolution}&exchange=${exchange}&start=${start}&end=${now}&limit=${config.limit}`;
                 const res = await fetch(url);
                 const json = await res.json();
 
                 if (json.data) {
                     setCandles(json.data);
                     setLastUpdated(new Date());
+                    candleCacheRef.current.set(cacheKey, { data: json.data, ts: Date.now() });
                 }
             } catch {
                 setCandles([]);

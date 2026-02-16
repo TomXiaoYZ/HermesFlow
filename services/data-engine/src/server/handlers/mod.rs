@@ -307,14 +307,17 @@ pub async fn get_history(
         .unwrap_or_else(|| "Birdeye".to_string());
 
     let query = "
-        SELECT time, open, high, low, close, volume 
-        FROM mkt_equity_candles 
-        WHERE symbol = $1 AND resolution = $2 AND time >= $3 AND time <= $4 AND exchange = $5
+        SELECT time,
+               open::float8 AS open, high::float8 AS high,
+               low::float8 AS low, close::float8 AS close,
+               volume::float8 AS volume
+        FROM mkt_equity_candles
+        WHERE exchange = $5 AND symbol = $1 AND resolution = $2 AND time >= $3 AND time <= $4
         ORDER BY time ASC
         LIMIT $6
     ";
 
-    tracing::info!(
+    tracing::debug!(
         "[History API] symbol={}, resolution={}, start={}, end={}, exchange={}, limit={}",
         symbol,
         resolution,
@@ -329,7 +332,7 @@ pub async fn get_history(
         .bind(&resolution)
         .bind(start_ts)
         .bind(end_ts)
-        .bind(exchange)
+        .bind(&exchange)
         .bind(limit)
         .fetch_all(pool)
         .await;
@@ -340,20 +343,14 @@ pub async fn get_history(
                 .into_iter()
                 .map(|row| {
                     let time: chrono::DateTime<chrono::Utc> = row.get("time");
-                    use rust_decimal::prelude::ToPrimitive;
-                    let open: rust_decimal::Decimal = row.get("open");
-                    let high: rust_decimal::Decimal = row.get("high");
-                    let low: rust_decimal::Decimal = row.get("low");
-                    let close: rust_decimal::Decimal = row.get("close");
-                    let volume: rust_decimal::Decimal = row.get("volume");
 
                     MarketDataPoint {
                         timestamp: time.timestamp_millis(),
-                        open: open.to_f64().unwrap_or(0.0),
-                        high: high.to_f64().unwrap_or(0.0),
-                        low: low.to_f64().unwrap_or(0.0),
-                        close: close.to_f64().unwrap_or(0.0),
-                        volume: volume.to_f64().unwrap_or(0.0),
+                        open: row.get("open"),
+                        high: row.get("high"),
+                        low: row.get("low"),
+                        close: row.get("close"),
+                        volume: row.get("volume"),
                     }
                 })
                 .collect();

@@ -1177,7 +1177,7 @@ const StrategyLab: React.FC = () => {
 
          {/* Content Area */}
          <div className="flex-1 min-h-0 relative">
-            {activeTab === 'evolution' && <div className="p-6 overflow-y-auto h-full"><EvolutionExplorer /></div>}
+            {activeTab === 'evolution' && <EvolutionExplorer />}
             {activeTab === 'factor' && <FactorResearch />}
             {activeTab === 'sentiment' && <SentimentAnalysis />}
             {activeTab === 'editor' && <CodeEditor />}

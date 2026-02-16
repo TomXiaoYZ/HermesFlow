@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { Brain, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Filter, RefreshCw, Dna } from "lucide-react";
 import {
     ComposedChart,
     Line,
@@ -14,7 +14,11 @@ import {
     Area,
     Scatter,
 } from "recharts";
-import { decodeGenome, getFeatureImportance, loadFactorConfigForExchange } from "@/utils/genome";
+import {
+    decodeGenome,
+    getFeatureImportance,
+    loadFactorConfigForExchange,
+} from "@/utils/genome";
 
 interface Exchange {
     key: string;
@@ -46,19 +50,19 @@ function formatTimeAgo(timestamp: string | null): string {
     if (!timestamp) return "—";
     const diff = Date.now() - new Date(timestamp).getTime();
     const mins = Math.floor(diff / 60000);
-    if (mins < 1) return "just now";
-    if (mins < 60) return `${mins}m ago`;
+    if (mins < 1) return "now";
+    if (mins < 60) return `${mins}m`;
     const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
+    if (hours < 24) return `${hours}h`;
+    return `${Math.floor(hours / 24)}d`;
 }
 
-function formatPercent(value: number | null | undefined): string {
+function fmtPct(value: number | null | undefined): string {
     if (value == null) return "—";
     return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
 }
 
-function formatNumber(value: number | null | undefined, decimals = 2): string {
+function fmtNum(value: number | null | undefined, decimals = 4): string {
     if (value == null) return "—";
     return value.toFixed(decimals);
 }
@@ -67,26 +71,22 @@ export default function EvolutionExplorer() {
     const [exchanges, setExchanges] = useState<Exchange[]>([]);
     const [activeExchange, setActiveExchange] = useState<string>("");
     const [generations, setGenerations] = useState<Generation[]>([]);
-    const [selectedGen, setSelectedGen] = useState<number | null>(null);
     const [expandedGen, setExpandedGen] = useState<number | null>(null);
     const [expandedDetail, setExpandedDetail] = useState<BacktestData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [showAllGens, setShowAllGens] = useState(false);
 
-    // Fetch exchanges on mount
     useEffect(() => {
         fetch("/api/v1/evolution/exchanges")
             .then((res) => res.json())
             .then((data) => {
                 const exs: Exchange[] = data.exchanges || [];
                 setExchanges(exs);
-                if (exs.length > 0) {
-                    setActiveExchange(exs[0].key);
-                }
+                if (exs.length > 0) setActiveExchange(exs[0].key);
             })
             .catch(() => setExchanges([]));
     }, []);
 
-    // Fetch generations when exchange changes
     const fetchGenerations = useCallback(async () => {
         if (!activeExchange) return;
         try {
@@ -110,7 +110,6 @@ export default function EvolutionExplorer() {
         return () => clearInterval(interval);
     }, [fetchGenerations]);
 
-    // Fetch detail when expanding a row
     const handleExpandRow = async (gen: number) => {
         if (expandedGen === gen) {
             setExpandedGen(null);
@@ -125,7 +124,6 @@ export default function EvolutionExplorer() {
             );
             const data = await res.json();
             if (data.backtest) {
-                // Transform equity_curve from backend format {t, equity} to frontend {timestamp, value}
                 const bt = data.backtest;
                 if (bt.equity_curve && Array.isArray(bt.equity_curve)) {
                     bt.equity_curve = bt.equity_curve.map(
@@ -138,19 +136,17 @@ export default function EvolutionExplorer() {
                 setExpandedDetail(bt);
             }
         } catch {
-            // Detail fetch failed - row still shows summary
+            /* detail fetch failed */
         }
     };
 
-    // Derived data
-    const chartData = [...generations]
-        .reverse()
-        .map((g) => ({
-            gen: g.generation,
-            fitness: g.fitness,
-            oos_ic: g.oos_ic,
-            hasBacktest: g.backtest != null,
-        }));
+    // Derived
+    const chartData = [...generations].reverse().map((g) => ({
+        gen: g.generation,
+        fitness: g.fitness,
+        oos_ic: g.oos_ic,
+        hasBacktest: g.backtest != null,
+    }));
 
     const bestGen = generations.reduce<Generation | null>((best, g) => {
         if (g.fitness == null) return best;
@@ -158,126 +154,144 @@ export default function EvolutionExplorer() {
         return best;
     }, null);
 
-    const featureImportance = bestGen?.best_genome
-        ? getFeatureImportance(bestGen.best_genome)
-        : {};
-    const totalFeatureCount = Object.values(featureImportance).reduce(
-        (a, b) => a + b,
-        0
-    );
+    const backtestGens = generations.filter((g) => g.backtest != null);
+    const displayGens = showAllGens ? generations : backtestGens;
+    const latestGen = generations[0];
 
     return (
-        <div className="bg-slate-900/50 backdrop-blur border border-slate-800/50 rounded-2xl p-6 shadow-2xl">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-col h-full bg-[#030305]">
+            {/* ── Header ─────────────────────────────────────────── */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-white/5 bg-slate-950/80 backdrop-blur-md shrink-0">
                 <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center">
-                        <Brain className="w-5 h-5" />
-                    </div>
-                    <div>
-                        <h3 className="text-lg font-semibold text-white">
-                            Strategy Evolution Explorer
-                        </h3>
-                        <p className="text-xs text-slate-400">
-                            {generations.length > 0
-                                ? `${generations.length} generations loaded`
-                                : "Awaiting data"}
-                        </p>
-                    </div>
-                </div>
-
-                {/* Exchange Tabs */}
-                <div className="flex gap-2">
+                    <Dna className="w-4 h-4 text-indigo-400" />
                     {exchanges.map((ex) => (
                         <button
                             key={ex.key}
                             onClick={() => setActiveExchange(ex.key)}
-                            className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all ${
+                            className={`px-3 py-1 text-xs font-medium rounded-md transition-all cursor-pointer ${
                                 activeExchange === ex.key
-                                    ? "bg-purple-500/20 border border-purple-500/50 text-purple-300"
-                                    : "bg-slate-800 border border-slate-700 text-slate-400 hover:bg-slate-700 hover:text-slate-300"
+                                    ? "bg-indigo-500/15 border border-indigo-500/40 text-indigo-300"
+                                    : "bg-white/5 border border-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200"
                             }`}
                         >
                             {ex.exchange}
                         </button>
                     ))}
+                    <span className="text-[10px] text-slate-600 font-mono ml-1">
+                        {exchanges.find((e) => e.key === activeExchange)?.resolution} · {exchanges.find((e) => e.key === activeExchange)?.factor_count}F
+                    </span>
+                </div>
+                <div className="flex items-center gap-3">
+                    {latestGen && (
+                        <span className="text-[10px] text-slate-500 font-mono">
+                            Gen #{latestGen.generation} · {formatTimeAgo(latestGen.timestamp)}
+                        </span>
+                    )}
+                    <button
+                        onClick={fetchGenerations}
+                        className="p-1.5 rounded-md text-slate-500 hover:text-slate-200 hover:bg-white/5 transition-colors cursor-pointer"
+                    >
+                        <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+                    </button>
                 </div>
             </div>
 
             {loading && generations.length === 0 ? (
-                <div className="flex items-center justify-center h-48">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500" />
+                <div className="flex-1 flex items-center justify-center">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-500" />
                 </div>
             ) : (
-                <>
-                    {/* Top Section: Chart + Best Strategy */}
-                    <div className="grid grid-cols-12 gap-6 mb-6">
-                        {/* Fitness Chart */}
-                        <div className="col-span-8">
-                            <h4 className="text-sm font-medium text-slate-300 mb-3">
-                                Fitness Trend
-                            </h4>
-                            <div className="h-48 w-full">
+                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+                    {/* ── Stat Badges Row ────────────────────────────── */}
+                    <div className="flex items-center gap-3 px-5 py-3 border-b border-white/5 bg-slate-950/50">
+                        <StatBadge label="Generation" value={latestGen ? `#${latestGen.generation}` : "—"} />
+                        <div className="w-px h-5 bg-white/5" />
+                        <StatBadge
+                            label="Best IS IC"
+                            value={fmtNum(bestGen?.fitness)}
+                            color={bestGen?.fitness != null && bestGen.fitness > 0 ? "emerald" : undefined}
+                        />
+                        <StatBadge
+                            label="OOS IC"
+                            value={fmtNum(bestGen?.oos_ic)}
+                            color={bestGen?.oos_ic != null && bestGen.oos_ic > 0 ? "cyan" : undefined}
+                        />
+                        <div className="w-px h-5 bg-white/5" />
+                        <StatBadge label="Backtests" value={`${backtestGens.length}`} />
+                        {bestGen?.best_genome && (
+                            <>
+                                <div className="w-px h-5 bg-white/5" />
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <span className="text-[9px] text-slate-600 uppercase tracking-wider shrink-0">Formula</span>
+                                    <code className="text-[10px] text-slate-400 font-mono truncate max-w-[300px]">
+                                        {decodeGenome(bestGen.best_genome)}
+                                    </code>
+                                </div>
+                            </>
+                        )}
+                    </div>
+
+                    {/* ── Fitness Chart (Hero) ────────────────────────── */}
+                    <div className="px-5 pt-4 pb-2">
+                        <div className="bg-slate-900/30 border border-white/5 rounded-xl backdrop-blur-sm">
+                            <div className="flex items-center justify-between px-4 pt-3 pb-1">
+                                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                    Fitness Trend (IC)
+                                </h4>
+                                <div className="flex items-center gap-4 text-[10px] text-slate-600">
+                                    <span className="flex items-center gap-1.5">
+                                        <span className="w-4 h-[2px] bg-indigo-400 rounded-full inline-block" />
+                                        In-Sample
+                                    </span>
+                                    <span className="flex items-center gap-1.5">
+                                        <span className="w-4 h-[2px] bg-cyan-400 rounded-full inline-block opacity-60" style={{ borderBottom: '1px dashed' }} />
+                                        Out-of-Sample
+                                    </span>
+                                    <span className="flex items-center gap-1.5">
+                                        <span className="w-2 h-2 bg-indigo-400 rounded-full inline-block" />
+                                        Backtested
+                                    </span>
+                                </div>
+                            </div>
+                            <div className="h-64 px-2 pb-3">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <ComposedChart data={chartData}>
-                                        <CartesianGrid
-                                            strokeDasharray="3 3"
-                                            stroke="#334155"
-                                        />
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.3} />
                                         <XAxis
                                             dataKey="gen"
-                                            stroke="#64748b"
+                                            stroke="#475569"
                                             fontSize={10}
-                                            label={{
-                                                value: "Generation",
-                                                position: "insideBottom",
-                                                offset: -2,
-                                                style: {
-                                                    fill: "#64748b",
-                                                    fontSize: 10,
-                                                },
-                                            }}
+                                            tickLine={false}
+                                            axisLine={false}
                                         />
                                         <YAxis
-                                            stroke="#64748b"
-                                            fontSize={10}
-                                            label={{
-                                                value: "IC",
-                                                angle: -90,
-                                                position: "insideLeft",
-                                                style: {
-                                                    fill: "#64748b",
-                                                    fontSize: 10,
-                                                },
-                                            }}
+                                            stroke="#475569"
+                                            fontSize={11}
+                                            tickLine={false}
+                                            axisLine={false}
+                                            tickFormatter={(v) => v.toFixed(3)}
+                                            width={50}
                                         />
                                         <Tooltip
                                             contentStyle={{
-                                                backgroundColor: "#1e293b",
-                                                border: "1px solid #475569",
+                                                backgroundColor: "rgba(2, 6, 23, 0.95)",
+                                                border: "1px solid rgba(255,255,255,0.1)",
                                                 borderRadius: "8px",
+                                                fontSize: 11,
+                                                backdropFilter: "blur(8px)",
                                             }}
-                                            labelStyle={{ color: "#cbd5e1" }}
-                                            formatter={(
-                                                value,
-                                                name
-                                            ) => [
-                                                typeof value === "number"
-                                                    ? value.toFixed(4)
-                                                    : "—",
-                                                name === "fitness"
-                                                    ? "In-Sample IC"
-                                                    : "OOS IC",
+                                            labelStyle={{ color: "#94a3b8", fontWeight: "bold" }}
+                                            formatter={(value: number, name: string) => [
+                                                value?.toFixed(6) ?? "—",
+                                                name === "fitness" ? "IS IC" : "OOS IC",
                                             ]}
-                                            labelFormatter={(label) =>
-                                                `Gen #${label}`
-                                            }
+                                            labelFormatter={(l) => `Generation #${l}`}
                                         />
                                         <Line
                                             type="monotone"
                                             dataKey="fitness"
-                                            stroke="#a78bfa"
-                                            strokeWidth={2}
+                                            stroke="#818cf8"
+                                            strokeWidth={1.5}
                                             dot={false}
                                             name="fitness"
                                         />
@@ -285,277 +299,130 @@ export default function EvolutionExplorer() {
                                             type="monotone"
                                             dataKey="oos_ic"
                                             stroke="#22d3ee"
-                                            strokeWidth={1.5}
-                                            strokeDasharray="5 3"
+                                            strokeWidth={1}
+                                            strokeDasharray="4 3"
                                             dot={false}
                                             name="oos_ic"
                                             connectNulls
                                         />
                                         <Scatter
                                             dataKey="fitness"
-                                            data={chartData.filter(
-                                                (d) => d.hasBacktest
-                                            )}
-                                            fill="#a78bfa"
+                                            data={chartData.filter((d) => d.hasBacktest)}
+                                            fill="#818cf8"
                                             shape="circle"
-                                            r={3}
-                                            onClick={(e: { gen?: number }) => {
-                                                if (e.gen != null)
-                                                    setSelectedGen(e.gen);
-                                            }}
+                                            r={3.5}
                                         />
                                     </ComposedChart>
                                 </ResponsiveContainer>
                             </div>
                         </div>
-
-                        {/* Best Strategy Card */}
-                        <div className="col-span-4">
-                            <h4 className="text-sm font-medium text-slate-300 mb-3">
-                                Best Strategy
-                            </h4>
-                            {bestGen ? (
-                                <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4 space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs text-slate-400">
-                                            Gen #{bestGen.generation}
-                                        </span>
-                                        <div className="flex items-center gap-1.5">
-                                            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                                            <span className="text-sm font-semibold text-purple-300">
-                                                IC:{" "}
-                                                {bestGen.fitness?.toFixed(4)}
-                                            </span>
-                                        </div>
-                                    </div>
-                                    {bestGen.oos_ic != null && (
-                                        <div className="text-xs text-cyan-400">
-                                            OOS IC:{" "}
-                                            {bestGen.oos_ic.toFixed(4)}
-                                        </div>
-                                    )}
-                                    <div>
-                                        <span className="text-xs text-slate-500 block mb-1">
-                                            Formula
-                                        </span>
-                                        <code className="text-xs text-slate-300 bg-slate-900/50 px-2 py-1 rounded block break-all">
-                                            {bestGen.best_genome
-                                                ? decodeGenome(
-                                                      bestGen.best_genome
-                                                  )
-                                                : "—"}
-                                        </code>
-                                    </div>
-                                    {totalFeatureCount > 0 && (
-                                        <div>
-                                            <span className="text-xs text-slate-500 block mb-2">
-                                                Feature Importance
-                                            </span>
-                                            <div className="space-y-1.5">
-                                                {Object.entries(
-                                                    featureImportance
-                                                )
-                                                    .sort(
-                                                        ([, a], [, b]) => b - a
-                                                    )
-                                                    .map(([name, count]) => {
-                                                        const pct =
-                                                            totalFeatureCount >
-                                                            0
-                                                                ? (count /
-                                                                      totalFeatureCount) *
-                                                                  100
-                                                                : 0;
-                                                        return (
-                                                            <div
-                                                                key={name}
-                                                                className="flex items-center gap-2"
-                                                            >
-                                                                <span className="text-xs text-slate-400 w-16 truncate">
-                                                                    {name}
-                                                                </span>
-                                                                <div className="flex-1 h-2 bg-slate-900/50 rounded-full overflow-hidden">
-                                                                    <div
-                                                                        className="h-full bg-purple-500/60 rounded-full"
-                                                                        style={{
-                                                                            width: `${pct}%`,
-                                                                        }}
-                                                                    />
-                                                                </div>
-                                                                <span className="text-xs text-slate-500 w-8 text-right">
-                                                                    {Math.round(
-                                                                        pct
-                                                                    )}
-                                                                    %
-                                                                </span>
-                                                            </div>
-                                                        );
-                                                    })}
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            ) : (
-                                <div className="text-sm text-slate-500 italic">
-                                    No strategies evolved yet
-                                </div>
-                            )}
-                        </div>
                     </div>
 
-                    {/* Generation History Table */}
-                    <div>
-                        <h4 className="text-sm font-medium text-slate-300 mb-3">
-                            Generation History
-                        </h4>
-                        <div className="overflow-hidden rounded-xl border border-slate-800/50">
-                            {/* Table Header */}
-                            <div className="grid grid-cols-[60px_100px_90px_90px_90px_80px_1fr] gap-2 px-4 py-2.5 bg-slate-800/30 border-b border-slate-800/50">
-                                <span className="text-xs text-slate-400 uppercase tracking-wide">
-                                    Gen
-                                </span>
-                                <span className="text-xs text-slate-400 uppercase tracking-wide">
-                                    Fitness
-                                </span>
-                                <span className="text-xs text-slate-400 uppercase tracking-wide">
-                                    PnL%
-                                </span>
-                                <span className="text-xs text-slate-400 uppercase tracking-wide">
-                                    Sharpe
-                                </span>
-                                <span className="text-xs text-slate-400 uppercase tracking-wide">
-                                    Max DD
-                                </span>
-                                <span className="text-xs text-slate-400 uppercase tracking-wide">
-                                    Win Rate
-                                </span>
-                                <span className="text-xs text-slate-400 uppercase tracking-wide text-right">
-                                    Time
-                                </span>
+                    {/* ── Generation Table ─────────────────────────────── */}
+                    <div className="px-5 pb-5 pt-2">
+                        <div className="bg-slate-900/30 border border-white/5 rounded-xl backdrop-blur-sm overflow-hidden">
+                            {/* Table toolbar */}
+                            <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/5">
+                                <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                    Generation History
+                                </h4>
+                                <button
+                                    onClick={() => setShowAllGens((v) => !v)}
+                                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                                        showAllGens
+                                            ? "bg-white/10 text-slate-200"
+                                            : "bg-white/5 text-slate-500 hover:text-slate-300"
+                                    }`}
+                                >
+                                    <Filter className="w-3 h-3" />
+                                    {showAllGens ? `All (${generations.length})` : `Backtests (${backtestGens.length})`}
+                                </button>
                             </div>
 
-                            {/* Table Rows */}
-                            <div className="max-h-[320px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-                                {generations.map((g) => {
-                                    const isBest =
-                                        bestGen?.generation === g.generation;
-                                    const isSelected =
-                                        selectedGen === g.generation;
-                                    const isExpanded =
-                                        expandedGen === g.generation;
-                                    const hasBacktest = g.backtest != null;
+                            {/* Column headers - sticky */}
+                            <div className="grid grid-cols-[60px_80px_80px_90px_80px_80px_60px_60px] gap-1 px-4 py-2 bg-black/20 border-b border-white/5 text-[9px] text-slate-600 uppercase tracking-wider font-bold sticky top-0 z-10">
+                                <span>Gen</span>
+                                <span className="text-right">IS IC</span>
+                                <span className="text-right">OOS IC</span>
+                                <span className="text-right">PnL</span>
+                                <span className="text-right">Sharpe</span>
+                                <span className="text-right">Max DD</span>
+                                <span className="text-right">WR</span>
+                                <span className="text-right">Time</span>
+                            </div>
+
+                            {/* Rows */}
+                            <div className="max-h-[480px] overflow-y-auto custom-scrollbar">
+                                {displayGens.map((g, idx) => {
+                                    const isBest = bestGen?.generation === g.generation;
+                                    const isExpanded = expandedGen === g.generation;
+                                    const hasBt = g.backtest != null;
+                                    const isOdd = idx % 2 === 1;
 
                                     return (
-                                        <React.Fragment
-                                            key={g.generation}
-                                        >
+                                        <React.Fragment key={g.generation}>
                                             <button
-                                                onClick={() => {
-                                                    setSelectedGen(
-                                                        g.generation
-                                                    );
-                                                    if (hasBacktest) {
-                                                        handleExpandRow(
-                                                            g.generation
-                                                        );
-                                                    }
-                                                }}
-                                                className={`w-full grid grid-cols-[60px_100px_90px_90px_90px_80px_1fr] gap-2 px-4 py-2 text-sm transition-colors hover:bg-slate-800/30 ${
-                                                    isSelected
-                                                        ? "bg-purple-500/10 border-l-2 border-purple-500"
-                                                        : "border-l-2 border-transparent"
-                                                } ${
-                                                    isBest
-                                                        ? "bg-purple-500/5"
-                                                        : ""
+                                                onClick={() => { if (hasBt) handleExpandRow(g.generation); }}
+                                                className={`w-full grid grid-cols-[60px_80px_80px_90px_80px_80px_60px_60px] gap-1 px-4 py-2 text-[11px] transition-colors border-l-2 cursor-pointer ${
+                                                    isExpanded
+                                                        ? "bg-indigo-500/10 border-l-indigo-500"
+                                                        : isBest
+                                                          ? `${isOdd ? "bg-white/[0.02]" : "bg-transparent"} border-l-amber-500/50`
+                                                          : `${isOdd ? "bg-white/[0.02]" : "bg-transparent"} border-l-transparent hover:bg-white/[0.04]`
                                                 }`}
                                             >
-                                                <span className="text-slate-300 font-mono flex items-center gap-1">
-                                                    {hasBacktest ? (
+                                                <span className="text-slate-400 font-mono flex items-center gap-1">
+                                                    {hasBt ? (
                                                         isExpanded ? (
-                                                            <ChevronDown className="w-3 h-3 text-slate-500" />
+                                                            <ChevronDown className="w-3 h-3 text-slate-600" />
                                                         ) : (
-                                                            <ChevronRight className="w-3 h-3 text-slate-500" />
+                                                            <ChevronRight className="w-3 h-3 text-slate-600" />
                                                         )
                                                     ) : (
                                                         <span className="w-3" />
                                                     )}
+                                                    {isBest && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shadow-[0_0_6px_#f59e0b]" />}
                                                     {g.generation}
                                                 </span>
-                                                <span
-                                                    className={`font-mono flex items-center gap-1 ${
-                                                        g.fitness != null &&
-                                                        g.fitness > 0
-                                                            ? "text-emerald-400"
-                                                            : "text-slate-400"
-                                                    }`}
-                                                >
-                                                    {isBest && (
-                                                        <span className="w-1.5 h-1.5 rounded-full bg-purple-400 inline-block" />
-                                                    )}
-                                                    {formatNumber(
-                                                        g.fitness,
-                                                        4
-                                                    )}
+                                                <span className={`text-right font-mono ${
+                                                    g.fitness != null && g.fitness > 0 ? "text-emerald-400" : "text-slate-500"
+                                                }`}>
+                                                    {fmtNum(g.fitness)}
                                                 </span>
-                                                <span
-                                                    className={`font-mono ${
-                                                        g.backtest
-                                                            ? g.backtest
-                                                                  .pnl_percent >=
-                                                              0
-                                                                ? "text-emerald-400"
-                                                                : "text-red-400"
-                                                            : "text-slate-600"
-                                                    }`}
-                                                >
-                                                    {g.backtest
-                                                        ? formatPercent(
-                                                              g.backtest
-                                                                  .pnl_percent
-                                                          )
-                                                        : "—"}
+                                                <span className="text-right font-mono text-cyan-400/60">
+                                                    {fmtNum(g.oos_ic)}
                                                 </span>
-                                                <span className="font-mono text-slate-400">
-                                                    {g.backtest
-                                                        ? formatNumber(
-                                                              g.backtest
-                                                                  .sharpe_ratio
-                                                          )
-                                                        : "—"}
+                                                <span className={`text-right font-mono ${
+                                                    g.backtest
+                                                        ? g.backtest.pnl_percent >= 0 ? "text-emerald-400" : "text-red-400"
+                                                        : "text-slate-700"
+                                                }`}>
+                                                    {g.backtest ? fmtPct(g.backtest.pnl_percent) : "—"}
                                                 </span>
-                                                <span
-                                                    className={`font-mono ${
-                                                        g.backtest
-                                                            ? "text-red-400"
-                                                            : "text-slate-600"
-                                                    }`}
-                                                >
-                                                    {g.backtest
-                                                        ? formatPercent(
-                                                              g.backtest
-                                                                  .max_drawdown
-                                                          )
-                                                        : "—"}
+                                                <span className={`text-right font-mono ${
+                                                    g.backtest
+                                                        ? g.backtest.sharpe_ratio >= 0 ? "text-slate-300" : "text-red-400"
+                                                        : "text-slate-700"
+                                                }`}>
+                                                    {g.backtest ? fmtNum(g.backtest.sharpe_ratio, 2) : "—"}
                                                 </span>
-                                                <span className="font-mono text-slate-400">
-                                                    {g.backtest
-                                                        ? formatPercent(
-                                                              g.backtest
-                                                                  .win_rate
-                                                          )
-                                                        : "—"}
+                                                <span className={`text-right font-mono ${g.backtest ? "text-red-400/70" : "text-slate-700"}`}>
+                                                    {g.backtest ? fmtPct(g.backtest.max_drawdown) : "—"}
                                                 </span>
-                                                <span className="text-slate-500 text-xs text-right">
-                                                    {formatTimeAgo(
-                                                        g.timestamp
-                                                    )}
+                                                <span className={`text-right font-mono ${
+                                                    g.backtest
+                                                        ? g.backtest.win_rate > 0.5 ? "text-emerald-400/70" : "text-slate-400"
+                                                        : "text-slate-700"
+                                                }`}>
+                                                    {g.backtest ? `${(g.backtest.win_rate * 100).toFixed(0)}%` : "—"}
+                                                </span>
+                                                <span className="text-right text-slate-600 font-mono">
+                                                    {formatTimeAgo(g.timestamp)}
                                                 </span>
                                             </button>
 
-                                            {/* Expanded Detail */}
                                             {isExpanded && (
-                                                <ExpandedBacktestDetail
+                                                <BacktestDetail
                                                     generation={g}
                                                     detail={expandedDetail}
                                                     exchange={activeExchange}
@@ -565,21 +432,38 @@ export default function EvolutionExplorer() {
                                     );
                                 })}
 
-                                {generations.length === 0 && (
-                                    <div className="px-4 py-8 text-center text-sm text-slate-500">
-                                        No generations found for this exchange.
+                                {displayGens.length === 0 && (
+                                    <div className="px-4 py-12 text-center text-xs text-slate-600">
+                                        No generation data available.
                                     </div>
                                 )}
                             </div>
                         </div>
                     </div>
-                </>
+                </div>
             )}
         </div>
     );
 }
 
-function ExpandedBacktestDetail({
+/* ── Sub-components ─────────────────────────────────────── */
+
+function StatBadge({ label, value, color }: { label: string; value: string; color?: "emerald" | "cyan" }) {
+    return (
+        <div className="flex items-center gap-2">
+            <span className="text-[9px] text-slate-600 uppercase tracking-wider">{label}</span>
+            <span className={`text-xs font-mono font-bold tabular-nums ${
+                color === "emerald" ? "text-emerald-400" :
+                color === "cyan" ? "text-cyan-400" :
+                "text-slate-200"
+            }`}>
+                {value}
+            </span>
+        </div>
+    );
+}
+
+function BacktestDetail({
     generation,
     detail,
     exchange,
@@ -591,155 +475,154 @@ function ExpandedBacktestDetail({
     const bt = detail || generation.backtest;
     if (!bt) return null;
 
-    const handleRerunBacktest = async () => {
+    const featureImportance = generation.best_genome
+        ? getFeatureImportance(generation.best_genome)
+        : {};
+    const totalFeatureCount = Object.values(featureImportance).reduce((a, b) => a + b, 0);
+
+    const handleRerun = async () => {
         if (!generation.best_genome) return;
         try {
-            await fetch(`/api/v1/backtest/run`, {
+            await fetch(`/api/v1/evolution/${exchange}/backtest`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     genome: generation.best_genome,
                     token_address: "UNIVERSAL",
-                    exchange,
                 }),
             });
         } catch {
-            // Backtest request failed
+            /* rerun failed */
         }
     };
 
     return (
-        <div className="bg-slate-800/20 border-t border-slate-800/50 px-6 py-4">
-            <div className="grid grid-cols-2 gap-6">
-                {/* Metrics Summary */}
-                <div className="space-y-3">
-                    <h5 className="text-xs text-slate-400 uppercase tracking-wide mb-2">
-                        Backtest Metrics
-                    </h5>
-                    <div className="grid grid-cols-2 gap-3">
-                        <MetricItem
-                            label="PnL"
-                            value={formatPercent(bt.pnl_percent)}
-                            positive={bt.pnl_percent >= 0}
-                        />
-                        <MetricItem
-                            label="Sharpe Ratio"
-                            value={formatNumber(bt.sharpe_ratio)}
-                        />
-                        <MetricItem
-                            label="Max Drawdown"
-                            value={formatPercent(bt.max_drawdown)}
-                            positive={false}
-                        />
-                        <MetricItem
-                            label="Win Rate"
-                            value={formatPercent(bt.win_rate)}
-                        />
-                        <MetricItem
-                            label="Total Trades"
-                            value={bt.total_trades?.toString() ?? "—"}
-                        />
-                    </div>
+        <div className="bg-black/30 border-b border-white/5 px-6 py-5 backdrop-blur-sm">
+            <div className="grid grid-cols-12 gap-5">
+                {/* Left: Formula + Metrics + Features */}
+                <div className="col-span-3 space-y-4">
+                    {/* Formula */}
                     {generation.best_genome && (
-                        <div className="mt-3">
-                            <span className="text-xs text-slate-500 block mb-1">
+                        <div>
+                            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
                                 Decoded Formula
-                            </span>
-                            <code className="text-xs text-slate-300 bg-slate-900/50 px-2 py-1 rounded block break-all">
+                            </h5>
+                            <code className="text-[10px] text-slate-300 font-mono leading-relaxed break-all block bg-white/[0.03] rounded p-2 border border-white/5">
                                 {decodeGenome(generation.best_genome)}
                             </code>
                         </div>
                     )}
+
+                    {/* Metrics grid */}
+                    <div>
+                        <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
+                            Backtest Metrics
+                        </h5>
+                        <div className="grid grid-cols-2 gap-1.5">
+                            <MetricCell label="PnL" value={fmtPct(bt.pnl_percent)} positive={bt.pnl_percent >= 0} />
+                            <MetricCell label="Sharpe" value={fmtNum(bt.sharpe_ratio, 2)} positive={bt.sharpe_ratio >= 0} />
+                            <MetricCell label="Max DD" value={fmtPct(bt.max_drawdown)} positive={false} />
+                            <MetricCell label="Win Rate" value={fmtPct(bt.win_rate)} positive={bt.win_rate != null && bt.win_rate > 0.5} />
+                            <MetricCell label="Trades" value={bt.total_trades?.toLocaleString() ?? "—"} />
+                        </div>
+                    </div>
+
+                    {/* Feature importance */}
+                    {totalFeatureCount > 0 && (
+                        <div>
+                            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
+                                Feature Usage
+                            </h5>
+                            <div className="space-y-1">
+                                {Object.entries(featureImportance)
+                                    .sort(([, a], [, b]) => b - a)
+                                    .map(([name, count]) => {
+                                        const pct = (count / totalFeatureCount) * 100;
+                                        return (
+                                            <div key={name} className="flex items-center gap-2">
+                                                <span className="text-[10px] text-slate-500 w-20 truncate font-mono">{name}</span>
+                                                <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                                                    <div
+                                                        className="h-full bg-indigo-500/40 rounded-full"
+                                                        style={{ width: `${pct}%` }}
+                                                    />
+                                                </div>
+                                                <span className="text-[9px] text-slate-600 w-6 text-right font-mono">
+                                                    {Math.round(pct)}%
+                                                </span>
+                                            </div>
+                                        );
+                                    })}
+                            </div>
+                        </div>
+                    )}
+
                     <button
-                        onClick={handleRerunBacktest}
-                        className="mt-2 px-3 py-1.5 text-xs font-medium rounded-lg bg-purple-500/20 border border-purple-500/50 text-purple-300 hover:bg-purple-500/30 transition-colors"
+                        onClick={handleRerun}
+                        className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10 hover:text-slate-200 transition-colors cursor-pointer"
                     >
                         Re-run Backtest
                     </button>
                 </div>
 
-                {/* Equity Curve */}
-                <div>
-                    <h5 className="text-xs text-slate-400 uppercase tracking-wide mb-2">
+                {/* Right: Equity curve */}
+                <div className="col-span-9">
+                    <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
                         Equity Curve
                     </h5>
                     {detail?.equity_curve && detail.equity_curve.length > 0 ? (
-                        <div className="h-40">
+                        <div className="h-56 bg-white/[0.02] rounded-lg border border-white/5 p-2">
                             <ResponsiveContainer width="100%" height="100%">
                                 <AreaChart data={detail.equity_curve}>
                                     <defs>
-                                        <linearGradient
-                                            id="equityGradient"
-                                            x1="0"
-                                            y1="0"
-                                            x2="0"
-                                            y2="1"
-                                        >
-                                            <stop
-                                                offset="5%"
-                                                stopColor="#a78bfa"
-                                                stopOpacity={0.3}
-                                            />
-                                            <stop
-                                                offset="95%"
-                                                stopColor="#a78bfa"
-                                                stopOpacity={0}
-                                            />
+                                        <linearGradient id={`eq-${generation.generation}`} x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#818cf8" stopOpacity={0.2} />
+                                            <stop offset="95%" stopColor="#818cf8" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <CartesianGrid
-                                        strokeDasharray="3 3"
-                                        stroke="#334155"
-                                    />
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.2} />
                                     <XAxis
                                         dataKey="timestamp"
-                                        stroke="#64748b"
+                                        stroke="#475569"
                                         fontSize={9}
+                                        tickLine={false}
+                                        axisLine={false}
                                         tickFormatter={(v) =>
-                                            new Date(v).toLocaleDateString(
-                                                undefined,
-                                                {
-                                                    month: "short",
-                                                    day: "numeric",
-                                                }
-                                            )
+                                            new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric" })
                                         }
                                     />
                                     <YAxis
-                                        stroke="#64748b"
+                                        stroke="#475569"
                                         fontSize={9}
-                                        tickFormatter={(v) =>
-                                            `${(v * 100).toFixed(0)}%`
-                                        }
+                                        tickLine={false}
+                                        axisLine={false}
+                                        tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
                                     />
                                     <Tooltip
                                         contentStyle={{
-                                            backgroundColor: "#1e293b",
-                                            border: "1px solid #475569",
+                                            backgroundColor: "rgba(2, 6, 23, 0.95)",
+                                            border: "1px solid rgba(255,255,255,0.1)",
                                             borderRadius: "8px",
+                                            fontSize: 11,
                                         }}
-                                        labelStyle={{ color: "#cbd5e1" }}
-                                        formatter={(value) => [
-                                            typeof value === "number"
-                                                ? `${(value * 100).toFixed(2)}%`
-                                                : "—",
-                                            "Equity",
-                                        ]}
+                                        labelStyle={{ color: "#94a3b8" }}
+                                        formatter={(value: number) => [`${(value * 100).toFixed(2)}%`, "Equity"]}
+                                        labelFormatter={(v) => new Date(v).toLocaleString()}
                                     />
                                     <Area
                                         type="monotone"
                                         dataKey="value"
-                                        stroke="#a78bfa"
-                                        strokeWidth={2}
-                                        fill="url(#equityGradient)"
+                                        stroke="#818cf8"
+                                        strokeWidth={1.5}
+                                        fill={`url(#eq-${generation.generation})`}
                                     />
                                 </AreaChart>
                             </ResponsiveContainer>
                         </div>
                     ) : (
-                        <div className="h-40 flex items-center justify-center text-sm text-slate-500">
+                        <div className="h-56 flex items-center justify-center text-xs text-slate-600 bg-white/[0.02] rounded-lg border border-white/5">
                             {detail === null ? (
-                                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-purple-500" />
+                                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-500" />
                             ) : (
                                 "No equity curve data"
                             )}
@@ -751,27 +634,15 @@ function ExpandedBacktestDetail({
     );
 }
 
-function MetricItem({
-    label,
-    value,
-    positive,
-}: {
-    label: string;
-    value: string;
-    positive?: boolean;
-}) {
+function MetricCell({ label, value, positive }: { label: string; value: string; positive?: boolean }) {
     return (
-        <div className="bg-slate-900/30 rounded-lg px-3 py-2">
-            <span className="text-xs text-slate-500 block">{label}</span>
-            <span
-                className={`text-sm font-semibold ${
-                    positive === true
-                        ? "text-emerald-400"
-                        : positive === false
-                          ? "text-red-400"
-                          : "text-white"
-                }`}
-            >
+        <div className="bg-white/[0.03] rounded px-2.5 py-1.5 border border-white/5">
+            <span className="text-[9px] text-slate-600 block">{label}</span>
+            <span className={`text-xs font-mono font-bold tabular-nums ${
+                positive === true ? "text-emerald-400" :
+                positive === false ? "text-red-400" :
+                "text-slate-200"
+            }`}>
                 {value}
             </span>
         </div>
