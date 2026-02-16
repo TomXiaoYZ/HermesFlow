@@ -89,17 +89,30 @@ async fn main() -> anyhow::Result<()> {
         api::start_api_server(pool_api, api_exchanges, api_port).await;
     });
 
-    // Spawn one evolution task per exchange
+    // Spawn one evolution task per (exchange, symbol) pair
     let mut handles = Vec::new();
     for ec in exchange_configs {
-        let pool = pool.clone();
-        let redis_url = redis_url.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(e) = run_evolution(pool, &redis_url, ec).await {
-                error!("Evolution loop failed: {}", e);
-            }
-        });
-        handles.push(handle);
+        let pool_sym = pool.clone();
+        let symbols = load_symbols(&pool_sym, &ec.exchange).await;
+        info!(
+            "[{}] Spawning {} per-symbol evolution tasks",
+            ec.exchange,
+            symbols.len()
+        );
+        for symbol in symbols {
+            let pool = pool.clone();
+            let redis_url = redis_url.clone();
+            let config = ec.clone();
+            let sym = symbol.clone();
+            let ex_name = ec.exchange.clone();
+            let handle = tokio::spawn(async move {
+                if let Err(e) = run_symbol_evolution(pool, &redis_url, config, sym.clone()).await
+                {
+                    error!("[{}:{}] Evolution loop failed: {}", ex_name, sym, e);
+                }
+            });
+            handles.push(handle);
+        }
     }
 
     // Wait for all evolution tasks (they run forever unless errored)
@@ -212,48 +225,14 @@ fn load_factor_config(path: &str) -> FactorConfig {
     }
 }
 
-/// Run the evolution loop for a single exchange. Each call is a long-running task.
-async fn run_evolution(
-    pool: PgPool,
-    redis_url: &str,
-    config: ExchangeConfig,
-) -> anyhow::Result<()> {
-    let exchange = &config.exchange;
-    let resolution = &config.resolution;
-    let exchange_lower = exchange.to_lowercase();
-
-    info!(
-        "[{}] Starting evolution: resolution={}, lookback={}d, factors={}",
-        exchange, resolution, config.lookback_days, config.factor_config
-    );
-
-    let factor_config = load_factor_config(&config.factor_config);
-    let feat_offset = factor_config.feat_offset();
-    info!("[{}] Feature offset: {}", exchange, feat_offset);
-
-    let client = redis::Client::open(redis_url.to_string())?;
-    let mut redis_conn = client.get_async_connection().await?;
-
-    let redis_key_status = format!("strategy:{}:status", exchange_lower);
-    let redis_key_population = format!("strategy:{}:population", exchange_lower);
-    let redis_channel = format!("strategy_updates:{}", exchange_lower);
-
-    let mut backtester = Backtester::new(
-        pool.clone(),
-        factor_config,
-        exchange.clone(),
-        resolution.clone(),
-    );
-    let pop_size = if exchange == "Polygon" { 200 } else { 100 };
-    let mut ga = GeneticAlgorithm::new(pop_size, feat_offset);
-
-    // Load symbols
+/// Load symbols for an exchange from DB with fallback defaults.
+async fn load_symbols(pool: &PgPool, exchange: &str) -> Vec<String> {
     use sqlx::Row;
     let mut symbols: Vec<String> = if exchange == "Polygon" {
         sqlx::query(
             "SELECT symbol FROM market_watchlist WHERE exchange = 'Polygon' AND is_active = true",
         )
-        .fetch_all(&pool)
+        .fetch_all(pool)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -261,7 +240,7 @@ async fn run_evolution(
         .collect()
     } else {
         sqlx::query("SELECT address FROM active_tokens WHERE is_active = true")
-            .fetch_all(&pool)
+            .fetch_all(pool)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -291,28 +270,72 @@ async fn run_evolution(
     } else {
         info!("[{}] Loaded {} symbols from DB", exchange, symbols.len());
     }
+    symbols
+}
+
+/// Run the evolution loop for a single (exchange, symbol) pair.
+async fn run_symbol_evolution(
+    pool: PgPool,
+    redis_url: &str,
+    config: ExchangeConfig,
+    symbol: String,
+) -> anyhow::Result<()> {
+    let exchange = &config.exchange;
+    let resolution = &config.resolution;
+    let exchange_lower = exchange.to_lowercase();
 
     info!(
-        "[{}] Loading {} days of data for {} symbols...",
-        exchange,
-        config.lookback_days,
-        symbols.len()
+        "[{}:{}] Starting per-symbol evolution: resolution={}, lookback={}d",
+        exchange, symbol, resolution, config.lookback_days
     );
-    if let Err(e) = backtester.load_data(&symbols, config.lookback_days).await {
-        error!("[{}] Failed to load data: {}", exchange, e);
+
+    let factor_config = load_factor_config(&config.factor_config);
+    let feat_offset = factor_config.feat_offset();
+
+    let client = redis::Client::open(redis_url.to_string())?;
+    let mut redis_conn = client.get_async_connection().await?;
+
+    let redis_key_status = format!("strategy:{}:{}:status", exchange_lower, symbol);
+    let redis_channel = format!("strategy_updates:{}:{}", exchange_lower, symbol);
+
+    let mut backtester = Backtester::new(
+        pool.clone(),
+        factor_config,
+        exchange.clone(),
+        resolution.clone(),
+    );
+    let pop_size = if exchange == "Polygon" { 200 } else { 100 };
+    let mut ga = GeneticAlgorithm::new(pop_size, feat_offset);
+
+    // Load data for this single symbol
+    info!(
+        "[{}:{}] Loading {} days of data...",
+        exchange, symbol, config.lookback_days
+    );
+    if let Err(e) = backtester
+        .load_data(std::slice::from_ref(&symbol), config.lookback_days)
+        .await
+    {
+        error!("[{}:{}] Failed to load data: {}", exchange, symbol, e);
     }
 
-    // Resume from last generation
+    // Resume from last generation for this (exchange, symbol)
+    use sqlx::Row;
     let last_gen_row = sqlx::query(
-        "SELECT generation, best_genome FROM strategy_generations WHERE exchange = $1 ORDER BY generation DESC LIMIT 1",
+        "SELECT generation, best_genome FROM strategy_generations \
+         WHERE exchange = $1 AND symbol = $2 ORDER BY generation DESC LIMIT 1",
     )
     .bind(exchange)
+    .bind(&symbol)
     .fetch_optional(&pool)
     .await;
 
     if let Ok(Some(row)) = last_gen_row {
         if let Ok(max_gen) = row.try_get::<i32, _>("generation") {
-            info!("[{}] Resuming from generation {}", exchange, max_gen);
+            info!(
+                "[{}:{}] Resuming from generation {}",
+                exchange, symbol, max_gen
+            );
             ga.generation = max_gen as usize + 1;
         }
         if let Ok(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome") {
@@ -326,20 +349,21 @@ async fn run_evolution(
     loop {
         let gen = ga.generation;
 
+        // Evaluate each genome on this single symbol
         for genome in ga.population.iter_mut() {
-            backtester.evaluate(genome);
+            backtester.evaluate_symbol(genome, &symbol);
         }
         ga.evolve();
 
         if let Some(best) = &ga.best_genome {
-            let oos_ic = backtester.evaluate_oos(best);
+            let oos_ic = backtester.evaluate_symbol_oos(best, &symbol);
             info!(
-                "[{}] Gen {} Fitness: {:.4} OOS IC: {:.4}",
-                exchange, gen, best.fitness, oos_ic
+                "[{}:{}] Gen {} Fitness: {:.4} OOS IC: {:.4}",
+                exchange, symbol, gen, best.fitness, oos_ic
             );
 
             let payload = serde_json::json!({
-                "strategy_id": format!("{}_alphagpt_evo_v2", exchange_lower),
+                "strategy_id": format!("{}_{}_gen_{}", exchange_lower, symbol, gen),
                 "timestamp": chrono::Utc::now().timestamp(),
                 "formula": best.tokens,
                 "generation": gen,
@@ -347,10 +371,11 @@ async fn run_evolution(
                 "oos_ic": oos_ic,
                 "best_tokens": best.tokens,
                 "exchange": exchange,
+                "symbol": symbol,
                 "resolution": resolution,
                 "meta": {
-                    "name": format!("Evo-Gen{}-{:.2}", gen, best.fitness),
-                    "description": format!("Evolved Strategy. IC: {:.4}", best.fitness)
+                    "name": format!("{}-Gen{}-{:.2}", symbol, gen, best.fitness),
+                    "description": format!("{} Evolved Strategy. IC: {:.4}", symbol, best.fitness)
                 }
             });
             let payload_str = payload.to_string();
@@ -365,24 +390,16 @@ async fn run_evolution(
                 .await
                 .unwrap_or(());
 
-            let population_view: Vec<_> = ga.population.iter().map(|g| {
-                serde_json::json!({"fitness": g.fitness, "tokens": g.tokens, "generation": gen})
-            }).collect();
-            let pop_str = serde_json::to_string(&population_view).unwrap_or_default();
-            let _: () = redis_conn
-                .set(&redis_key_population, &pop_str)
-                .await
-                .unwrap_or(());
-
-            // DB persist
+            // DB persist with (exchange, symbol, generation) key
             let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
-            let strategy_id = format!("{}_alphagpt_gen_{}", exchange_lower, gen);
+            let strategy_id = format!("{}_{}_gen_{}", exchange_lower, symbol, gen);
             let _ = sqlx::query(
-                "INSERT INTO strategy_generations (exchange, generation, fitness, best_genome, metadata, strategy_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6) \
-                 ON CONFLICT (exchange, generation) DO UPDATE SET fitness = $3, best_genome = $4, metadata = $5, strategy_id = $6"
+                "INSERT INTO strategy_generations (exchange, symbol, generation, fitness, best_genome, metadata, strategy_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                 ON CONFLICT (exchange, symbol, generation) DO UPDATE SET fitness = $4, best_genome = $5, metadata = $6, strategy_id = $7"
             )
             .bind(exchange)
+            .bind(&symbol)
             .bind(gen as i32)
             .bind(best.fitness)
             .bind(&tokens_i32)
@@ -390,20 +407,21 @@ async fn run_evolution(
             .bind(&strategy_id)
             .execute(&pool)
             .await
-            .map_err(|e| error!("[{}] DB persist failed: {}", exchange, e));
+            .map_err(|e| error!("[{}:{}] DB persist failed: {}", exchange, symbol, e));
 
-            // Portfolio simulation every 5 generations
+            // Single-symbol backtest every 5 generations
             if gen.is_multiple_of(5) {
                 let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
                 match backtester
-                    .run_portfolio_simulation(&tokens_i32, config.lookback_days)
+                    .run_detailed_simulation(&tokens_i32, &symbol, config.lookback_days)
                     .await
                 {
                     Ok(sim) => {
                         let m = sim["metrics"].as_object().unwrap();
                         info!(
-                            "[{}] Portfolio: PnL={:.2}%, Sharpe={:.2}",
+                            "[{}:{}] Backtest: PnL={:.2}%, Sharpe={:.2}",
                             exchange,
+                            symbol,
                             m["total_return"].as_f64().unwrap_or(0.0) * 100.0,
                             m.get("sharpe_ratio")
                                 .and_then(|v| v.as_f64())
@@ -416,7 +434,7 @@ async fn run_evolution(
                         )
                         .bind(&strategy_id)
                         .bind(&tokens_i32)
-                        .bind(sim["symbol"].as_str().unwrap_or("UNIVERSAL"))
+                        .bind(&symbol)
                         .bind(m["total_return"].as_f64().unwrap_or(0.0))
                         .bind(m["win_rate"].as_f64().unwrap_or(0.0))
                         .bind(m["total_trades"].as_i64().unwrap_or(0) as i32)
@@ -425,18 +443,19 @@ async fn run_evolution(
                         .bind(&sim["equity_curve"])
                         .execute(&pool)
                         .await
-                        .map_err(|e| error!("[{}] Backtest result persist failed: {}", exchange, e));
+                        .map_err(|e| error!("[{}:{}] Backtest persist failed: {}", exchange, symbol, e));
                     }
-                    Err(e) => error!("[{}] Portfolio sim failed: {}", exchange, e),
+                    Err(e) => error!("[{}:{}] Backtest sim failed: {}", exchange, symbol, e),
                 }
             }
 
-            // Cleanup old generations
+            // Cleanup old generations for this symbol
             if gen.is_multiple_of(10) && gen > 1000 {
                 let _ = sqlx::query(
-                    "DELETE FROM strategy_generations WHERE exchange = $1 AND generation < $2",
+                    "DELETE FROM strategy_generations WHERE exchange = $1 AND symbol = $2 AND generation < $3",
                 )
                 .bind(exchange)
+                .bind(&symbol)
                 .bind(gen as i32 - 1000)
                 .execute(&pool)
                 .await;

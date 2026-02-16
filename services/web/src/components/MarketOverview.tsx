@@ -34,6 +34,12 @@ const RESOLUTIONS = [
     { label: "1d", value: "1d" },
 ];
 
+const STOCK_GROUPS = [
+    { label: "Magnificent 7", symbols: ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"] },
+    { label: "Indices", symbols: ["SPY", "QQQ", "DIA", "IWM"] },
+    { label: "Commodities", symbols: ["GLD", "VIX"] },
+];
+
 // Use gateway URL directly from browser to bypass Next.js dev rewrite proxy issues
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -241,10 +247,36 @@ export default function MarketOverview() {
             if (exchange === "Polygon") {
                 return t.token_type === "stock";
             } else {
-                return t.token_type !== "stock"; // Default to crypto for others
+                return t.token_type !== "stock";
             }
         });
     }, [tokens, searchQuery, exchange]);
+
+    // Group tokens by category for Polygon exchange
+    const groupedTokens = useMemo(() => {
+        if (exchange !== "Polygon") return null;
+
+        const tokenMap = new Map(filteredTokens.map(t => [t.symbol, t]));
+        const groups: { label: string; tokens: TokenSummary[] }[] = [];
+
+        for (const group of STOCK_GROUPS) {
+            const matched = group.symbols
+                .map(s => tokenMap.get(s))
+                .filter((t): t is TokenSummary => t !== undefined);
+            if (matched.length > 0) {
+                groups.push({ label: group.label, tokens: matched });
+            }
+        }
+
+        // Ungrouped tokens (not in any predefined group)
+        const allGrouped = new Set(STOCK_GROUPS.flatMap(g => g.symbols));
+        const ungrouped = filteredTokens.filter(t => !allGrouped.has(t.symbol));
+        if (ungrouped.length > 0) {
+            groups.push({ label: "Other", tokens: ungrouped });
+        }
+
+        return groups;
+    }, [filteredTokens, exchange]);
 
     const formatPrice = (val: number | null) => {
         if (val === null) return "-";
@@ -297,30 +329,34 @@ export default function MarketOverview() {
 
                 {/* Token List */}
                 <div className="flex-1 overflow-y-auto space-y-1 pr-1 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-                    {filteredTokens.map(token => (
-                        <button
-                            key={token.symbol}
-                            onClick={() => setSelectedSymbol(token.symbol)}
-                            className={cn(
-                                "w-full flex items-center justify-between p-3 rounded-xl transition-all duration-200 border border-transparent",
-                                selectedSymbol === token.symbol
-                                    ? "bg-indigo-500/10 border-indigo-500/30 shadow-lg shadow-indigo-500/10"
-                                    : "hover:bg-white/5 hover:border-white/5"
-                            )}
-                        >
-                            <div className="text-left">
-                                <div className="font-bold text-sm text-slate-200">{token.symbol}</div>
-                                <div className="text-xs text-slate-500 truncate max-w-[100px]">{token.name || "Unknown"}</div>
-                            </div>
-                            <div className="text-right">
-                                <div className="font-mono text-sm text-slate-300">${formatPrice(token.price)}</div>
-                                <div className={cn("text-xs flex items-center justify-end gap-1", (token.change_24h || 0) >= 0 ? "text-emerald-400" : "text-red-400")}>
-                                    {(token.change_24h || 0) >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                                    {Math.abs(token.change_24h || 0).toFixed(2)}%
+                    {groupedTokens ? (
+                        groupedTokens.map(group => (
+                            <div key={group.label}>
+                                <div className="px-2 pt-3 pb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
+                                    {group.label}
                                 </div>
+                                {group.tokens.map(token => (
+                                    <TokenButton
+                                        key={token.symbol}
+                                        token={token}
+                                        isSelected={selectedSymbol === token.symbol}
+                                        onSelect={setSelectedSymbol}
+                                        formatPrice={formatPrice}
+                                    />
+                                ))}
                             </div>
-                        </button>
-                    ))}
+                        ))
+                    ) : (
+                        filteredTokens.map(token => (
+                            <TokenButton
+                                key={token.symbol}
+                                token={token}
+                                isSelected={selectedSymbol === token.symbol}
+                                onSelect={setSelectedSymbol}
+                                formatPrice={formatPrice}
+                            />
+                        ))
+                    )}
                     {filteredTokens.length === 0 && (
                         <div className="text-center py-8 text-slate-500 text-sm">No tokens found.</div>
                     )}
@@ -404,5 +440,36 @@ export default function MarketOverview() {
                 )}
             </div>
         </div>
+    );
+}
+
+function TokenButton({ token, isSelected, onSelect, formatPrice }: {
+    token: TokenSummary;
+    isSelected: boolean;
+    onSelect: (symbol: string) => void;
+    formatPrice: (val: number | null) => string;
+}) {
+    return (
+        <button
+            onClick={() => onSelect(token.symbol)}
+            className={cn(
+                "w-full flex items-center justify-between p-3 rounded-xl transition-all duration-200 border border-transparent",
+                isSelected
+                    ? "bg-indigo-500/10 border-indigo-500/30 shadow-lg shadow-indigo-500/10"
+                    : "hover:bg-white/5 hover:border-white/5"
+            )}
+        >
+            <div className="text-left">
+                <div className="font-bold text-sm text-slate-200">{token.symbol}</div>
+                <div className="text-xs text-slate-500 truncate max-w-[100px]">{token.name || "Unknown"}</div>
+            </div>
+            <div className="text-right">
+                <div className="font-mono text-sm text-slate-300">${formatPrice(token.price)}</div>
+                <div className={cn("text-xs flex items-center justify-end gap-1", (token.change_24h || 0) >= 0 ? "text-emerald-400" : "text-red-400")}>
+                    {(token.change_24h || 0) >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                    {Math.abs(token.change_24h || 0).toFixed(2)}%
+                </div>
+            </div>
+        </button>
     );
 }

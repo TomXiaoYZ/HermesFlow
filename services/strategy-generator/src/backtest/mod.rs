@@ -35,8 +35,8 @@ pub struct CachedData {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub enum OptimizationMetric {
-    #[allow(dead_code)]
     Sharpe,
     IC,
 }
@@ -46,6 +46,7 @@ pub struct Backtester {
     vm: StackVM,
     cache: HashMap<String, CachedData>,
     factor_config: FactorConfig,
+    #[allow(dead_code)]
     pub metric: OptimizationMetric,
     pub exchange: String,
     pub resolution: String,
@@ -73,6 +74,7 @@ impl Backtester {
     }
 
     /// Annualization factor for Sharpe ratio based on resolution and exchange.
+    #[allow(dead_code)]
     fn annualization_factor(&self) -> f64 {
         match self.resolution.as_str() {
             "1d" => 252.0_f64.sqrt(),
@@ -237,7 +239,77 @@ impl Backtester {
         Ok(())
     }
 
-    /// Evaluate a genome using in-sample data (first 70%).
+    /// Evaluate a genome on a single symbol's in-sample data (first 70%).
+    pub fn evaluate_symbol(&self, genome: &mut Genome, symbol: &str) {
+        let data = match self.cache.get(symbol) {
+            Some(d) => d,
+            None => {
+                genome.fitness = -1000.0;
+                return;
+            }
+        };
+
+        if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
+            let sig_slice = signal.as_slice().unwrap();
+            let ret_slice = data.returns.as_slice().unwrap();
+
+            let len = sig_slice.len().min(ret_slice.len());
+            if len < 2 {
+                genome.fitness = -1000.0;
+                return;
+            }
+
+            let split_idx = (len as f64 * 0.7) as usize;
+            let split_idx = split_idx.max(2);
+
+            let s = &sig_slice[..split_idx];
+            let r = &ret_slice[..split_idx];
+
+            let ic = spearman_rank_corr(s, r);
+            genome.fitness = if ic.is_nan() { -999.0 } else { ic };
+        } else {
+            genome.fitness = -1000.0;
+        }
+    }
+
+    /// Evaluate a genome on a single symbol's out-of-sample data (last 30%).
+    pub fn evaluate_symbol_oos(&self, genome: &Genome, symbol: &str) -> f64 {
+        let data = match self.cache.get(symbol) {
+            Some(d) => d,
+            None => return 0.0,
+        };
+
+        if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
+            let sig_slice = signal.as_slice().unwrap();
+            let ret_slice = data.returns.as_slice().unwrap();
+
+            let len = sig_slice.len().min(ret_slice.len());
+            if len < 4 {
+                return 0.0;
+            }
+
+            let split_idx = (len as f64 * 0.7) as usize;
+            let split_idx = split_idx.max(2);
+            if split_idx >= len {
+                return 0.0;
+            }
+
+            let s = &sig_slice[split_idx..len];
+            let r = &ret_slice[split_idx..len];
+
+            if s.len() < 2 {
+                return 0.0;
+            }
+
+            let ic = spearman_rank_corr(s, r);
+            if ic.is_nan() { 0.0 } else { ic }
+        } else {
+            0.0
+        }
+    }
+
+    /// Evaluate a genome using in-sample data (first 70%) across all cached symbols.
+    #[allow(dead_code)]
     pub fn evaluate(&self, genome: &mut Genome) {
         if self.cache.is_empty() {
             genome.fitness = 0.0;
@@ -354,7 +426,8 @@ impl Backtester {
         }
     }
 
-    /// Evaluate a genome on out-of-sample data (last 30%). For monitoring only.
+    /// Evaluate a genome on out-of-sample data (last 30%) across all cached symbols.
+    #[allow(dead_code)]
     pub fn evaluate_oos(&self, genome: &Genome) -> f64 {
         if self.cache.is_empty() {
             return 0.0;

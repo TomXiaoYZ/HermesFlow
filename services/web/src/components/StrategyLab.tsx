@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { Dna, FlaskConical, MessageSquareText, Code2, SlidersHorizontal, Save, History } from "lucide-react";
 import { loadFactorConfig } from '@/utils/genome';
 import { FACTOR_DATA, SENTIMENT_FEED, FACTOR_LIBRARY, SENTIMENT_MOVERS, HOT_TOPICS } from '../constants';
 import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line, AreaChart, Area, Legend, ComposedChart, ReferenceLine, ScatterChart, Scatter } from 'recharts';
@@ -1124,16 +1125,16 @@ const SentimentAnalysis = () => {
    );
 };
 
-const TabButton = ({ label, icon, isActive, onClick }: { label: string, icon: string, isActive: boolean, onClick: () => void }) => (
+const TabButton = ({ label, icon, isActive, onClick }: { label: string; icon: React.ReactNode; isActive: boolean; onClick: () => void }) => (
    <button
       onClick={onClick}
-      className={`flex items-center gap-2 h-full border-b-2 px-5 transition-all ${isActive
-         ? 'border-hermes-500 text-surface-100'
-         : 'border-transparent text-surface-400 hover:text-surface-200'
+      className={`flex items-center gap-2 h-full px-4 border-b-2 transition-all ${isActive
+         ? 'border-indigo-500 text-white bg-white/[0.03]'
+         : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-white/[0.02]'
          }`}
    >
-      <span className="material-symbols-outlined text-[20px]">{icon}</span>
-      <span className="text-sm font-medium uppercase tracking-wide">{label}</span>
+      {icon}
+      <span className="text-xs font-medium">{label}</span>
    </button>
 );
 
@@ -1156,10 +1157,10 @@ const StrategyLab: React.FC = () => {
             </div>
             <div className="flex gap-2">
                <button className="px-3 py-1.5 border border-surface-700 bg-surface-900 rounded text-xs text-surface-300 hover:text-white flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[16px]">save</span> 保存草稿
+                  <Save className="w-3.5 h-3.5" /> 保存草稿
                </button>
                <button className="px-3 py-1.5 border border-surface-700 bg-surface-900 rounded text-xs text-surface-300 hover:text-white flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[16px]">history</span> 历史版本
+                  <History className="w-3.5 h-3.5" /> 历史版本
                </button>
             </div>
          </div>
@@ -1167,11 +1168,11 @@ const StrategyLab: React.FC = () => {
          {/* Tab Navigation */}
          <div className="h-10 bg-surface-900 border-b border-surface-800 flex items-center px-4">
             <div className="flex gap-2 h-full">
-               <TabButton label="进化迭代 (Evolution)" icon="genetics" isActive={activeTab === 'evolution'} onClick={() => setActiveTab('evolution')} />
-               <TabButton label="因子研究 (Alpha)" icon="science" isActive={activeTab === 'factor'} onClick={() => setActiveTab('factor')} />
-               <TabButton label="舆情情报" icon="psychology" isActive={activeTab === 'sentiment'} onClick={() => setActiveTab('sentiment')} />
-               <TabButton label="代码编辑" icon="code" isActive={activeTab === 'editor'} onClick={() => setActiveTab('editor')} />
-               <TabButton label="参数寻优" icon="tune" isActive={activeTab === 'optimization'} onClick={() => setActiveTab('optimization')} />
+               <TabButton label="进化迭代" icon={<Dna className="w-4 h-4" />} isActive={activeTab === 'evolution'} onClick={() => setActiveTab('evolution')} />
+               <TabButton label="因子研究" icon={<FlaskConical className="w-4 h-4" />} isActive={activeTab === 'factor'} onClick={() => setActiveTab('factor')} />
+               <TabButton label="舆情情报" icon={<MessageSquareText className="w-4 h-4" />} isActive={activeTab === 'sentiment'} onClick={() => setActiveTab('sentiment')} />
+               <TabButton label="代码编辑" icon={<Code2 className="w-4 h-4" />} isActive={activeTab === 'editor'} onClick={() => setActiveTab('editor')} />
+               <TabButton label="参数寻优" icon={<SlidersHorizontal className="w-4 h-4" />} isActive={activeTab === 'optimization'} onClick={() => setActiveTab('optimization')} />
             </div>
          </div>
 

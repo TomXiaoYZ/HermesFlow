@@ -47,8 +47,15 @@ pub async fn start_api_server(
         .route("/exchanges", get(list_exchanges))
         .route("/:exchange/config/factors", get(get_factor_config))
         .route("/:exchange/backtest", post(handle_backtest))
+        .route("/:exchange/symbols", get(list_symbols))
+        .route("/:exchange/overview", get(get_overview))
         .route("/:exchange/generations", get(list_generations))
         .route("/:exchange/generations/:gen", get(get_generation))
+        .route("/:exchange/:symbol/generations", get(list_symbol_generations))
+        .route(
+            "/:exchange/:symbol/generations/:gen",
+            get(get_symbol_generation),
+        )
         .with_state(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -187,46 +194,7 @@ async fn list_generations(
         Ok(rows) => {
             let generations: Vec<Value> = rows
                 .iter()
-                .map(|row| {
-                    let generation: i32 = row.get("generation");
-                    let fitness: Option<f64> = row.get("fitness");
-                    let best_genome: Option<Vec<i32>> = row.get("best_genome");
-                    let strategy_id: Option<String> = row.get("strategy_id");
-                    let timestamp: Option<chrono::DateTime<chrono::Utc>> = row.get("timestamp");
-                    let metadata: Option<Value> = row.get("metadata");
-                    let pnl_percent: Option<f64> = row.get("pnl_percent");
-                    let sharpe_ratio: Option<f64> = row.get("sharpe_ratio");
-                    let max_drawdown: Option<f64> = row.get("max_drawdown");
-                    let win_rate: Option<f64> = row.get("win_rate");
-                    let total_trades: Option<i32> = row.get("total_trades");
-
-                    let oos_ic = metadata
-                        .as_ref()
-                        .and_then(|m| m.get("oos_ic"))
-                        .and_then(|v| v.as_f64());
-
-                    let backtest = if pnl_percent.is_some() {
-                        Some(json!({
-                            "pnl_percent": pnl_percent,
-                            "sharpe_ratio": sharpe_ratio,
-                            "max_drawdown": max_drawdown,
-                            "win_rate": win_rate,
-                            "total_trades": total_trades,
-                        }))
-                    } else {
-                        None
-                    };
-
-                    json!({
-                        "generation": generation,
-                        "fitness": fitness,
-                        "best_genome": best_genome,
-                        "strategy_id": strategy_id,
-                        "timestamp": timestamp.map(|t| t.to_rfc3339()),
-                        "oos_ic": oos_ic,
-                        "backtest": backtest,
-                    })
-                })
+                .map(|row| row_to_generation_json(row, false))
                 .collect();
 
             Json(json!({
@@ -275,52 +243,271 @@ async fn get_generation(
     .await;
 
     match row {
-        Ok(Some(row)) => {
-            let generation: i32 = row.get("generation");
-            let fitness: Option<f64> = row.get("fitness");
-            let best_genome: Option<Vec<i32>> = row.get("best_genome");
-            let strategy_id: Option<String> = row.get("strategy_id");
-            let timestamp: Option<chrono::DateTime<chrono::Utc>> = row.get("timestamp");
-            let metadata: Option<Value> = row.get("metadata");
-            let pnl_percent: Option<f64> = row.get("pnl_percent");
-            let sharpe_ratio: Option<f64> = row.get("sharpe_ratio");
-            let max_drawdown: Option<f64> = row.get("max_drawdown");
-            let win_rate: Option<f64> = row.get("win_rate");
-            let total_trades: Option<i32> = row.get("total_trades");
-            let equity_curve: Option<Value> = row.get("equity_curve");
-
-            let oos_ic = metadata
-                .as_ref()
-                .and_then(|m| m.get("oos_ic"))
-                .and_then(|v| v.as_f64());
-
-            let backtest = if pnl_percent.is_some() {
-                Some(json!({
-                    "pnl_percent": pnl_percent,
-                    "sharpe_ratio": sharpe_ratio,
-                    "max_drawdown": max_drawdown,
-                    "win_rate": win_rate,
-                    "total_trades": total_trades,
-                    "equity_curve": equity_curve,
-                }))
-            } else {
-                None
-            };
-
-            Json(json!({
-                "generation": generation,
-                "fitness": fitness,
-                "best_genome": best_genome,
-                "strategy_id": strategy_id,
-                "timestamp": timestamp.map(|t| t.to_rfc3339()),
-                "oos_ic": oos_ic,
-                "backtest": backtest,
-            }))
-        }
+        Ok(Some(row)) => Json(row_to_generation_json(&row, true)),
         Ok(None) => Json(json!({"error": "Generation not found"})),
         Err(e) => {
             tracing::error!("Failed to query generation {}: {}", gen, e);
             Json(json!({"error": "Failed to fetch generation"}))
         }
     }
+}
+
+/// List symbols being evolved for an exchange.
+async fn list_symbols(
+    State(state): State<ApiState>,
+    Path(exchange): Path<String>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    let exchange_name = match state.exchanges.get(&key) {
+        Some(cfg) => cfg.exchange.clone(),
+        None => return Json(json!({"error": format!("Unknown exchange: {}", exchange)})),
+    };
+
+    let rows = sqlx::query(
+        "SELECT DISTINCT symbol FROM strategy_generations WHERE exchange = $1 ORDER BY symbol",
+    )
+    .bind(&exchange_name)
+    .fetch_all(&state.pool)
+    .await;
+
+    match rows {
+        Ok(rows) => {
+            let symbols: Vec<String> = rows.iter().map(|r| r.get("symbol")).collect();
+            Json(json!({ "exchange": exchange_name, "symbols": symbols }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to query symbols: {}", e);
+            Json(json!({"error": "Failed to fetch symbols"}))
+        }
+    }
+}
+
+/// Overview of all symbols' evolution status for an exchange.
+async fn get_overview(
+    State(state): State<ApiState>,
+    Path(exchange): Path<String>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    let exchange_name = match state.exchanges.get(&key) {
+        Some(cfg) => cfg.exchange.clone(),
+        None => return Json(json!({"error": format!("Unknown exchange: {}", exchange)})),
+    };
+
+    let rows = sqlx::query(
+        r#"SELECT
+            sg.symbol,
+            sg.generation AS latest_gen,
+            sg.fitness AS best_fitness,
+            sg.timestamp AS last_updated,
+            sg.metadata,
+            br.pnl_percent,
+            br.sharpe_ratio,
+            br.max_drawdown,
+            br.win_rate
+        FROM strategy_generations sg
+        LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
+        WHERE sg.exchange = $1
+        AND sg.generation = (
+            SELECT MAX(sg2.generation) FROM strategy_generations sg2
+            WHERE sg2.exchange = sg.exchange AND sg2.symbol = sg.symbol
+        )
+        ORDER BY sg.symbol"#,
+    )
+    .bind(&exchange_name)
+    .fetch_all(&state.pool)
+    .await;
+
+    match rows {
+        Ok(rows) => {
+            let symbols: Vec<Value> = rows
+                .iter()
+                .map(|row| {
+                    let symbol: String = row.get("symbol");
+                    let latest_gen: i32 = row.get("latest_gen");
+                    let best_fitness: Option<f64> = row.get("best_fitness");
+                    let last_updated: Option<chrono::DateTime<chrono::Utc>> =
+                        row.get("last_updated");
+                    let metadata: Option<Value> = row.get("metadata");
+                    let pnl_percent: Option<f64> = row.get("pnl_percent");
+                    let sharpe_ratio: Option<f64> = row.get("sharpe_ratio");
+                    let max_drawdown: Option<f64> = row.get("max_drawdown");
+                    let win_rate: Option<f64> = row.get("win_rate");
+
+                    let oos_ic = metadata
+                        .as_ref()
+                        .and_then(|m| m.get("oos_ic"))
+                        .and_then(|v| v.as_f64());
+
+                    json!({
+                        "symbol": symbol,
+                        "latest_gen": latest_gen,
+                        "best_fitness": best_fitness,
+                        "best_oos_ic": oos_ic,
+                        "best_pnl": pnl_percent,
+                        "sharpe_ratio": sharpe_ratio,
+                        "max_drawdown": max_drawdown,
+                        "win_rate": win_rate,
+                        "last_updated": last_updated.map(|t| t.to_rfc3339()),
+                    })
+                })
+                .collect();
+
+            Json(json!({ "exchange": exchange_name, "symbols": symbols }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to query overview: {}", e);
+            Json(json!({"error": "Failed to fetch overview"}))
+        }
+    }
+}
+
+/// Per-symbol generation history.
+async fn list_symbol_generations(
+    State(state): State<ApiState>,
+    Path((exchange, symbol)): Path<(String, String)>,
+    Query(params): Query<GenerationsQuery>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    let exchange_name = match state.exchanges.get(&key) {
+        Some(cfg) => cfg.exchange.clone(),
+        None => return Json(json!({"error": format!("Unknown exchange: {}", exchange)})),
+    };
+
+    let limit = params.limit.unwrap_or(100).min(500);
+
+    let rows = sqlx::query(
+        r#"SELECT
+            sg.generation,
+            sg.fitness,
+            sg.best_genome,
+            sg.strategy_id,
+            sg.timestamp,
+            sg.metadata,
+            br.pnl_percent,
+            br.sharpe_ratio,
+            br.max_drawdown,
+            br.win_rate,
+            br.total_trades
+        FROM strategy_generations sg
+        LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
+        WHERE sg.exchange = $1 AND sg.symbol = $2
+        ORDER BY sg.generation DESC
+        LIMIT $3"#,
+    )
+    .bind(&exchange_name)
+    .bind(&symbol)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await;
+
+    match rows {
+        Ok(rows) => {
+            let generations: Vec<Value> = rows
+                .iter()
+                .map(|row| row_to_generation_json(row, false))
+                .collect();
+
+            Json(json!({
+                "exchange": exchange_name,
+                "symbol": symbol,
+                "generations": generations,
+            }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to query generations for {}: {}", symbol, e);
+            Json(json!({"error": "Failed to fetch generations"}))
+        }
+    }
+}
+
+/// Per-symbol generation detail with equity curve.
+async fn get_symbol_generation(
+    State(state): State<ApiState>,
+    Path((exchange, symbol, gen)): Path<(String, String, i32)>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    let exchange_name = match state.exchanges.get(&key) {
+        Some(cfg) => cfg.exchange.clone(),
+        None => return Json(json!({"error": format!("Unknown exchange: {}", exchange)})),
+    };
+
+    let row = sqlx::query(
+        r#"SELECT
+            sg.generation,
+            sg.fitness,
+            sg.best_genome,
+            sg.strategy_id,
+            sg.timestamp,
+            sg.metadata,
+            br.pnl_percent,
+            br.sharpe_ratio,
+            br.max_drawdown,
+            br.win_rate,
+            br.total_trades,
+            br.equity_curve
+        FROM strategy_generations sg
+        LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
+        WHERE sg.exchange = $1 AND sg.symbol = $2 AND sg.generation = $3"#,
+    )
+    .bind(&exchange_name)
+    .bind(&symbol)
+    .bind(gen)
+    .fetch_optional(&state.pool)
+    .await;
+
+    match row {
+        Ok(Some(row)) => Json(row_to_generation_json(&row, true)),
+        Ok(None) => Json(json!({"error": "Generation not found"})),
+        Err(e) => {
+            tracing::error!("Failed to query generation {} for {}: {}", gen, symbol, e);
+            Json(json!({"error": "Failed to fetch generation"}))
+        }
+    }
+}
+
+/// Helper: Convert a DB row to generation JSON.
+fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> Value {
+    let generation: i32 = row.get("generation");
+    let fitness: Option<f64> = row.get("fitness");
+    let best_genome: Option<Vec<i32>> = row.get("best_genome");
+    let strategy_id: Option<String> = row.get("strategy_id");
+    let timestamp: Option<chrono::DateTime<chrono::Utc>> = row.get("timestamp");
+    let metadata: Option<Value> = row.get("metadata");
+    let pnl_percent: Option<f64> = row.get("pnl_percent");
+    let sharpe_ratio: Option<f64> = row.get("sharpe_ratio");
+    let max_drawdown: Option<f64> = row.get("max_drawdown");
+    let win_rate: Option<f64> = row.get("win_rate");
+    let total_trades: Option<i32> = row.get("total_trades");
+
+    let oos_ic = metadata
+        .as_ref()
+        .and_then(|m| m.get("oos_ic"))
+        .and_then(|v| v.as_f64());
+
+    let backtest = if pnl_percent.is_some() {
+        let mut bt = json!({
+            "pnl_percent": pnl_percent,
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown": max_drawdown,
+            "win_rate": win_rate,
+            "total_trades": total_trades,
+        });
+        if include_equity {
+            let equity_curve: Option<Value> = row.get("equity_curve");
+            bt["equity_curve"] = equity_curve.unwrap_or(json!(null));
+        }
+        Some(bt)
+    } else {
+        None
+    };
+
+    json!({
+        "generation": generation,
+        "fitness": fitness,
+        "best_genome": best_genome,
+        "strategy_id": strategy_id,
+        "timestamp": timestamp.map(|t| t.to_rfc3339()),
+        "oos_ic": oos_ic,
+        "backtest": backtest,
+    })
 }
