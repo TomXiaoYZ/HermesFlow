@@ -2,12 +2,21 @@
 target/
 **/*.rs.bk
 
+# Per-service Cargo.lock (workspace members use root Cargo.lock)
+# execution-engine is excluded from workspace — its Cargo.lock IS tracked
+services/backtest-engine/Cargo.lock
+services/common/Cargo.lock
+services/gateway/Cargo.lock
+services/strategy-engine/Cargo.lock
+services/strategy-generator/Cargo.lock
+
 # Node
 node_modules/
 .next/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+yarn.lock
 
 # Python
 __pycache__/
@@ -78,6 +87,8 @@ web_build_ctx/
 # Infrastructure runtime data
 infrastructure/database/clickhouse/data/
 infrastructure/database/clickhouse/log/
+infrastructure/database/clickhouse/logs/*.log
+infrastructure/database/clickhouse/logs/*.gz
 infrastructure/database/postgres/data/
 infrastructure/database/redis/data/
 infrastructure/vector/data/
