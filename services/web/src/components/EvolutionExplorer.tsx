@@ -259,8 +259,8 @@ export default function EvolutionExplorer() {
             ) : (
                 <div className="flex-1 min-h-0 flex">
                     {/* Left Panel: Symbol Overview Grid */}
-                    <div className="w-[320px] shrink-0 border-r border-white/5 overflow-y-auto custom-scrollbar p-3">
-                        <div className="grid grid-cols-2 gap-2">
+                    <div className="w-[360px] shrink-0 border-r border-white/5 overflow-y-auto custom-scrollbar p-3">
+                        <div className="grid grid-cols-3 gap-1.5">
                             {overview.map((sym) => {
                                 const isSelected = selectedSymbol === sym.symbol;
                                 const status = getStatus(sym, overview);
@@ -268,41 +268,32 @@ export default function EvolutionExplorer() {
                                     <button
                                         key={sym.symbol}
                                         onClick={() => setSelectedSymbol(sym.symbol)}
-                                        className={`text-left p-3 rounded-lg border transition-all cursor-pointer ${
+                                        className={`text-left p-2 rounded-lg border transition-all cursor-pointer ${
                                             isSelected
                                                 ? "border-indigo-500/50 bg-indigo-500/5"
                                                 : "border-white/5 bg-slate-900/50 hover:bg-white/[0.04] hover:border-white/10"
                                         }`}
                                     >
-                                        <div className="flex items-center justify-between mb-1.5">
-                                            <span className="text-xs font-bold text-slate-200">
+                                        <div className="flex items-center justify-between mb-1">
+                                            <span className="text-[11px] font-bold text-slate-200">
                                                 {sym.symbol}
                                             </span>
                                             <StatusIcon status={status} />
                                         </div>
-                                        <div className="text-[10px] text-slate-500 mb-2 truncate">
-                                            {SYMBOL_NAMES[sym.symbol] || sym.symbol}
-                                        </div>
                                         <div className="flex items-center justify-between">
-                                            <span className="text-[10px] text-slate-600">IC</span>
-                                            <span className={`text-[11px] font-mono font-bold ${
+                                            <span className="text-[9px] text-slate-600">IC</span>
+                                            <span className={`text-[10px] font-mono font-bold ${
                                                 (sym.best_fitness ?? 0) > 0 ? "text-emerald-400" : "text-slate-500"
                                             }`}>
                                                 {fmtNum(sym.best_fitness)}
                                             </span>
                                         </div>
                                         <div className="flex items-center justify-between mt-0.5">
-                                            <span className="text-[10px] text-slate-600">PnL</span>
-                                            <span className={`text-[11px] font-mono font-bold ${
-                                                (sym.best_pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"
+                                            <span className="text-[9px] text-slate-600">OOS</span>
+                                            <span className={`text-[10px] font-mono ${
+                                                (sym.best_oos_ic ?? 0) > 0 ? "text-cyan-400/70" : "text-slate-600"
                                             }`}>
-                                                {sym.best_pnl != null ? fmtPct(sym.best_pnl) : "—"}
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center justify-between mt-0.5">
-                                            <span className="text-[10px] text-slate-600">Gen</span>
-                                            <span className="text-[10px] font-mono text-slate-400">
-                                                #{sym.latest_gen}
+                                                {fmtNum(sym.best_oos_ic)}
                                             </span>
                                         </div>
                                     </button>
@@ -517,13 +508,22 @@ export default function EvolutionExplorer() {
 type EvolutionStatus = "improving" | "plateau" | "stagnant";
 
 function getStatus(sym: SymbolOverview, _all: SymbolOverview[]): EvolutionStatus {
-    if (sym.latest_gen < 50) return "improving";
-    if (sym.latest_gen < 200) return "plateau";
-    // Without historical fitness tracking, approximate from generation count
-    // A real implementation would compare fitness over recent N gens
-    if ((sym.best_fitness ?? 0) > 0.05) return "improving";
-    if ((sym.best_fitness ?? 0) > 0.01) return "plateau";
-    return "stagnant";
+    const ic = sym.best_fitness ?? 0;
+    const oos = sym.best_oos_ic ?? 0;
+
+    // Early generations — still exploring
+    if (sym.latest_gen < 30) return "improving";
+
+    // Strong OOS IC indicates genuine signal
+    if (oos > 0.03 && ic > 0.03) return "improving";
+
+    // Decent IS IC but weak OOS — overfitting plateau
+    if (ic > 0.05 && oos <= 0.03) return "plateau";
+
+    // Weak IC overall
+    if (ic <= 0.01) return "stagnant";
+
+    return "plateau";
 }
 
 function StatusIcon({ status }: { status: EvolutionStatus }) {

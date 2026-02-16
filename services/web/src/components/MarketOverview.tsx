@@ -292,79 +292,63 @@ export default function MarketOverview() {
 
     return (
         <div className="flex h-[calc(100vh-8rem)] gap-6 text-white">
-            {/* Sidebar */}
-            <div className="w-80 flex flex-col gap-4 bg-slate-950/30 rounded-2xl border border-white/5 p-4 overflow-hidden">
-                {/* Exchange Selector */}
-                <div className="space-y-2">
-                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Exchange</label>
-                    <div className="flex gap-1 bg-slate-900/50 p-1 rounded-lg border border-white/5">
-                        {["Polygon"].map(ex => (
-                            <button
-                                key={ex}
-                                onClick={() => setExchange(ex)}
-                                className={cn(
-                                    "flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 text-center",
-                                    exchange === ex ? "bg-indigo-500 text-white shadow" : "text-slate-400 hover:text-white hover:bg-white/5"
-                                )}
-                            >
-                                {ex}
-                            </button>
+            {/* Full Width Layout */}
+            <div className="flex-1 flex flex-col gap-4 overflow-hidden">
+                {/* Heatmap Grid: All 13 symbols at a glance */}
+                <div className="shrink-0 bg-slate-950/30 rounded-2xl border border-white/5 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Market Overview</h3>
+                        <span className="text-[10px] text-slate-600">
+                            Updated {lastUpdated.toLocaleTimeString()}
+                        </span>
+                    </div>
+                    <div className="space-y-3">
+                        {(groupedTokens || []).map(group => (
+                            <div key={group.label}>
+                                <div className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-semibold">{group.label}</div>
+                                <div className="flex gap-1.5 flex-wrap">
+                                    {group.tokens.map(token => {
+                                        const change = token.change_24h || 0;
+                                        const isUp = change >= 0;
+                                        const intensity = Math.min(Math.abs(change) / 3, 1);
+                                        const isActive = selectedSymbol === token.symbol;
+                                        return (
+                                            <button
+                                                key={token.symbol}
+                                                onClick={() => setSelectedSymbol(token.symbol)}
+                                                className={cn(
+                                                    "flex flex-col items-center px-3 py-2 rounded-lg border transition-all cursor-pointer min-w-[80px]",
+                                                    isActive
+                                                        ? "border-indigo-500/50 bg-indigo-500/10 shadow-lg shadow-indigo-500/5"
+                                                        : "border-white/5 hover:border-white/10 hover:bg-white/[0.03]",
+                                                )}
+                                                style={{
+                                                    backgroundColor: isActive
+                                                        ? undefined
+                                                        : isUp
+                                                            ? `rgba(34, 197, 94, ${intensity * 0.08})`
+                                                            : `rgba(239, 68, 68, ${intensity * 0.08})`,
+                                                }}
+                                            >
+                                                <span className="text-[11px] font-bold text-slate-200">{token.symbol}</span>
+                                                <span className="text-[10px] font-mono text-slate-400 mt-0.5">${formatPrice(token.price)}</span>
+                                                <span className={cn(
+                                                    "text-[10px] font-mono font-bold mt-0.5",
+                                                    isUp ? "text-emerald-400" : "text-red-400"
+                                                )}>
+                                                    {isUp ? "+" : ""}{change.toFixed(2)}%
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
                         ))}
                     </div>
                 </div>
 
-                <div className="w-full h-px bg-white/5 my-1"></div>
-
-                {/* Search */}
-                <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    <input
-                        type="text"
-                        placeholder="Search tokens..."
-                        className="w-full bg-slate-900/50 border border-white/10 rounded-lg pl-9 pr-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50 transition-colors"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                </div>
-
-                {/* Token List */}
-                <div className="flex-1 overflow-y-auto space-y-1 pr-1 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-                    {groupedTokens ? (
-                        groupedTokens.map(group => (
-                            <div key={group.label}>
-                                <div className="px-2 pt-3 pb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
-                                    {group.label}
-                                </div>
-                                {group.tokens.map(token => (
-                                    <TokenButton
-                                        key={token.symbol}
-                                        token={token}
-                                        isSelected={selectedSymbol === token.symbol}
-                                        onSelect={setSelectedSymbol}
-                                        formatPrice={formatPrice}
-                                    />
-                                ))}
-                            </div>
-                        ))
-                    ) : (
-                        filteredTokens.map(token => (
-                            <TokenButton
-                                key={token.symbol}
-                                token={token}
-                                isSelected={selectedSymbol === token.symbol}
-                                onSelect={setSelectedSymbol}
-                                formatPrice={formatPrice}
-                            />
-                        ))
-                    )}
-                    {filteredTokens.length === 0 && (
-                        <div className="text-center py-8 text-slate-500 text-sm">No tokens found.</div>
-                    )}
-                </div>
-            </div>
-
-            {/* Main Chart Area */}
-            <div className="flex-1 flex flex-col gap-6 bg-slate-950/30 rounded-2xl border border-white/5 p-6 overflow-hidden">
+                {/* Chart Area */}
+                <div className="flex-1 flex flex-col bg-slate-950/30 rounded-2xl border border-white/5 p-6 overflow-hidden min-h-0">
                 {selectedToken ? (
                     <>
                         {/* Header */}
@@ -438,6 +422,7 @@ export default function MarketOverview() {
                         <p>Select a token to view market data</p>
                     </div>
                 )}
+                </div>
             </div>
         </div>
     );
