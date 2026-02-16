@@ -302,7 +302,11 @@ impl Backtester {
             }
 
             let ic = spearman_rank_corr(s, r);
-            if ic.is_nan() { 0.0 } else { ic }
+            if ic.is_nan() {
+                0.0
+            } else {
+                ic
+            }
         } else {
             0.0
         }

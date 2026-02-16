@@ -106,8 +106,7 @@ async fn main() -> anyhow::Result<()> {
             let sym = symbol.clone();
             let ex_name = ec.exchange.clone();
             let handle = tokio::spawn(async move {
-                if let Err(e) = run_symbol_evolution(pool, &redis_url, config, sym.clone()).await
-                {
+                if let Err(e) = run_symbol_evolution(pool, &redis_url, config, sym.clone()).await {
                     error!("[{}:{}] Evolution loop failed: {}", ex_name, sym, e);
                 }
             });

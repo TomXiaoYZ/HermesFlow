@@ -51,7 +51,10 @@ pub async fn start_api_server(
         .route("/:exchange/overview", get(get_overview))
         .route("/:exchange/generations", get(list_generations))
         .route("/:exchange/generations/:gen", get(get_generation))
-        .route("/:exchange/:symbol/generations", get(list_symbol_generations))
+        .route(
+            "/:exchange/:symbol/generations",
+            get(list_symbol_generations),
+        )
         .route(
             "/:exchange/:symbol/generations/:gen",
             get(get_symbol_generation),
@@ -253,10 +256,7 @@ async fn get_generation(
 }
 
 /// List symbols being evolved for an exchange.
-async fn list_symbols(
-    State(state): State<ApiState>,
-    Path(exchange): Path<String>,
-) -> Json<Value> {
+async fn list_symbols(State(state): State<ApiState>, Path(exchange): Path<String>) -> Json<Value> {
     let key = exchange.to_lowercase();
     let exchange_name = match state.exchanges.get(&key) {
         Some(cfg) => cfg.exchange.clone(),
@@ -283,10 +283,7 @@ async fn list_symbols(
 }
 
 /// Overview of all symbols' evolution status for an exchange.
-async fn get_overview(
-    State(state): State<ApiState>,
-    Path(exchange): Path<String>,
-) -> Json<Value> {
+async fn get_overview(State(state): State<ApiState>, Path(exchange): Path<String>) -> Json<Value> {
     let key = exchange.to_lowercase();
     let exchange_name = match state.exchanges.get(&key) {
         Some(cfg) => cfg.exchange.clone(),
