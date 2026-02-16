@@ -34,7 +34,6 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
         const lastActivity = localStorage.getItem('lastActivity');
         const now = Date.now();
         if (lastActivity && (now - parseInt(lastActivity, 10) > INACTIVITY_LIMIT)) {
-            console.log("Session expired due to inactivity");
             logout();
             return;
         }

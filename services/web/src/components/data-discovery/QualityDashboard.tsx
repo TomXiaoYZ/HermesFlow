@@ -31,8 +31,8 @@ export default function QualityDashboard() {
                 const data = await res.json();
                 setMetrics(data);
             }
-        } catch (e) {
-            console.error(e);
+        } catch {
+            /* quality metrics fetch failed */
         } finally {
             setLoading(false);
         }
@@ -45,11 +45,9 @@ export default function QualityDashboard() {
             if (res.ok) {
                 // Short refetch buffer
                 setTimeout(fetchMetrics, 2000);
-            } else {
-                console.error("Failed to trigger task");
             }
-        } catch (e) {
-            console.error(e);
+        } catch {
+            /* task trigger failed */
         } finally {
             setTriggering(null);
         }
@@ -153,8 +151,11 @@ function AggregationCard({ res, metric, trigger, isTriggering }: { res: string, 
     )
 }
 
-function QualityCard({ title, value, status, icon, subtext, action, actionLabel, hideValue }: any) {
-    const statusColors: any = {
+function QualityCard({ title, value, status, icon, subtext, action, actionLabel, hideValue }: {
+    title: string; value: string; status: string; icon: React.ReactNode;
+    subtext: string; action?: () => void; actionLabel?: string; hideValue?: boolean;
+}) {
+    const statusColors: Record<string, string> = {
         healthy: "border-emerald-500/20 bg-emerald-500/5 text-emerald-400",
         degraded: "border-yellow-500/20 bg-yellow-500/5 text-yellow-400",
         stale: "border-orange-500/20 bg-orange-500/5 text-orange-400",

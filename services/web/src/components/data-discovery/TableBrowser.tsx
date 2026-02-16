@@ -18,7 +18,7 @@ export default function TableBrowser({ onSelectTable }: { onSelectTable: (tableN
             .then(data => {
                 if (data.tables) setTables(data.tables);
             })
-            .catch(err => console.error(err))
+            .catch(() => { /* fetch failed */ })
             .finally(() => setLoading(false));
     }, []);
 

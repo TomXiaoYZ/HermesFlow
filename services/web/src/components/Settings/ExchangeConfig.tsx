@@ -33,8 +33,8 @@ export default function ExchangeConfig() {
         const data = await res.json();
         setConfigs(data);
       }
-    } catch (e) {
-      console.error("Failed to fetch configs", e);
+    } catch {
+      /* config fetch failed */
     } finally {
       setLoading(false);
     }
@@ -47,8 +47,8 @@ export default function ExchangeConfig() {
         const data = await res.json();
         setWatchlist(data);
       }
-    } catch (e) {
-      console.error("Failed to fetch watchlist", e);
+    } catch {
+      /* watchlist fetch failed */
     }
   };
 
@@ -70,8 +70,8 @@ export default function ExchangeConfig() {
       } else {
         alert("Failed to update configuration");
       }
-    } catch (e) {
-      console.error("Failed to update config", e);
+    } catch {
+      /* config update failed */
     }
   };
 
@@ -93,8 +93,8 @@ export default function ExchangeConfig() {
         setNewName("");
         fetchWatchlist();
       }
-    } catch (e) {
-      console.error("Failed to add to watchlist", e);
+    } catch {
+      /* watchlist add failed */
     }
   };
 
@@ -110,8 +110,8 @@ export default function ExchangeConfig() {
       if (res.ok) {
         fetchWatchlist();
       }
-    } catch (e) {
-      console.error("Failed to remove from watchlist", e);
+    } catch {
+      /* watchlist remove failed */
     }
   };
 
