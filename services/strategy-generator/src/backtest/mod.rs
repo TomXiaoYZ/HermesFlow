@@ -242,7 +242,7 @@ impl Backtester {
     ///   1. sigmoid(raw_signal) → [0, 1]
     ///   2. position = 1.0 if sigmoid > threshold, else 0.0 (long-only)
     ///   3. net_pnl = position * open-to-open return - turnover * fee
-    ///   4. fitness = cumulative_pnl - drawdown_penalty
+    ///   4. fitness = cumulative_pnl - drawdown_penalty - complexity_penalty
     ///   5. Require minimum trading activity
     pub fn evaluate_symbol(&self, genome: &mut Genome, symbol: &str) {
         let data = match self.cache.get(symbol) {
@@ -264,7 +264,18 @@ impl Backtester {
             }
 
             let split_idx = (len as f64 * 0.7).max(20.0) as usize;
-            genome.fitness = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx);
+            let pnl = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx);
+
+            // Parsimony pressure: penalize formulas longer than 10 tokens.
+            // Shorter formulas are less likely to overfit.
+            let token_len = genome.tokens.len();
+            let complexity_penalty = if token_len > 10 {
+                (token_len - 10) as f64 * 0.005
+            } else {
+                0.0
+            };
+
+            genome.fitness = pnl - complexity_penalty;
         } else {
             genome.fitness = -1000.0;
         }
@@ -395,7 +406,11 @@ impl Backtester {
         }
 
         let avg_score = total_score / valid_count;
-        genome.fitness = if avg_score.is_nan() { -999.0 } else { avg_score };
+        genome.fitness = if avg_score.is_nan() {
+            -999.0
+        } else {
+            avg_score
+        };
     }
 
     /// Evaluate a genome across all cached symbols (PnL-based, out-of-sample).
@@ -428,7 +443,11 @@ impl Backtester {
 
         if count > 0.0 {
             let avg = total_score / count;
-            if avg.is_nan() { 0.0 } else { avg }
+            if avg.is_nan() {
+                0.0
+            } else {
+                avg
+            }
         } else {
             0.0
         }

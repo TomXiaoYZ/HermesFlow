@@ -303,7 +303,7 @@ async fn run_symbol_evolution(
         exchange.clone(),
         resolution.clone(),
     );
-    let pop_size = if exchange == "Polygon" { 200 } else { 100 };
+    let pop_size = if exchange == "Polygon" { 300 } else { 150 };
     let mut ga = GeneticAlgorithm::new(pop_size, feat_offset);
 
     // Load data for this single symbol
@@ -354,11 +354,34 @@ async fn run_symbol_evolution(
         }
         ga.evolve();
 
+        // Log stagnation events
+        if ga.stagnation() == 50 {
+            warn!(
+                "[{}:{}] Gen {} — stagnation detected (50 gens without improvement), increasing exploration",
+                exchange, symbol, gen
+            );
+        }
+        if ga.stagnation() > 0 && ga.stagnation().is_multiple_of(100) {
+            warn!(
+                "[{}:{}] Gen {} — population restart triggered after {} stagnant gens",
+                exchange,
+                symbol,
+                gen,
+                ga.stagnation()
+            );
+        }
+
         if let Some(best) = &ga.best_genome {
             let oos_pnl = backtester.evaluate_symbol_oos(best, &symbol);
             info!(
-                "[{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4}",
-                exchange, symbol, gen, best.fitness, oos_pnl
+                "[{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4} tokens: {} stag: {}",
+                exchange,
+                symbol,
+                gen,
+                best.fitness,
+                oos_pnl,
+                best.tokens.len(),
+                ga.stagnation()
             );
 
             let payload = serde_json::json!({

@@ -73,7 +73,7 @@ fn generate_random_rpn(max_depth: usize, feat_offset: usize) -> Vec<usize> {
     let mut stack_depth = 1;
 
     let mut steps = 0;
-    let target_len = rng.gen_range(3..15);
+    let target_len = rng.gen_range(3..12);
 
     while steps < target_len || stack_depth > 1 {
         let mut choices = Vec::new();
@@ -144,6 +144,8 @@ pub struct GeneticAlgorithm {
     pub generation: usize,
     pub best_genome: Option<Genome>,
     pub feat_offset: usize,
+    stagnation_count: usize,
+    prev_best_fitness: f64,
 }
 
 impl GeneticAlgorithm {
@@ -158,6 +160,25 @@ impl GeneticAlgorithm {
             generation: 0,
             best_genome: None,
             feat_offset,
+            stagnation_count: 0,
+            prev_best_fitness: f64::NEG_INFINITY,
+        }
+    }
+
+    /// Current number of generations without fitness improvement.
+    pub fn stagnation(&self) -> usize {
+        self.stagnation_count
+    }
+
+    /// Remove duplicate genomes by replacing them with fresh random ones.
+    fn deduplicate_population(&mut self) {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for genome in self.population.iter_mut() {
+            if !seen.insert(genome.tokens.clone()) {
+                genome.tokens = generate_random_rpn(5, self.feat_offset);
+                genome.fitness = 0.0;
+            }
         }
     }
 
@@ -172,7 +193,21 @@ impl GeneticAlgorithm {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Update Best
+        // Track stagnation: did the best fitness improve?
+        let current_best_fitness = self
+            .population
+            .first()
+            .map(|g| g.fitness)
+            .unwrap_or(f64::NEG_INFINITY);
+
+        if current_best_fitness > self.prev_best_fitness + 1e-6 {
+            self.stagnation_count = 0;
+        } else {
+            self.stagnation_count += 1;
+        }
+        self.prev_best_fitness = current_best_fitness;
+
+        // Update all-time best
         if let Some(best) = self.population.first() {
             if let Some(current_best) = &self.best_genome {
                 if best.fitness > current_best.fitness {
@@ -182,6 +217,30 @@ impl GeneticAlgorithm {
                 self.best_genome = Some(best.clone());
             }
         }
+
+        // Stagnation restart: nuke 90% of population every 100 stagnant gens
+        if self.stagnation_count > 0 && self.stagnation_count.is_multiple_of(100) {
+            let keep = (pop_size as f64 * 0.1).max(2.0) as usize;
+            let mut new_pop: Vec<Genome> = self.population[..keep].to_vec();
+            while new_pop.len() < pop_size {
+                new_pop.push(Genome::new_random(self.feat_offset));
+            }
+            self.population = new_pop;
+            self.generation += 1;
+            return;
+        }
+
+        // Remove duplicate genomes to maintain diversity
+        self.deduplicate_population();
+
+        // Adaptive rates based on stagnation level
+        let (crossover_rate, mutation_rate) = if self.stagnation_count >= 50 {
+            (0.20, 0.30) // 50% immigration — heavy exploration
+        } else if self.stagnation_count >= 20 {
+            (0.25, 0.35) // 40% immigration — moderate exploration
+        } else {
+            (0.35, 0.40) // 25% immigration — normal
+        };
 
         // Elitism: Keep top 5% (min 2)
         let elitism_count = (pop_size as f64 * 0.05).max(2.0) as usize;
@@ -197,18 +256,15 @@ impl GeneticAlgorithm {
             let parent2 = self.tournament_select();
 
             let r: f64 = rng.gen();
-            if r < 0.35 {
-                // 35%: Crossover + mutate
+            if r < crossover_rate {
                 let mut child = Self::crossover(parent1, parent2, self.feat_offset);
-                Self::mutate(&mut child, self.feat_offset);
+                Self::mutate(&mut child, self.feat_offset, self.stagnation_count);
                 new_pop.push(child);
-            } else if r < 0.75 {
-                // 40%: Clone parent + mutate
+            } else if r < crossover_rate + mutation_rate {
                 let mut child = parent1.clone();
-                Self::mutate(&mut child, self.feat_offset);
+                Self::mutate(&mut child, self.feat_offset, self.stagnation_count);
                 new_pop.push(child);
             } else {
-                // 25%: Fresh random genome (immigration)
                 new_pop.push(Genome::new_random(self.feat_offset));
             }
         }
@@ -219,7 +275,8 @@ impl GeneticAlgorithm {
 
     fn tournament_select(&self) -> &Genome {
         let mut rng = rand::thread_rng();
-        let k = 3;
+        // Softer selection when stagnating to maintain diversity
+        let k = if self.stagnation_count >= 50 { 2 } else { 3 };
         let mut best: Option<&Genome> = None;
 
         for _ in 0..k {
@@ -253,9 +310,9 @@ impl GeneticAlgorithm {
         let mut tokens = parent1.tokens[..cut1].to_vec();
         tokens.extend_from_slice(&parent2.tokens[cut2..]);
 
-        // Cap length to avoid bloat
-        if tokens.len() > 30 {
-            tokens.truncate(30);
+        // Cap length to avoid bloat — shorter formulas generalize better
+        if tokens.len() > 20 {
+            tokens.truncate(20);
         }
 
         Genome {
@@ -264,20 +321,23 @@ impl GeneticAlgorithm {
         }
     }
 
-    fn mutate(genome: &mut Genome, feat_offset: usize) {
+    fn mutate(genome: &mut Genome, feat_offset: usize, stagnation: usize) {
         let mut rng = rand::thread_rng();
         let (ops_1, ops_2, ops_3) = build_ops(feat_offset);
 
-        // 1. Point mutation (40% chance): change any token to same-arity token
-        if rng.gen_bool(0.4) && !genome.tokens.is_empty() {
+        // Adaptive mutation strength: higher when stagnating
+        let point_rate = if stagnation >= 50 { 0.6 } else { 0.4 };
+        let op_rate = if stagnation >= 50 { 0.3 } else { 0.2 };
+        let subtree_rate = if stagnation >= 50 { 0.15 } else { 0.10 };
+
+        // 1. Point mutation: change any token to same-arity token
+        if rng.gen_bool(point_rate) && !genome.tokens.is_empty() {
             let idx = rng.gen_range(0..genome.tokens.len());
             let old = genome.tokens[idx];
 
             if old < feat_offset {
-                // Feature → another feature
                 genome.tokens[idx] = rng.gen_range(0..feat_offset);
             } else {
-                // Operator → another operator of same arity
                 let arity = token_arity(old, feat_offset);
                 let pool = match arity {
                     1 => &ops_1,
@@ -289,8 +349,8 @@ impl GeneticAlgorithm {
             }
         }
 
-        // 2. Operator mutation (20% chance): swap a random operator for same-arity
-        if rng.gen_bool(0.2) && !genome.tokens.is_empty() {
+        // 2. Operator mutation: swap a random operator for same-arity
+        if rng.gen_bool(op_rate) && !genome.tokens.is_empty() {
             let op_indices: Vec<usize> = genome
                 .tokens
                 .iter()
@@ -312,16 +372,17 @@ impl GeneticAlgorithm {
             }
         }
 
-        // 3. Growth mutation (10% chance): append Feature + BinaryOp (stack-neutral)
-        if rng.gen_bool(0.1) && genome.tokens.len() < 30 {
+        // 3. Growth mutation (8%): append Feature + BinaryOp (stack-neutral)
+        if rng.gen_bool(0.08) && genome.tokens.len() < 20 {
             let feat = rng.gen_range(0..feat_offset);
             let op = ops_2[rng.gen_range(0..ops_2.len())];
             genome.tokens.push(feat);
             genome.tokens.push(op);
         }
 
-        // 4. Shrink mutation (10% chance): remove a unary op (stack-neutral)
-        if rng.gen_bool(0.1) && genome.tokens.len() > 3 {
+        // 4. Shrink mutation (20%): remove a unary op (stack-neutral)
+        //    Doubled from 10% to favor shorter, more generalizable formulas.
+        if rng.gen_bool(0.20) && genome.tokens.len() > 3 {
             let unary_indices: Vec<usize> = genome
                 .tokens
                 .iter()
@@ -335,8 +396,8 @@ impl GeneticAlgorithm {
             }
         }
 
-        // 5. Subtree replacement (10% chance): replace genome with new random subtree
-        if rng.gen_bool(0.1) {
+        // 5. Subtree replacement: replace genome with new random subtree
+        if rng.gen_bool(subtree_rate) {
             let new_subtree = generate_random_rpn(5, feat_offset);
             genome.tokens = new_subtree;
         }
