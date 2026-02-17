@@ -138,6 +138,99 @@ impl MemeIndicators {
         (&dollar_vol / (&adv + 1e-9)).mapv(|v: f64| v.clamp(0.0, 10.0))
     }
 
+    /// Volatility Regime: z-score of short-term realized vol vs long-term vol average.
+    /// >0 = high volatility regime, <0 = low volatility regime.
+    pub fn volatility_regime(
+        close: &Array2<f64>,
+        short_window: usize,
+        long_window: usize,
+    ) -> Array2<f64> {
+        let prev = ts_delay(close, 1);
+        let ret = (close / (&prev + 1e-9)).mapv(f64::ln);
+        let ret_sq = ret.mapv(|v| v.powi(2));
+
+        // Short-term realized vol
+        let mut short_sum = Array2::zeros(close.dim());
+        for i in 0..short_window {
+            short_sum = short_sum + ts_delay(&ret_sq, i);
+        }
+        let short_vol = (short_sum / (short_window as f64) + 1e-9).mapv(f64::sqrt);
+
+        // Long-term rolling mean of short vol
+        let mut long_sum: Array2<f64> = Array2::zeros(close.dim());
+        for i in 0..long_window {
+            long_sum = long_sum + ts_delay(&short_vol, i);
+        }
+        let long_mean = &long_sum / (long_window as f64);
+
+        // Long-term rolling std of short vol
+        let diff = &short_vol - &long_mean;
+        let diff_sq = diff.mapv(|v| v.powi(2));
+        let mut long_var_sum = Array2::zeros(close.dim());
+        for i in 0..long_window {
+            long_var_sum = long_var_sum + ts_delay(&diff_sq, i);
+        }
+        let long_std = (long_var_sum / (long_window as f64) + 1e-9).mapv(f64::sqrt);
+
+        // Z-score: (short_vol - long_mean) / long_std
+        let zscore = (&short_vol - &long_mean) / &long_std;
+        zscore.mapv(|v| v.clamp(-3.0, 3.0))
+    }
+
+    /// Trend Strength: normalized linear regression slope of close over window.
+    /// Positive = uptrend, negative = downtrend, magnitude = strength.
+    pub fn trend_strength(close: &Array2<f64>, window: usize) -> Array2<f64> {
+        // Linear regression slope: sum((x - x_mean)(y - y_mean)) / sum((x - x_mean)^2)
+        // x = 0..window-1, x_mean = (window-1)/2
+        // Precompute x terms
+        let x_mean = (window as f64 - 1.0) / 2.0;
+        let ss_x: f64 = (0..window).map(|i| (i as f64 - x_mean).powi(2)).sum();
+
+        let mut result = Array2::zeros(close.dim());
+        let (_, time) = close.dim();
+
+        for row in 0..close.dim().0 {
+            for t in 0..time {
+                if t + 1 < window {
+                    result[[row, t]] = 0.0;
+                    continue;
+                }
+                let mut ss_xy = 0.0;
+                let mut y_sum = 0.0;
+                for k in 0..window {
+                    y_sum += close[[row, t + 1 - window + k]];
+                }
+                let y_mean = y_sum / window as f64;
+                for k in 0..window {
+                    let x_val = k as f64 - x_mean;
+                    let y_val = close[[row, t + 1 - window + k]] - y_mean;
+                    ss_xy += x_val * y_val;
+                }
+                let slope = if ss_x > 1e-12 { ss_xy / ss_x } else { 0.0 };
+                // Normalize by price level
+                let price = close[[row, t]].abs().max(1e-9);
+                result[[row, t]] = (slope / price * window as f64).clamp(-5.0, 5.0);
+            }
+        }
+        result
+    }
+
+    /// Momentum Regime: fraction of positive return bars in window, mapped to [-1, 1].
+    /// >0 = trending up, <0 = trending down, ~0 = choppy.
+    pub fn momentum_regime(close: &Array2<f64>, window: usize) -> Array2<f64> {
+        let prev = ts_delay(close, 1);
+        let ret = (close / (&prev + 1e-9)).mapv(f64::ln);
+        let positive = ret.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+
+        let mut sum = Array2::zeros(close.dim());
+        for i in 0..window {
+            sum = sum + ts_delay(&positive, i);
+        }
+        let frac = sum / (window as f64);
+        // Map [0, 1] to [-1, 1]
+        frac * 2.0 - 1.0
+    }
+
     /// Close Position: (close - low) / (high - low)
     /// Where the close sits within the day's range. 1.0 = closed at high, 0.0 = closed at low.
     pub fn close_position(
@@ -239,6 +332,70 @@ mod tests {
         let res = MemeIndicators::volume_ratio(&vol, 2);
         let expected = arr2(&[[2.0, 1.3333, 1.2]]);
         assert_abs_diff_eq!(res, expected, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn test_volatility_regime() {
+        // Create a price series with known volatility pattern:
+        // First half: low vol (small moves), second half: high vol (large moves)
+        let mut prices = vec![100.0_f64; 80];
+        for i in 1..40 {
+            prices[i] = prices[i - 1] * (1.0 + if i % 2 == 0 { 0.001 } else { -0.001 });
+        }
+        for i in 40..80 {
+            prices[i] = prices[i - 1] * (1.0 + if i % 2 == 0 { 0.02 } else { -0.02 });
+        }
+        let n = prices.len();
+        let close = Array2::from_shape_vec((1, n), prices).unwrap();
+        let result = MemeIndicators::volatility_regime(&close, 5, 20);
+        // The high-vol region (towards end) should have positive z-scores
+        assert!(result[[0, 79]] > 0.0, "High vol region should be positive");
+    }
+
+    #[test]
+    fn test_trend_strength() {
+        // Strong uptrend: 100, 101, 102, ..., 119
+        let prices: Vec<f64> = (0..20).map(|i| 100.0 + i as f64).collect();
+        let n = prices.len();
+        let close = Array2::from_shape_vec((1, n), prices).unwrap();
+        let result = MemeIndicators::trend_strength(&close, 10);
+        assert!(
+            result[[0, 19]] > 0.0,
+            "Uptrend should have positive trend_strength"
+        );
+
+        // Strong downtrend: 119, 118, ..., 100
+        let prices_down: Vec<f64> = (0..20).map(|i| 119.0 - i as f64).collect();
+        let close_down = Array2::from_shape_vec((1, n), prices_down).unwrap();
+        let result_down = MemeIndicators::trend_strength(&close_down, 10);
+        assert!(
+            result_down[[0, 19]] < 0.0,
+            "Downtrend should have negative trend_strength"
+        );
+    }
+
+    #[test]
+    fn test_momentum_regime() {
+        // All up: 100, 101, 102, ..., 109
+        let prices: Vec<f64> = (0..10).map(|i| 100.0 + i as f64).collect();
+        let n = prices.len();
+        let close = Array2::from_shape_vec((1, n), prices).unwrap();
+        let result = MemeIndicators::momentum_regime(&close, 5);
+        assert!(
+            result[[0, 9]] > 0.5,
+            "All-up series should have positive regime"
+        );
+
+        // Choppy: alternating up/down
+        let choppy: Vec<f64> = (0..10)
+            .map(|i| if i % 2 == 0 { 100.0 } else { 99.0 })
+            .collect();
+        let close_choppy = Array2::from_shape_vec((1, n), choppy).unwrap();
+        let result_choppy = MemeIndicators::momentum_regime(&close_choppy, 5);
+        assert!(
+            result_choppy[[0, 9]].abs() < 0.8,
+            "Choppy series should be near zero"
+        );
     }
 
     #[test]

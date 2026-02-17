@@ -111,6 +111,14 @@ impl Backtester {
         }
     }
 
+    /// Return the number of time bars for a cached symbol (0 if not loaded).
+    pub fn data_length(&self, symbol: &str) -> usize {
+        self.cache
+            .get(symbol)
+            .map(|d| d.returns.shape()[1])
+            .unwrap_or(0)
+    }
+
     pub async fn load_data(&mut self, symbols: &[String], days: i64) -> anyhow::Result<()> {
         let mut loaded_count = 0;
 
@@ -377,10 +385,11 @@ impl Backtester {
             0.0
         };
 
-        // Parsimony: penalize formulas longer than 8 tokens (stricter than single-window)
+        // Parsimony: penalize formulas longer than 8 tokens, scaled inversely with data length
         let token_len = genome.tokens.len();
+        let penalty_scale = (1000.0 / (len as f64).max(1000.0)).clamp(0.2, 1.0);
         let complexity_penalty = if token_len > 8 {
-            (token_len - 8) as f64 * 0.02
+            (token_len - 8) as f64 * 0.02 * penalty_scale
         } else {
             0.0
         };
@@ -433,7 +442,7 @@ impl Backtester {
             return -10.0;
         }
 
-        let threshold = 0.65;
+        let threshold = adaptive_threshold(sig, start, end);
         let fee = self.base_fee();
         let mut prev_pos = 0.0_f64;
         let mut cum_pnl = 0.0_f64;
@@ -471,8 +480,27 @@ impl Backtester {
             prev_pos = pos;
         }
 
-        // Minimum activity: proportional to window size (min 3), active 5% of bars
-        let min_trades = 5_u32.max((n as u32) / 25);
+        // Minimum activity: resolution-aware, targeting ~1 trade per 10 trading days
+        let bars_per_day = match self.resolution.as_str() {
+            "1d" => 1.0,
+            "1h" => {
+                if self.exchange == "Polygon" {
+                    6.5
+                } else {
+                    24.0
+                }
+            }
+            "15m" => {
+                if self.exchange == "Polygon" {
+                    26.0
+                } else {
+                    96.0
+                }
+            }
+            _ => 24.0,
+        };
+        let trading_days = n as f64 / bars_per_day;
+        let min_trades = 3_u32.max((trading_days / 10.0) as u32);
         if trade_count < min_trades || (active_bars as f64) < (n as f64 * 0.05) {
             return -10.0;
         }
@@ -573,6 +601,18 @@ fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 
+/// Compute an adaptive sigmoid threshold as the 70th percentile of sigmoid(signal),
+/// clamped to [0.52, 0.80]. Goes long on top ~30% of signals.
+fn adaptive_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
+    let mut vals: Vec<f64> = (start..end).map(|i| sigmoid(sig[i])).collect();
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if vals.is_empty() {
+        return 0.65;
+    }
+    let idx = ((vals.len() as f64) * 0.70) as usize;
+    vals[idx.min(vals.len() - 1)].clamp(0.52, 0.80)
+}
+
 #[allow(dead_code)]
 fn spearman_rank_corr(x: &[f64], y: &[f64]) -> f64 {
     let n = x.len();
@@ -649,7 +689,7 @@ impl Backtester {
                 .min(ret_slice.len())
                 .min(features.shape()[2]);
 
-            let threshold = 0.65_f64;
+            let threshold = adaptive_threshold(sig_slice, 0, len);
             let fee = self.base_fee();
             let mut equity_curve = Vec::with_capacity(len);
             let mut current_equity = 1.0_f64;

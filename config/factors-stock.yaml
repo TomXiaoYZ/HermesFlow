@@ -53,3 +53,18 @@ active_factors:
     name: "intraday_range"
     description: "(high - low) / close"
     normalization: "robust"
+
+  - id: 10
+    name: "vol_regime"
+    description: "Volatility regime z-score (high vol vs low vol)"
+    normalization: "robust"
+
+  - id: 11
+    name: "trend_strength"
+    description: "Linear regression slope (trend direction/strength)"
+    normalization: "robust"
+
+  - id: 12
+    name: "momentum_regime"
+    description: "Momentum regime (trending vs choppy)"
+    normalization: "none"

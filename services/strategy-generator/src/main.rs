@@ -348,9 +348,13 @@ async fn run_symbol_evolution(
     loop {
         let gen = ga.generation;
 
+        // Adaptive K: target ~300 bars per fold, K in [3, 8]
+        let data_len = backtester.data_length(&symbol);
+        let k = ((data_len as f64 / 300.0).round() as usize).clamp(3, 8);
+
         // Evaluate each genome via K-fold temporal cross-validation
         for genome in ga.population.iter_mut() {
-            backtester.evaluate_symbol_kfold(genome, &symbol, 5);
+            backtester.evaluate_symbol_kfold(genome, &symbol, k);
         }
         ga.evolve();
 
@@ -373,10 +377,10 @@ async fn run_symbol_evolution(
 
         if let Some(best) = ga.best_genome.clone() {
             let oos_pnl = backtester.evaluate_symbol_oos(&best, &symbol);
-            let fold_pnls = backtester.evaluate_symbol_fold_detail(&best, &symbol, 5);
+            let fold_pnls = backtester.evaluate_symbol_fold_detail(&best, &symbol, k);
             let stag = ga.stagnation();
             info!(
-                "[{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4} tokens: {} stag: {} folds: {:?}",
+                "[{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4} tokens: {} stag: {} K: {} folds: {:?}",
                 exchange,
                 symbol,
                 gen,
@@ -384,14 +388,17 @@ async fn run_symbol_evolution(
                 oos_pnl,
                 best.tokens.len(),
                 stag,
+                k,
                 fold_pnls
             );
 
-            // IS-OOS gap detection: if strong IS but negative OOS after burn-in, force restart
-            if best.fitness > 0.3 && oos_pnl < -0.1 && stag > 30 {
+            // IS-OOS gap detection: relative threshold based on actual fitness values
+            let is_oos_gap = best.fitness - oos_pnl;
+            let gap_threshold = best.fitness.abs().max(0.1) * 0.5;
+            if best.fitness > 0.05 && is_oos_gap > gap_threshold && oos_pnl < 0.0 && stag > 20 {
                 warn!(
-                    "[{}:{}] Gen {} — IS-OOS divergence detected (IS={:.3}, OOS={:.3}, stag={}), forcing restart",
-                    exchange, symbol, gen, best.fitness, oos_pnl, stag
+                    "[{}:{}] Gen {} — IS-OOS divergence detected (IS={:.3}, OOS={:.3}, gap={:.3}, thresh={:.3}, stag={}), forcing restart",
+                    exchange, symbol, gen, best.fitness, oos_pnl, is_oos_gap, gap_threshold, stag
                 );
                 ga.force_restart();
             }

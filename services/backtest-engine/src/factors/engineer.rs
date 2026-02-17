@@ -69,6 +69,11 @@ impl FeatureEngineer {
             "close_position" => MemeIndicators::close_position(d.close, d.high, d.low),
             "intraday_range" => MemeIndicators::intraday_range(d.high, d.low, d.close),
 
+            // Regime factors (for GATE-based conditional strategies)
+            "vol_regime" => MemeIndicators::volatility_regime(d.close, 20, 60),
+            "trend_strength" => MemeIndicators::trend_strength(d.close, 20),
+            "momentum_regime" => MemeIndicators::momentum_regime(d.close, 20),
+
             // Legacy crypto factors (kept for backward compat with old configs)
             "liquidity_health" => MemeIndicators::liquidity_health(d.liquidity, d.fdv),
             "buy_sell_pressure" => {
