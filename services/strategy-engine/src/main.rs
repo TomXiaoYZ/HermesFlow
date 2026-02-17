@@ -115,9 +115,6 @@ async fn main() -> anyhow::Result<()> {
     let strategies: Arc<RwLock<HashMap<(String, String), SymbolStrategy>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    // Fallback formula for symbols without an evolved strategy (long_only only)
-    let fallback_formula: Vec<usize> = vec![0, 19]; // Volatility Breakout
-
     // Rolling sigmoid buffer for adaptive thresholds
     let mut signal_buffer = SignalBuffer::new();
 
@@ -290,14 +287,10 @@ async fn main() -> anyhow::Result<()> {
                                     ));
                                 }
                                 None => {
-                                    if *mode_str == "long_only" {
-                                        collected.push((
-                                            mode_str.to_string(),
-                                            fallback_formula.clone(),
-                                            "Fallback".to_string(),
-                                        ));
-                                    }
-                                    // No fallback for long_short — skip
+                                    // No evolved strategy for this symbol/mode — skip.
+                                    // Only trade symbols with an evolved strategy from
+                                    // the strategy-generator to avoid blind Fallback
+                                    // signals on the entire Polygon universe (10k+ symbols).
                                 }
                             }
                         }
@@ -330,26 +323,14 @@ async fn main() -> anyhow::Result<()> {
 
                         if let Some(result) = vm.execute(current_formula, &features) {
                             if let Some(last_val) = result.last() {
-                                let is_fallback = strategy_name == "Fallback";
-                                let signal_score = if is_fallback {
-                                    *last_val
-                                } else {
-                                    sigmoid(*last_val)
-                                };
+                                let signal_score = sigmoid(*last_val);
 
-                                // Push to adaptive buffer (only for evolved strategies)
-                                if !is_fallback {
-                                    signal_buffer.push(&msg.symbol, mode_str, signal_score);
-                                }
+                                signal_buffer.push(&msg.symbol, mode_str, signal_score);
 
                                 // --- LONG entry ---
-                                let upper = if is_fallback {
-                                    0.001
-                                } else {
-                                    signal_buffer
-                                        .upper_threshold(&msg.symbol, mode_str)
-                                        .unwrap_or(signal_threshold)
-                                };
+                                let upper = signal_buffer
+                                    .upper_threshold(&msg.symbol, mode_str)
+                                    .unwrap_or(signal_threshold);
 
                                 if signal_score > upper {
                                     try_entry(
@@ -370,8 +351,8 @@ async fn main() -> anyhow::Result<()> {
                                     .await;
                                 }
 
-                                // --- SHORT entry (long_short mode only, non-fallback) ---
-                                if mode_str == "long_short" && !is_fallback {
+                                // --- SHORT entry (long_short mode only) ---
+                                if mode_str == "long_short" {
                                     let lower = signal_buffer
                                         .lower_threshold(&msg.symbol, mode_str)
                                         .unwrap_or(signal_lower_threshold);
