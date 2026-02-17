@@ -200,6 +200,32 @@ services:
       retries: 3
       start_period: 60s
 
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    environment:
+      TWS_USERID: ${TWS_USERID}
+      TWS_PASSWORD: ${TWS_PASSWORD}
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      TWS_ACCEPT_INCOMING: accept
+      READ_ONLY_API: "no"
+      TWOFA_TIMEOUT_ACTION: restart
+      EXISTING_SESSION_DETECTED_ACTION: primary
+      TIME_ZONE: ${TIME_ZONE:-America/New_York}
+      TZ: ${TIME_ZONE:-America/New_York}
+    ports:
+      - "127.0.0.1:4001:4003"   # Live API (host:4001 → container:4003)
+      - "127.0.0.1:4002:4004"   # Paper API (host:4002 → container:4004)
+      - "127.0.0.1:5900:5900"   # VNC (debug — connect to see Gateway GUI)
+    volumes:
+      - ib_gateway_settings:/home/ibgateway/Jts
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/4004' 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
   execution-engine:
     build:
       context: .
@@ -211,8 +237,8 @@ services:
       - HTTPS_PROXY=http://host.docker.internal:7897
       - ALL_PROXY=socks5://host.docker.internal:7897
       - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY}
-      - IBKR_HOST=${IBKR_HOST:-host.docker.internal}
-      - IBKR_PORT=${IBKR_PORT:-7497}
+      - IBKR_HOST=${IBKR_HOST:-ib-gateway}
+      - IBKR_PORT=${IBKR_PORT:-4004}
       - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
       - FUTU_BRIDGE_URL=http://futu-bridge:8088
     extra_hosts:
@@ -221,6 +247,8 @@ services:
       redis:
         condition: service_healthy
       timescaledb:
+        condition: service_healthy
+      ib-gateway:
         condition: service_healthy
     restart: always
     healthcheck:
@@ -384,5 +412,6 @@ volumes:
   redis_data:
   hermesflow_postgres-data:
     external: true
+  ib_gateway_settings:
   prometheus_data:
   grafana_data:
