@@ -846,97 +846,102 @@ function BacktestSummaryPanel({
     symbol: string;
 }) {
     const foldPnls = overview.fold_pnls;
-    const allPositive = foldPnls ? foldPnls.every(p => p >= 0) : false;
-    const allNegative = foldPnls ? foldPnls.every(p => p < 0) : false;
-    const avgFold = foldPnls && foldPnls.length > 0
-        ? foldPnls.reduce((a, b) => a + b, 0) / foldPnls.length
-        : null;
+    const foldData = foldPnls
+        ? foldPnls.map((pnl, i) => ({
+              idx: i + 1,
+              pnl: +(pnl * 100).toFixed(2),
+          }))
+        : [];
 
     return (
         <div className="px-5 py-3">
             <div className="bg-slate-900/30 border border-white/5 rounded-xl backdrop-blur-sm overflow-hidden">
                 <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/5">
                     <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                        Backtest Summary — {symbol}
+                        Latest Backtest — {symbol} (Gen #{overview.latest_gen})
                     </h4>
                     <span className="text-[10px] text-slate-600">
-                        from best generation
+                        from overview
                     </span>
                 </div>
 
                 <div className="p-4 space-y-4">
-                    {/* Key metrics row */}
-                    <div className="grid grid-cols-5 gap-1.5">
-                        <MetricCell label="Backtest PnL" value={fmtPct(overview.best_pnl)} positive={(overview.best_pnl ?? 0) >= 0} />
-                        <MetricCell label="Sharpe Ratio" value={fmtNum(overview.sharpe_ratio, 2)} positive={(overview.sharpe_ratio ?? 0) >= 0} />
-                        <MetricCell label="Max Drawdown" value={overview.max_drawdown != null ? fmtPct(overview.max_drawdown) : "—"} positive={false} />
+                    {/* Key metrics row — same 8-col layout as LatestBacktestPanel */}
+                    <div className="grid grid-cols-8 gap-1.5">
+                        <MetricCell label="PnL" value={fmtPct(overview.best_pnl)} positive={(overview.best_pnl ?? 0) >= 0} />
+                        <MetricCell label="Sharpe" value={fmtNum(overview.sharpe_ratio, 2)} positive={(overview.sharpe_ratio ?? 0) >= 0} />
+                        <MetricCell label="Sortino" value="—" />
+                        <MetricCell label="Profit Factor" value="—" />
+                        <MetricCell label="Max DD" value={overview.max_drawdown != null ? fmtPct(overview.max_drawdown) : "—"} positive={false} />
                         <MetricCell label="Win Rate" value={overview.win_rate != null ? fmtPct(overview.win_rate) : "—"} positive={(overview.win_rate ?? 0) > 0.5} />
-                        <MetricCell label="Avg Fold PnL" value={avgFold != null ? avgFold.toFixed(4) : "—"} positive={(avgFold ?? 0) >= 0} />
+                        <MetricCell label="Avg Win" value="—" />
+                        <MetricCell label="Avg Loss" value="—" />
                     </div>
 
-                    {/* Fold Performance — larger version */}
-                    {foldPnls && foldPnls.length > 0 && (
-                        <div>
-                            <div className="flex items-center justify-between mb-2">
-                                <h5 className="text-[9px] text-slate-600 uppercase tracking-widest font-bold">
-                                    Fold Performance (K={foldPnls.length})
-                                </h5>
-                                <span className={`text-[9px] font-mono font-bold ${
-                                    allPositive ? "text-emerald-400" : allNegative ? "text-red-400" : "text-amber-400"
-                                }`}>
-                                    {allPositive ? "All folds positive" : allNegative ? "All folds negative" : "Mixed results"}
-                                </span>
-                            </div>
-                            <div className="bg-white/[0.02] rounded-lg border border-white/5 p-3">
-                                <div className="flex items-end gap-2 h-28">
-                                    {foldPnls.map((pnl, i) => {
-                                        const maxAbs = Math.max(...foldPnls.map(Math.abs), 0.01);
-                                        const height = Math.abs(pnl) / maxAbs * 100;
-                                        return (
-                                            <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
-                                                <div
-                                                    className={`w-full rounded-sm transition-all ${pnl >= 0 ? "bg-emerald-500/60" : "bg-red-500/60"}`}
-                                                    style={{ height: `${Math.max(height, 4)}%` }}
-                                                    title={`Fold ${i + 1}: ${pnl.toFixed(4)}`}
-                                                />
-                                                <span className="text-[9px] text-slate-500 mt-1 font-mono">{pnl.toFixed(3)}</span>
-                                                <span className="text-[8px] text-slate-700 font-mono">F{i + 1}</span>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    {/* Extended trade stats row — same 6-col layout */}
+                    <div className="grid grid-cols-6 gap-1.5">
+                        <MetricCell label="Profit Factor" value="—" />
+                        <MetricCell label="Calmar" value="—" />
+                        <MetricCell label="Avg Hold Bars" value="—" />
+                        <MetricCell label="Max Consec W" value="—" />
+                        <MetricCell label="Max Consec L" value="—" />
+                        <MetricCell label="Avg Trade Ret" value="—" />
+                    </div>
 
-                    {/* Cross-validation summary */}
-                    {foldPnls && foldPnls.length > 0 && (
-                        <div className="grid grid-cols-4 gap-1.5">
-                            <MetricCell
-                                label="Best Fold"
-                                value={`F${foldPnls.indexOf(Math.max(...foldPnls)) + 1}: ${Math.max(...foldPnls).toFixed(3)}`}
-                                positive
-                            />
-                            <MetricCell
-                                label="Worst Fold"
-                                value={`F${foldPnls.indexOf(Math.min(...foldPnls)) + 1}: ${Math.min(...foldPnls).toFixed(3)}`}
-                                positive={Math.min(...foldPnls) >= 0}
-                            />
-                            <MetricCell
-                                label="Fold Std Dev"
-                                value={(() => {
-                                    const mean = foldPnls.reduce((a, b) => a + b, 0) / foldPnls.length;
-                                    const variance = foldPnls.reduce((sum, p) => sum + (p - mean) ** 2, 0) / foldPnls.length;
-                                    return Math.sqrt(variance).toFixed(4);
-                                })()}
-                            />
-                            <MetricCell
-                                label="Positive Folds"
-                                value={`${foldPnls.filter(p => p >= 0).length} / ${foldPnls.length}`}
-                                positive={foldPnls.filter(p => p >= 0).length > foldPnls.length / 2}
-                            />
+                    {/* Charts row — same 2-col layout */}
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
+                                Equity Curve
+                            </h5>
+                            <div className="h-44 flex items-center justify-center text-xs text-slate-600 bg-white/[0.02] rounded-lg border border-white/5">
+                                No equity curve data
+                            </div>
                         </div>
-                    )}
+
+                        <div>
+                            {foldData.length > 0 ? (
+                                <>
+                                    <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
+                                        Fold PnL (K={foldData.length})
+                                    </h5>
+                                    <div className="h-44 bg-white/[0.02] rounded-lg border border-white/5 p-1">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <BarChart data={foldData} barCategoryGap={4}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.2} />
+                                                <XAxis dataKey="idx" stroke="#475569" fontSize={8} tickLine={false} axisLine={false} tickFormatter={(v) => `F${v}`} />
+                                                <YAxis stroke="#475569" fontSize={8} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}%`} width={36} />
+                                                <Tooltip
+                                                    contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 10 }}
+                                                    formatter={(value: number | string | undefined) => [`${typeof value === "number" ? value.toFixed(2) : "0"}%`, "PnL"]}
+                                                    labelFormatter={(l) => `Fold #${l}`}
+                                                />
+                                                <ReferenceLine y={0} stroke="#475569" strokeOpacity={0.5} />
+                                                <Bar dataKey="pnl" radius={[2, 2, 0, 0]}>
+                                                    {foldData.map((d, i) => (
+                                                        <Cell
+                                                            key={i}
+                                                            fill={d.pnl >= 0 ? "#34d399" : "#f87171"}
+                                                            fillOpacity={0.7}
+                                                        />
+                                                    ))}
+                                                </Bar>
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
+                                        Per-Trade PnL (%)
+                                    </h5>
+                                    <div className="h-44 flex items-center justify-center text-xs text-slate-600 bg-white/[0.02] rounded-lg border border-white/5">
+                                        No trade data
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
