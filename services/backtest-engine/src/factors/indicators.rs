@@ -102,6 +102,64 @@ impl MemeIndicators {
         (close - &delayed) / (&delayed + 1e-9)
     }
 
+    /// VWAP Deviation: (close - VWAP) / VWAP
+    /// Typical price = (high + low + close) / 3
+    /// VWAP = cumulative(tp * volume) / cumulative(volume) over rolling window
+    pub fn vwap_deviation(
+        close: &Array2<f64>,
+        high: &Array2<f64>,
+        low: &Array2<f64>,
+        volume: &Array2<f64>,
+        window: usize,
+    ) -> Array2<f64> {
+        let tp = &(high + low + close) / 3.0;
+        let tp_vol = &tp * volume;
+        let mut sum_tp_vol: Array2<f64> = Array2::zeros(close.dim());
+        for i in 0..window {
+            sum_tp_vol = sum_tp_vol + ts_delay(&tp_vol, i);
+        }
+        let mut sum_vol: Array2<f64> = Array2::zeros(close.dim());
+        for i in 0..window {
+            sum_vol = sum_vol + ts_delay(volume, i);
+        }
+        let vwap = &sum_tp_vol / (&sum_vol + 1e-9);
+        (close - &vwap) / (&vwap + 1e-9)
+    }
+
+    /// ADV Ratio: dollar_volume / SMA(dollar_volume, window)
+    /// Measures relative trading activity.
+    pub fn adv_ratio(close: &Array2<f64>, volume: &Array2<f64>, window: usize) -> Array2<f64> {
+        let dollar_vol = close * volume;
+        let mut sum = Array2::zeros(close.dim());
+        for i in 0..window {
+            sum = sum + ts_delay(&dollar_vol, i);
+        }
+        let adv = sum / (window as f64);
+        (&dollar_vol / (&adv + 1e-9)).mapv(|v: f64| v.clamp(0.0, 10.0))
+    }
+
+    /// Close Position: (close - low) / (high - low)
+    /// Where the close sits within the day's range. 1.0 = closed at high, 0.0 = closed at low.
+    pub fn close_position(
+        close: &Array2<f64>,
+        high: &Array2<f64>,
+        low: &Array2<f64>,
+    ) -> Array2<f64> {
+        let range = high - low + 1e-9;
+        let pos = (close - low) / &range;
+        pos.mapv(|v| v.clamp(0.0, 1.0))
+    }
+
+    /// Intraday Range: (high - low) / close
+    /// Normalized daily price range as a volatility proxy.
+    pub fn intraday_range(
+        high: &Array2<f64>,
+        low: &Array2<f64>,
+        close: &Array2<f64>,
+    ) -> Array2<f64> {
+        (high - low) / (close + 1e-9)
+    }
+
     /// Relative Strength (RSI-like)
     pub fn relative_strength(close: &Array2<f64>, window: usize) -> Array2<f64> {
         let diff = close - &ts_delay(close, 1);

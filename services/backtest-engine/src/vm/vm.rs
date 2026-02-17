@@ -125,20 +125,20 @@ impl StackVM {
                         stack.push(op_gate(&cond, &x, &y));
                     }
                     8 => {
-                        // JUMP
+                        // SIGNED_POWER: sign(x) * |x|^0.5
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_jump(&x));
+                        stack.push(op_signed_power(&x));
                     }
                     9 => {
-                        // DECAY
+                        // DECAY_LINEAR: linearly-weighted MA (10 periods)
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_decay(&x));
+                        stack.push(op_decay_linear(&x, 10));
                     }
                     10 => {
                         // DELAY1
@@ -149,12 +149,12 @@ impl StackVM {
                         stack.push(ts_delay(&x, 1));
                     }
                     11 => {
-                        // MAX3
+                        // DELAY5
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_max3(&x));
+                        stack.push(ts_delay(&x, 5));
                     }
                     12 => {
                         // TS_MEAN_10
@@ -198,20 +198,20 @@ impl StackVM {
                         stack.push(ts_corr(&x, &y, 10));
                     }
                     17 => {
-                        // CS_RANK
+                        // TS_MIN_10: rolling 10-period minimum
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(cs_rank(&x));
+                        stack.push(ts_min(&x, 10));
                     }
                     18 => {
-                        // CS_MEAN
+                        // TS_MAX_10: rolling 10-period maximum
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(cs_mean(&x));
+                        stack.push(ts_max(&x, 10));
                     }
                     19 => {
                         // LOG
@@ -230,12 +230,12 @@ impl StackVM {
                         stack.push(op_sqrt(&x));
                     }
                     21 => {
-                        // INV
+                        // TS_ARGMAX_10: position of max in 10-period window
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_inv(&x));
+                        stack.push(ts_argmax(&x, 10));
                     }
                     22 => {
                         // TS_DELTA

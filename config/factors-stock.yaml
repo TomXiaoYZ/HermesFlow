@@ -1,34 +1,36 @@
-# Factor Configuration for US Stocks (Polygon data)
-# OHLCV-pure factors — no liquidity_health (requires FDV, unavailable for stocks)
+# Factor Configuration for US Stocks (Polygon / IBKR)
+# 10 equity-focused factors derived from OHLCV data
+# Replaces crypto-specific factors (buy_sell_pressure, pump_deviation, log_volume)
+# with equity-standard factors (vwap_deviation, adv_ratio, close_position, intraday_range)
 
 active_factors:
   - id: 0
     name: "return"
-    description: "Log return"
+    description: "Log return (1-period)"
     normalization: "robust"
 
   - id: 1
-    name: "buy_sell_pressure"
-    description: "Buy/sell imbalance from OHLC"
-    normalization: "none"
+    name: "vwap_deviation"
+    description: "(close - VWAP) / VWAP"
+    normalization: "robust"
 
   - id: 2
     name: "volume_ratio"
-    description: "Volume relative to 20-period SMA"
+    description: "Volume / SMA(volume, 20)"
     normalization: "robust"
 
   - id: 3
-    name: "pump_deviation"
+    name: "mean_reversion"
     description: "Deviation from 20-period MA"
     normalization: "robust"
 
   - id: 4
-    name: "log_volume"
-    description: "Log of volume"
+    name: "adv_ratio"
+    description: "Dollar volume / ADV(20)"
     normalization: "robust"
 
   - id: 5
-    name: "volatility_clustering"
+    name: "volatility"
     description: "20-period realized volatility"
     normalization: "robust"
 
@@ -39,5 +41,15 @@ active_factors:
 
   - id: 7
     name: "relative_strength"
-    description: "RSI (14)"
+    description: "RSI(14)"
+    normalization: "robust"
+
+  - id: 8
+    name: "close_position"
+    description: "(close - low) / (high - low)"
+    normalization: "none"
+
+  - id: 9
+    name: "intraday_range"
+    description: "(high - low) / close"
     normalization: "robust"

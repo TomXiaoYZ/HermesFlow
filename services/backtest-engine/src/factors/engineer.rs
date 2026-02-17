@@ -46,10 +46,30 @@ impl FeatureEngineer {
 
     fn compute_single_factor(name: &str, d: &crate::factors::traits::OhlcvData<'_>) -> Array2<f64> {
         match name {
+            // Core factors (shared between crypto and equity)
             "return" => {
                 let prev = ts_delay(d.close, 1);
                 (d.close / (&prev + 1e-9)).mapv(f64::ln)
             }
+            "volume_ratio" => MemeIndicators::volume_ratio(d.volume, 20),
+            "momentum" => MemeIndicators::momentum(d.close, 20),
+            "relative_strength" => MemeIndicators::relative_strength(d.close, 14),
+
+            // Equity-specific factors
+            "vwap_deviation" => {
+                MemeIndicators::vwap_deviation(d.close, d.high, d.low, d.volume, 20)
+            }
+            "mean_reversion" => MemeIndicators::pump_deviation(d.close, 20),
+            "adv_ratio" => MemeIndicators::adv_ratio(d.close, d.volume, 20),
+            "volatility" => {
+                let prev = ts_delay(d.close, 1);
+                let ret = (d.close / (&prev + 1e-9)).mapv(f64::ln);
+                MemeIndicators::volatility_clustering(&ret, 20)
+            }
+            "close_position" => MemeIndicators::close_position(d.close, d.high, d.low),
+            "intraday_range" => MemeIndicators::intraday_range(d.high, d.low, d.close),
+
+            // Legacy crypto factors (kept for backward compat with old configs)
             "liquidity_health" => MemeIndicators::liquidity_health(d.liquidity, d.fdv),
             "buy_sell_pressure" => {
                 MemeIndicators::buy_sell_imbalance(d.close, d.open, d.high, d.low)
@@ -63,9 +83,7 @@ impl FeatureEngineer {
                 MemeIndicators::volatility_clustering(&ret, 20)
             }
             "momentum_reversal" => MemeIndicators::momentum_reversal(d.close, 20),
-            "volume_ratio" => MemeIndicators::volume_ratio(d.volume, 20),
-            "momentum" => MemeIndicators::momentum(d.close, 20),
-            "relative_strength" => MemeIndicators::relative_strength(d.close, 14),
+
             _ => {
                 info!("Warning: Unknown factor '{}', returning zeros", name);
                 Array2::zeros(d.close.dim())

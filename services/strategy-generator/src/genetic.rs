@@ -18,9 +18,10 @@ impl Genome {
 
 /// Build operator token vectors dynamically from feat_offset.
 /// Op indices match the StackVM dispatch (vm.rs):
-///   Unary:   4(NEG), 5(ABS), 6(SIGN), 8(JUMP), 9(DECAY), 10(DELAY),
-///            11(MAX3), 12(TS_MEAN), 13(TS_STD), 14(TS_RANK), 15(TS_SUM),
-///            17(CS_RANK), 18(CS_MEAN), 19(LOG), 20(SQRT), 21(INV), 22(TS_DELTA)
+///   Unary:   4(NEG), 5(ABS), 6(SIGN), 8(SIGNED_POWER), 9(DECAY_LINEAR),
+///            10(DELAY1), 11(DELAY5), 12(TS_MEAN), 13(TS_STD), 14(TS_RANK),
+///            15(TS_SUM), 17(TS_MIN), 18(TS_MAX), 19(LOG), 20(SQRT),
+///            21(TS_ARGMAX), 22(TS_DELTA)
 ///   Binary:  0(ADD), 1(SUB), 2(MUL), 3(DIV), 16(TS_CORR)
 ///   Ternary: 7(GATE)
 fn build_ops(feat_offset: usize) -> (Vec<usize>, Vec<usize>, Vec<usize>) {

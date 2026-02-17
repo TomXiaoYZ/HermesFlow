@@ -143,6 +143,54 @@ pub fn ts_delta(x: &Array2<f64>, d: usize) -> Array2<f64> {
     x - &delayed
 }
 
+/// Signed Power: sign(x) * |x|^0.5
+/// Preserves sign while compressing magnitude — standard WorldQuant operator.
+pub fn op_signed_power(x: &Array2<f64>) -> Array2<f64> {
+    x.mapv(|v| v.signum() * v.abs().sqrt())
+}
+
+/// Decay Linear: linearly-weighted moving average over d periods.
+/// Weight d for most recent, d-1 for lag 1, ..., 1 for lag d-1.
+/// Equivalent to WorldQuant's decay_linear.
+pub fn op_decay_linear(x: &Array2<f64>, d: usize) -> Array2<f64> {
+    let total_weight: f64 = (1..=d).sum::<usize>() as f64;
+    let mut sum = Array2::zeros(x.dim());
+    for i in 0..d {
+        let weight = (d - i) as f64;
+        sum = sum + ts_delay(x, i) * weight;
+    }
+    sum / total_weight
+}
+
+/// Time-series Argmax: position of maximum value in last d periods.
+/// Normalized to [0, 1] where 0 = max at oldest, 1 = max at most recent.
+pub fn ts_argmax(x: &Array2<f64>, d: usize) -> Array2<f64> {
+    let (batch, time) = x.dim();
+    let mut out = Array2::zeros((batch, time));
+    for b in 0..batch {
+        for t in 0..time {
+            let mut best_val = f64::NEG_INFINITY;
+            let mut best_pos: usize = 0;
+            for i in 0..d {
+                let idx = t as isize - i as isize;
+                let val = if idx >= 0 { x[[b, idx as usize]] } else { 0.0 };
+                if val > best_val {
+                    best_val = val;
+                    best_pos = i;
+                }
+            }
+            // best_pos=0 means max is at current (most recent), best_pos=d-1 means oldest
+            // Normalize: 0 = oldest, 1 = most recent
+            out[[b, t]] = if d > 1 {
+                1.0 - (best_pos as f64 / (d - 1) as f64)
+            } else {
+                0.5
+            };
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

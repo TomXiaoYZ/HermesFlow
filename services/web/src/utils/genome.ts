@@ -1,12 +1,16 @@
 // Dynamic Maps - Populated by loadFactorConfig()
 export let FEATURE_MAP: Record<number, string> = {
-    // Basic Fallbacks (AlphaGPT compatible)
+    // Fallback: equity-focused factor set
     0: "Return",
-    1: "Liquidity",
-    2: "Pressure",
-    3: "FOMO",
-    4: "Deviation",
-    5: "LogVol",
+    1: "VwapDev",
+    2: "VolRatio",
+    3: "MeanRev",
+    4: "AdvRatio",
+    5: "Volatility",
+    6: "Momentum",
+    7: "RSI",
+    8: "ClosePos",
+    9: "Range",
 };
 
 let OP_OFFSET = 6; // Dynamically updated
@@ -19,32 +23,40 @@ export let OP_MAP: Record<number, { name: string; arity: number }> = {
 function initOperators(offset: number) {
     OP_OFFSET = offset;
     OP_MAP = {
-        // Arity 2
+        // Arity 2 (binary)
         [offset + 0]: { name: "+", arity: 2 },
         [offset + 1]: { name: "-", arity: 2 },
         [offset + 2]: { name: "*", arity: 2 },
         [offset + 3]: { name: "/", arity: 2 },
-        // Arity 1
+        // Arity 1 (unary)
         [offset + 4]: { name: "Neg", arity: 1 },
         [offset + 5]: { name: "Abs", arity: 1 },
         [offset + 6]: { name: "Sign", arity: 1 },
+        // Arity 3 (ternary)
         [offset + 7]: { name: "Gate", arity: 3 },
-        [offset + 8]: { name: "Jump", arity: 1 },
-        [offset + 9]: { name: "Decay", arity: 1 },
-        [offset + 10]: { name: "Delay", arity: 1 },
-        [offset + 11]: { name: "Max3", arity: 1 },
+        // Arity 1 (unary) - continued
+        [offset + 8]: { name: "SPow", arity: 1 },
+        [offset + 9]: { name: "DecayLin", arity: 1 },
+        [offset + 10]: { name: "Delay1", arity: 1 },
+        [offset + 11]: { name: "Delay5", arity: 1 },
         [offset + 12]: { name: "TsMean", arity: 1 },
         [offset + 13]: { name: "TsStd", arity: 1 },
         [offset + 14]: { name: "TsRank", arity: 1 },
         [offset + 15]: { name: "TsSum", arity: 1 },
+        // Arity 2 (binary)
         [offset + 16]: { name: "TsCorr", arity: 2 },
-        [offset + 17]: { name: "CsRank", arity: 1 },
-        [offset + 18]: { name: "CsMean", arity: 1 },
+        // Arity 1 (unary) - continued
+        [offset + 17]: { name: "TsMin", arity: 1 },
+        [offset + 18]: { name: "TsMax", arity: 1 },
+        [offset + 19]: { name: "Log", arity: 1 },
+        [offset + 20]: { name: "Sqrt", arity: 1 },
+        [offset + 21]: { name: "TsArgmax", arity: 1 },
+        [offset + 22]: { name: "TsDelta", arity: 1 },
     };
 }
 
-// Initial call with default offset
-initOperators(6);
+// Initial call with default offset (10 equity factors)
+initOperators(10);
 
 // Cache factor configs per exchange to avoid repeated fetches
 const factorConfigCache: Record<string, boolean> = {};
