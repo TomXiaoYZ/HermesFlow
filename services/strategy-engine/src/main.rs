@@ -10,6 +10,7 @@ use strategy_engine::portfolio::{
 };
 use strategy_engine::risk::{is_stock_symbol, RiskEngine};
 use strategy_engine::signal_buffer::SignalBuffer;
+use tokio_postgres::NoTls;
 use tracing::{error, info, warn};
 
 use serde::Deserialize;
@@ -92,6 +93,23 @@ async fn main() -> anyhow::Result<()> {
         PortfolioManager::with_config(PortfolioConfig::stock_defaults());
     let mut stock_portfolio_long_short =
         PortfolioManager::with_config(PortfolioConfig::stock_defaults());
+
+    // Recover existing positions from DB to avoid duplicate entries after restart
+    if let Ok(db_url) = env::var("DATABASE_URL") {
+        match recover_positions(
+            &db_url,
+            &mut stock_portfolio_long_only,
+            &mut stock_portfolio_long_short,
+            &mut crypto_portfolio,
+        )
+        .await
+        {
+            Ok(n) => info!("Recovered {} positions from DB", n),
+            Err(e) => warn!("Position recovery failed (starting fresh): {}", e),
+        }
+    } else {
+        info!("No DATABASE_URL set, starting with empty portfolios");
+    }
 
     // Per-(symbol, mode) strategy map (populated by evolved formulas from strategy-generator)
     let strategies: Arc<RwLock<HashMap<(String, String), SymbolStrategy>>> =
@@ -385,6 +403,69 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Recover open positions from DB on startup so the strategy engine
+/// doesn't emit duplicate entry signals for already-held positions.
+async fn recover_positions(
+    db_url: &str,
+    stock_lo: &mut PortfolioManager,
+    stock_ls: &mut PortfolioManager,
+    crypto: &mut PortfolioManager,
+) -> anyhow::Result<usize> {
+    let (client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            error!("DB connection error during position recovery: {}", e);
+        }
+    });
+
+    let rows = client
+        .query(
+            "SELECT account_id, symbol, quantity::float8, avg_price::float8
+             FROM trade_positions WHERE quantity != 0",
+            &[],
+        )
+        .await?;
+
+    let mut count = 0usize;
+    for row in &rows {
+        let account_id: &str = row.get(0);
+        let symbol: String = row.get(1);
+        let qty: f64 = row.get(2);
+        let price: f64 = row.get(3);
+
+        let direction = if qty > 0.0 {
+            PositionDirection::Long
+        } else {
+            PositionDirection::Short
+        };
+
+        let portfolio = match account_id {
+            "ibkr_long_only" => &mut *stock_lo,
+            "ibkr_long_short" => &mut *stock_ls,
+            _ => &mut *crypto,
+        };
+
+        portfolio.add_position(
+            symbol.clone(),
+            symbol.clone(),
+            price,
+            qty.abs(),
+            price,
+            direction,
+        );
+        count += 1;
+        info!(
+            "Recovered position: {} {} qty={:.4} @ {:.4} ({})",
+            account_id,
+            symbol,
+            qty,
+            price,
+            if qty > 0.0 { "Long" } else { "Short" }
+        );
+    }
+    Ok(count)
 }
 
 /// Check exits for a single portfolio and publish exit signals.

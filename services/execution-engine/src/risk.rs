@@ -1,5 +1,5 @@
 use chrono::Utc;
-use common::events::{OrderSide, TradeSignal};
+use common::events::TradeSignal;
 use std::env;
 use std::sync::Arc;
 use tokio_postgres::Client as PgClient;
@@ -77,8 +77,12 @@ impl StockRiskEngine {
         }
 
         if let Some(client) = db {
-            // 3. Open position count
-            let open_count = count_open_positions(client, "IBKR").await;
+            // 3. Open position count (mode-aware)
+            let account_id = match signal.mode.as_deref() {
+                Some(m) => format!("ibkr_{}", m),
+                None => "default".to_string(),
+            };
+            let open_count = count_open_positions(client, "IBKR", &account_id).await;
             if open_count >= self.max_positions {
                 return RiskResult::reject(format!(
                     "Already holding {} positions (max {})",
@@ -97,14 +101,13 @@ impl StockRiskEngine {
             }
 
             // 5. Duplicate signal check (same symbol, same side, within 60s)
-            if signal.side == OrderSide::Buy {
-                let recent = has_recent_order(client, &signal.symbol, "Buy", 60).await;
-                if recent {
-                    return RiskResult::reject(format!(
-                        "Duplicate signal for {} within 60s",
-                        signal.symbol
-                    ));
-                }
+            let side_str = signal.side.to_string();
+            let recent = has_recent_order(client, &signal.symbol, &side_str, 60).await;
+            if recent {
+                return RiskResult::reject(format!(
+                    "Duplicate {} signal for {} within 60s",
+                    side_str, signal.symbol
+                ));
             }
         }
 
@@ -112,11 +115,11 @@ impl StockRiskEngine {
     }
 }
 
-async fn count_open_positions(client: &PgClient, exchange: &str) -> usize {
+async fn count_open_positions(client: &PgClient, exchange: &str, account_id: &str) -> usize {
     let result = client
         .query_one(
-            "SELECT COUNT(*)::BIGINT FROM trade_positions WHERE exchange = $1 AND quantity != 0",
-            &[&exchange],
+            "SELECT COUNT(*)::BIGINT FROM trade_positions WHERE exchange = $1 AND account_id = $2 AND quantity != 0",
+            &[&exchange, &account_id],
         )
         .await;
 
@@ -180,7 +183,7 @@ async fn has_recent_order(client: &PgClient, symbol: &str, side: &str, secs: i64
 mod tests {
     use super::*;
     use chrono::Utc;
-    use common::events::OrderType;
+    use common::events::{OrderSide, OrderType};
     use uuid::Uuid;
 
     #[tokio::test]
@@ -232,5 +235,39 @@ mod tests {
 
         let result = engine.check_pre_trade(&signal, &None).await;
         assert!(!result.approved);
+    }
+
+    #[tokio::test]
+    async fn test_sell_signal_basic_checks() {
+        // Sell signals (short entries) should still pass basic pre-trade checks
+        // (order value, zero quantity) without a DB — dedup requires DB
+        let engine = StockRiskEngine::new();
+
+        // Valid sell signal — should approve without DB
+        let signal = TradeSignal {
+            id: Uuid::new_v4(),
+            strategy_id: "test".to_string(),
+            symbol: "AAPL".to_string(),
+            side: OrderSide::Sell,
+            quantity: 5.0,
+            price: Some(180.0),
+            order_type: OrderType::Market,
+            timestamp: Utc::now(),
+            reason: "test short entry".to_string(),
+            exchange: Some("polygon".to_string()),
+            mode: Some("long_short".to_string()),
+        };
+
+        let result = engine.check_pre_trade(&signal, &None).await;
+        assert!(result.approved);
+
+        // Over-limit sell signal — should reject
+        let big_signal = TradeSignal {
+            quantity: 100.0,
+            ..signal
+        };
+        let result = engine.check_pre_trade(&big_signal, &None).await;
+        assert!(!result.approved);
+        assert!(result.reason.contains("exceeds max"));
     }
 }

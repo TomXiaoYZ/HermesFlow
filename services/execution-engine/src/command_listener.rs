@@ -162,11 +162,15 @@ impl CommandListener {
         let order_type = signal.order_type.to_string();
         let asset_type = Self::asset_type_for(signal);
         let limit_price = signal.price;
+        let account_id = match signal.mode.as_deref() {
+            Some(m) => format!("ibkr_{}", m),
+            None => "default".to_string(),
+        };
 
         let res = db
             .execute(
-                "INSERT INTO trade_orders (order_id, exchange, symbol, asset_type, side, order_type, quantity, filled_qty, price, avg_price, status, strategy_id, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7::float8, $8::float8, $9::float8, $10::float8, $11, $12, NOW(), NOW())",
+                "INSERT INTO trade_orders (order_id, exchange, symbol, asset_type, side, order_type, quantity, filled_qty, price, avg_price, status, strategy_id, account_id, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7::float8, $8::float8, $9::float8, $10::float8, $11, $12, $13, NOW(), NOW())",
                 &[
                     &result.order_id,
                     &exchange,
@@ -180,6 +184,7 @@ impl CommandListener {
                     &result.avg_price,
                     &result.status,
                     &signal.strategy_id,
+                    &account_id,
                 ],
             )
             .await;
@@ -224,9 +229,13 @@ impl CommandListener {
         quantity: f64,
         price: f64,
         side: &str,
+        mode: Option<&str>,
     ) {
         let signed_qty = if side == "Buy" { quantity } else { -quantity };
-        let account_id = "default";
+        let account_id = match mode {
+            Some(m) => format!("ibkr_{}", m),
+            None => "default".to_string(),
+        };
 
         let res = db
             .execute(
@@ -342,8 +351,12 @@ impl CommandListener {
                             }
                         });
                     } else {
-                        warn!("No Solana trader configured, rejecting signal for {}", signal.symbol);
-                        let update = Self::make_failed_update(&signal, "No Solana trader configured");
+                        warn!(
+                            "No Solana trader configured, rejecting signal for {}",
+                            signal.symbol
+                        );
+                        let update =
+                            Self::make_failed_update(&signal, "No Solana trader configured");
                         if let Err(e) = self.publish_update(&update) {
                             error!("Failed to publish no-trader rejection: {}", e);
                         }
@@ -388,6 +401,7 @@ impl CommandListener {
                                                 result.filled_qty,
                                                 result.avg_price,
                                                 &sig.side.to_string(),
+                                                sig.mode.as_deref(),
                                             )
                                             .await;
                                         }
