@@ -84,9 +84,23 @@ struct AccountInfo {
     data: [String; 2],
 }
 
-/// Check if a symbol looks like a US stock ticker (1-5 uppercase ASCII letters)
+/// Check if a symbol looks like a US stock ticker.
+/// Matches 1-5 uppercase ASCII letters, optionally followed by a dot and 1-2
+/// uppercase letters (e.g. AAPL, A, BRK.A, BRK.B, PBR.A).
 pub fn is_stock_symbol(symbol: &str) -> bool {
-    !symbol.is_empty() && symbol.len() <= 5 && symbol.chars().all(|c| c.is_ascii_uppercase())
+    if symbol.is_empty() || symbol.len() > 7 {
+        return false;
+    }
+    let parts: Vec<&str> = symbol.splitn(2, '.').collect();
+    let base = parts[0];
+    if base.is_empty() || base.len() > 5 || !base.chars().all(|c| c.is_ascii_uppercase()) {
+        return false;
+    }
+    if let Some(suffix) = parts.get(1) {
+        !suffix.is_empty() && suffix.len() <= 2 && suffix.chars().all(|c| c.is_ascii_uppercase())
+    } else {
+        true
+    }
 }
 
 impl Default for RiskEngine {
@@ -327,12 +341,19 @@ mod tests {
         assert!(is_stock_symbol("AAPL"));
         assert!(is_stock_symbol("MSFT"));
         assert!(is_stock_symbol("A"));
+        // Dot-suffix share classes (e.g. BRK.A, BRK.B, PBR.A)
+        assert!(is_stock_symbol("BRK.A"));
+        assert!(is_stock_symbol("BRK.B"));
+        assert!(is_stock_symbol("PBR.A"));
+        // Negative cases
         assert!(!is_stock_symbol(
             "So11111111111111111111111111111111111111112"
         ));
         assert!(!is_stock_symbol("sol"));
         assert!(!is_stock_symbol(""));
         assert!(!is_stock_symbol("TOOLONGSYMBOL"));
+        assert!(!is_stock_symbol("A.BCD")); // suffix too long
+        assert!(!is_stock_symbol(".A"));    // empty base
     }
 
     #[tokio::test]

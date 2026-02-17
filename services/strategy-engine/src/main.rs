@@ -570,7 +570,7 @@ async fn try_entry(
     } else {
         let amount_sol = risk_engine.calculate_entry_size();
         if amount_sol <= 0.0 {
-            warn!("Insufficient equity/size for entry.");
+            debug!("Insufficient equity/size for entry.");
             return;
         }
         (amount_sol, None)
