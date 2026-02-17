@@ -111,6 +111,10 @@ services:
       - DATA_ENGINE__MASSIVE__API_KEY=${POLYGON_API_KEY}
       - DATA_ENGINE__MASSIVE__ENABLED=true
       - DATA_ENGINE__MASSIVE__WS_URL=wss://delayed.polygon.io/stocks
+      - HTTPS_PROXY=http://host.docker.internal:7897
+      - ALL_PROXY=socks5://host.docker.internal:7897
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis:
         condition: service_healthy

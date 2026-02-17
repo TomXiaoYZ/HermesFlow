@@ -1,5 +1,6 @@
 use crate::error::DataEngineError;
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use futures::TryStreamExt;
 use sqlx::postgres::PgPool;
 use sqlx::Row;
 use std::collections::HashMap;
@@ -24,6 +25,9 @@ impl CandleAggregator {
     /// When `exchange_filter` is `Some`, only snapshots from that exchange are
     /// fetched — significantly reducing scanned rows for large lookback windows
     /// (1h, 4h, 1d, 1w resolutions).
+    ///
+    /// Uses streaming (`.fetch()`) instead of `.fetch_all()` to avoid loading
+    /// millions of rows into memory at once.
     pub async fn aggregate_candles(
         &mut self,
         lookback_minutes: i64,
@@ -39,8 +43,13 @@ impl CandleAggregator {
         let end_time = Utc::now();
         let start_time = end_time - Duration::minutes(lookback_minutes);
 
-        let snapshots = if let Some(exchange) = exchange_filter {
-            sqlx::query(
+        let mut candles: HashMap<(String, String, DateTime<Utc>), CandleBuilder> = HashMap::new();
+
+        let map_err =
+            |e: sqlx::Error| DataEngineError::DatabaseError(format!("Failed to fetch snapshots: {}", e));
+
+        if let Some(exchange) = exchange_filter {
+            let mut stream = sqlx::query(
                 r#"
                 SELECT exchange, symbol, time, price, volume, high, low
                 FROM mkt_equity_snapshots
@@ -51,10 +60,13 @@ impl CandleAggregator {
             .bind(start_time)
             .bind(end_time)
             .bind(exchange)
-            .fetch_all(&self.pool)
-            .await
+            .fetch(&self.pool);
+
+            while let Some(row) = stream.try_next().await.map_err(map_err)? {
+                process_row(&mut candles, row, bucket_minutes);
+            }
         } else {
-            sqlx::query(
+            let mut stream = sqlx::query(
                 r#"
                 SELECT exchange, symbol, time, price, volume, high, low
                 FROM mkt_equity_snapshots
@@ -64,36 +76,15 @@ impl CandleAggregator {
             )
             .bind(start_time)
             .bind(end_time)
-            .fetch_all(&self.pool)
-            .await
-        }
-        .map_err(|e| DataEngineError::DatabaseError(format!("Failed to fetch snapshots: {}", e)))?;
+            .fetch(&self.pool);
 
-        if snapshots.is_empty() {
+            while let Some(row) = stream.try_next().await.map_err(map_err)? {
+                process_row(&mut candles, row, bucket_minutes);
+            }
+        }
+
+        if candles.is_empty() {
             return Ok(());
-        }
-
-        // Group by exchange, symbol and bucket
-        // Key: (Exchange, Symbol, TimeBucket)
-        let mut candles: HashMap<(String, String, DateTime<Utc>), CandleBuilder> = HashMap::new();
-
-        for row in snapshots {
-            let exchange: String = row.get("exchange");
-            let symbol: String = row.get("symbol");
-            let timestamp: DateTime<Utc> = row.get("time");
-            let price: rust_decimal::Decimal = row.get("price");
-            let volume: Option<rust_decimal::Decimal> = row.try_get("volume").ok();
-            let high: Option<rust_decimal::Decimal> = row.try_get("high").ok();
-            let low: Option<rust_decimal::Decimal> = row.try_get("low").ok();
-
-            // Round logic based on resolution
-            let bucket = round_to_minutes(timestamp, bucket_minutes);
-            let key = (exchange, symbol, bucket);
-
-            let builder = candles
-                .entry(key)
-                .or_insert_with(|| CandleBuilder::new(bucket));
-            builder.add_tick(price, volume, high, low);
         }
 
         // Batch insert candles (much faster than individual INSERTs)
@@ -154,6 +145,29 @@ impl CandleAggregator {
     }
 }
 
+/// Process a single snapshot row into the candle HashMap
+fn process_row(
+    candles: &mut HashMap<(String, String, DateTime<Utc>), CandleBuilder>,
+    row: sqlx::postgres::PgRow,
+    bucket_minutes: i64,
+) {
+    let exchange: String = row.get("exchange");
+    let symbol: String = row.get("symbol");
+    let timestamp: DateTime<Utc> = row.get("time");
+    let price: rust_decimal::Decimal = row.get("price");
+    let volume: Option<rust_decimal::Decimal> = row.try_get("volume").ok();
+    let high: Option<rust_decimal::Decimal> = row.try_get("high").ok();
+    let low: Option<rust_decimal::Decimal> = row.try_get("low").ok();
+
+    let bucket = round_to_minutes(timestamp, bucket_minutes);
+    let key = (exchange, symbol, bucket);
+
+    let builder = candles
+        .entry(key)
+        .or_insert_with(|| CandleBuilder::new(bucket));
+    builder.add_tick(price, volume, high, low);
+}
+
 // Helper to replace generic round_to_15min
 fn round_to_minutes(dt: DateTime<Utc>, minutes_bucket: i64) -> DateTime<Utc> {
     // If bucket is 1440 (1 day), align to Beijing Time (UTC+8)
@@ -180,7 +194,8 @@ fn round_to_minutes(dt: DateTime<Utc>, minutes_bucket: i64) -> DateTime<Utc> {
 
 struct CandleBuilder {
     _time: DateTime<Utc>,
-    prices: Vec<rust_decimal::Decimal>,
+    open: Option<rust_decimal::Decimal>,
+    close: rust_decimal::Decimal,
     high: Option<rust_decimal::Decimal>,
     low: Option<rust_decimal::Decimal>,
     volume: rust_decimal::Decimal,
@@ -190,7 +205,8 @@ impl CandleBuilder {
     fn new(time: DateTime<Utc>) -> Self {
         Self {
             _time: time,
-            prices: Vec::new(),
+            open: None,
+            close: rust_decimal::Decimal::ZERO,
             high: None,
             low: None,
             volume: rust_decimal::Decimal::ZERO,
@@ -204,7 +220,12 @@ impl CandleBuilder {
         high: Option<rust_decimal::Decimal>,
         low: Option<rust_decimal::Decimal>,
     ) {
-        self.prices.push(price);
+        // Track first price as open, latest price as close
+        if self.open.is_none() {
+            self.open = Some(price);
+        }
+        self.close = price;
+
         if let Some(v) = volume {
             self.volume += v;
         }
@@ -226,16 +247,8 @@ impl CandleBuilder {
     }
 
     fn finalize(self) -> Candle {
-        let open = self
-            .prices
-            .first()
-            .copied()
-            .unwrap_or(rust_decimal::Decimal::ZERO);
-        let close = self
-            .prices
-            .last()
-            .copied()
-            .unwrap_or(rust_decimal::Decimal::ZERO);
+        let open = self.open.unwrap_or(rust_decimal::Decimal::ZERO);
+        let close = self.close;
         let high = self.high.unwrap_or(open);
         let low = self.low.unwrap_or(open);
 

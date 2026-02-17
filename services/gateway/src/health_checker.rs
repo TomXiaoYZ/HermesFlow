@@ -29,7 +29,7 @@ struct ServiceEndpoint {
 impl HealthChecker {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(10))
             .build()
             .unwrap();
 

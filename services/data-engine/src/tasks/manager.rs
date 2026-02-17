@@ -653,10 +653,11 @@ impl TaskManager {
     }
 
     pub async fn register_candle_aggregation_job(&self) -> Result<(), Box<dyn std::error::Error>> {
-        info!("Registering Candle Aggregation Job (Every minute)...");
+        info!("Registering Candle Aggregation Jobs (fast=1min, slow=15min)...");
 
         let pool = self.repos.pool.clone();
-        let agg_running = Arc::new(AtomicBool::new(false));
+        let fast_running = Arc::new(AtomicBool::new(false));
+        let slow_running = Arc::new(AtomicBool::new(false));
 
         // ONE-TIME: Run historical backfill on startup (past 48 hours)
         info!("Running ONE-TIME historical candle backfill (48 hours)...");
@@ -671,14 +672,14 @@ impl TaskManager {
             }
         });
 
-        // Schedule: Every 1 minute (50s timeout, overlap guarded)
-        let guard = agg_running.clone();
-        let job = Job::new_async("0 * * * * *", move |_uuid, _l| {
-            let pool_clone = pool.clone();
-            let running = guard.clone();
+        // FAST JOB: Every 1 minute — short resolutions (1m, 5m, 15m, 1h)
+        let pool_fast = pool.clone();
+        let guard_fast = fast_running.clone();
+        let fast_job = Job::new_async("0 * * * * *", move |_uuid, _l| {
+            let pool_clone = pool_fast.clone();
+            let running = guard_fast.clone();
             Box::pin(async move {
-                guarded_task("candle_aggregation", &running, 120, || async {
-                    info!("Running Candle Aggregation Task...");
+                guarded_task("candle_agg_fast", &running, 50, || async {
                     let mut aggregator =
                         crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
 
@@ -692,10 +693,35 @@ impl TaskManager {
                     if let Err(e) = aggregator.aggregate_candles(30, "15m", 15, None).await {
                         error!("Agg 15m failed: {}", e);
                     }
-                    // Large resolutions: split by exchange to avoid scanning 31M+ rows
+                    // 1h: split by exchange but still fast (120min lookback)
+                    let exchanges = ["Polygon", "Jupiter", "Birdeye", "Binance", "OKX", "Bybit"];
+                    for exchange in &exchanges {
+                        if let Err(e) = aggregator
+                            .aggregate_candles(120, "1h", 60, Some(exchange))
+                            .await
+                        {
+                            error!("Agg 1h ({}) failed: {}", exchange, e);
+                        }
+                    }
+                })
+                .await;
+            })
+        })?;
+
+        // SLOW JOB: Every 15 minutes — large resolutions (4h, 1d, 1w)
+        let pool_slow = pool.clone();
+        let guard_slow = slow_running.clone();
+        let slow_job = Job::new_async("0 */15 * * * *", move |_uuid, _l| {
+            let pool_clone = pool_slow.clone();
+            let running = guard_slow.clone();
+            Box::pin(async move {
+                guarded_task("candle_agg_slow", &running, 600, || async {
+                    info!("Running slow candle aggregation (4h, 1d, 1w)...");
+                    let mut aggregator =
+                        crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
+
                     let exchanges = ["Polygon", "Jupiter", "Birdeye", "Binance", "OKX", "Bybit"];
                     for (lookback, res, bucket) in [
-                        (120, "1h", 60),
                         (300, "4h", 240),
                         (1500, "1d", 1440),
                         (11520, "1w", 10080),
@@ -710,14 +736,15 @@ impl TaskManager {
                         }
                     }
 
-                    info!("All resolutions aggregated.");
+                    info!("Slow candle aggregation complete.");
                 })
                 .await;
             })
         })?;
 
         let scheduler = self.scheduler.write().await;
-        scheduler.add(job).await?;
+        scheduler.add(fast_job).await?;
+        scheduler.add(slow_job).await?;
 
         Ok(())
     }
