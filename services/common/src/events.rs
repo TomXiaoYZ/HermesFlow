@@ -38,6 +38,8 @@ pub struct TradeSignal {
     pub strategy_id: String,
     #[serde(default)]
     pub exchange: Option<String>, // "polygon", "binance", etc. None for legacy Solana signals
+    #[serde(default)]
+    pub mode: Option<String>, // "long_only" or "long_short"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Display, EnumString, PartialEq)]

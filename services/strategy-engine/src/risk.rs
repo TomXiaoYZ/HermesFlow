@@ -7,17 +7,23 @@ use tracing::{info, warn};
 #[derive(Debug, Clone)]
 pub struct RiskConfig {
     pub min_liquidity_usd: f64,
-    pub max_position_size_portion: f64, // e.g., 0.1 (10%)
-    pub max_drawdown_limit: f64,        // e.g. 0.05 (5% daily)
-    pub entry_amount_sol: f64,          // Default entry size in SOL (e.g. 0.1)
-    pub check_honeypot: bool,           // Toggle for honeypot check
-    pub trade_size_usd: f64,            // USD amount per stock trade
-    pub max_stock_position_usd: f64,    // Max single stock position value
-    pub max_stock_positions: usize,     // Max number of open stock positions
+    pub max_position_size_portion: f64,        // e.g., 0.1 (10%)
+    pub max_drawdown_limit: f64,               // e.g. 0.05 (5% daily)
+    pub entry_amount_sol: f64,                 // Default entry size in SOL (e.g. 0.1)
+    pub check_honeypot: bool,                  // Toggle for honeypot check
+    pub trade_size_usd: f64,                   // USD amount per stock trade
+    pub max_stock_position_usd: f64,           // Max single stock position value
+    pub max_stock_positions: usize,            // Default max open stock positions per mode
+    pub max_stock_positions_long_only: usize,  // Max open stock positions for long_only mode
+    pub max_stock_positions_long_short: usize, // Max open stock positions for long_short mode
 }
 
 impl Default for RiskConfig {
     fn default() -> Self {
+        let default_max = env::var("MAX_STOCK_POSITIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
         Self {
             min_liquidity_usd: 1.0,
             max_position_size_portion: 0.5,
@@ -32,10 +38,15 @@ impl Default for RiskConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5000.0),
-            max_stock_positions: env::var("MAX_STOCK_POSITIONS")
+            max_stock_positions: default_max,
+            max_stock_positions_long_only: env::var("MAX_STOCK_POSITIONS_LONG_ONLY")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(10),
+                .unwrap_or(default_max),
+            max_stock_positions_long_short: env::var("MAX_STOCK_POSITIONS_LONG_SHORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default_max),
         }
     }
 }
@@ -45,7 +56,8 @@ pub struct RiskEngine {
     current_equity: f64,
     daily_start_equity: f64,
     http_client: Client,
-    open_stock_positions: usize,
+    open_stock_positions_long_only: usize,
+    open_stock_positions_long_short: usize,
 }
 
 #[derive(Deserialize, Debug)]
@@ -90,7 +102,8 @@ impl RiskEngine {
             current_equity: 0.0,
             daily_start_equity: 0.0,
             http_client: Client::new(),
-            open_stock_positions: 0,
+            open_stock_positions_long_only: 0,
+            open_stock_positions_long_short: 0,
         }
     }
 
@@ -102,8 +115,11 @@ impl RiskEngine {
         self.config.check_honeypot = enabled;
     }
 
-    pub fn set_open_stock_positions(&mut self, count: usize) {
-        self.open_stock_positions = count;
+    pub fn set_open_stock_positions(&mut self, mode: &str, count: usize) {
+        match mode {
+            "long_short" => self.open_stock_positions_long_short = count,
+            _ => self.open_stock_positions_long_only = count,
+        }
     }
 
     /// Calculate safe position size in SOL based on rules (for crypto)
@@ -151,8 +167,8 @@ impl RiskEngine {
             }
         }
 
-        // 3. Stock-specific checks
-        if is_stock && signal.side == OrderSide::Buy {
+        // 3. Stock-specific checks (entries: Buy for long, Sell for short)
+        if is_stock && (signal.side == OrderSide::Buy || signal.side == OrderSide::Sell) {
             // Max position value check
             if let Some(price) = signal.price {
                 let position_value = signal.quantity * price;
@@ -165,11 +181,22 @@ impl RiskEngine {
                 }
             }
 
-            // Max open positions check
-            if self.open_stock_positions >= self.config.max_stock_positions {
+            // Max open positions check — per mode
+            let mode = signal.mode.as_deref().unwrap_or("long_only");
+            let (open_count, max_allowed) = match mode {
+                "long_short" => (
+                    self.open_stock_positions_long_short,
+                    self.config.max_stock_positions_long_short,
+                ),
+                _ => (
+                    self.open_stock_positions_long_only,
+                    self.config.max_stock_positions_long_only,
+                ),
+            };
+            if open_count >= max_allowed {
                 warn!(
-                    "Risk Reject: Already holding {} stock positions (max {})",
-                    self.open_stock_positions, self.config.max_stock_positions
+                    "Risk Reject: Already holding {} stock positions in {} mode (max {})",
+                    open_count, mode, max_allowed
                 );
                 return false;
             }
@@ -348,6 +375,7 @@ mod tests {
             timestamp: Utc::now(),
             reason: "Testing".to_string(),
             exchange: None,
+            mode: None,
         };
 
         assert!(engine.check(&signal, Some(1000.0)).await);
@@ -371,6 +399,7 @@ mod tests {
             timestamp: Utc::now(),
             reason: "Testing".to_string(),
             exchange: Some("polygon".to_string()),
+            mode: Some("long_only".to_string()),
         };
 
         // Position value = 10 * 180 = 1800 < 5000 max → OK
@@ -384,7 +413,7 @@ mod tests {
         assert!(!engine.check(&big_signal, None).await);
 
         // Max open positions exceeded
-        engine.set_open_stock_positions(10);
+        engine.set_open_stock_positions("long_only", 10);
         assert!(!engine.check(&signal, None).await);
     }
 }

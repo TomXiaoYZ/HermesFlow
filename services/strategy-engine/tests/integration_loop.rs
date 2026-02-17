@@ -39,6 +39,7 @@ async fn test_integration_loop() {
         timestamp: Utc::now(),
         reason: "Test".to_string(),
         exchange: None,
+        mode: None,
     };
 
     let sig_json = serde_json::to_string(&simulated_signal).unwrap();

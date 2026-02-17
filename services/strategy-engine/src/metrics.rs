@@ -3,13 +3,13 @@ use lazy_static::lazy_static;
 use prometheus::{Counter, CounterVec, Histogram, IntGauge, Opts};
 
 lazy_static! {
-    /// Total signals generated, labelled by strategy and direction (buy/sell)
+    /// Total signals generated, labelled by strategy, direction (buy/sell), and mode
     pub static ref SIGNALS_GENERATED_TOTAL: CounterVec = CounterVec::new(
         Opts::new(
             "strategy_signals_generated_total",
             "Total trade signals generated"
         ),
-        &["strategy", "direction"]
+        &["strategy", "direction", "mode"]
     ).expect("Failed to create SIGNALS_GENERATED_TOTAL counter vec");
 
     /// Signal generation latency (VM execution + sigmoid)

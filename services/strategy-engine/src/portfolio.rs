@@ -25,6 +25,12 @@ pub enum PositionStatus {
     Closed,  // Fully exited
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PositionDirection {
+    Long,
+    Short,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
     pub token_address: String,
@@ -36,7 +42,9 @@ pub struct Position {
     pub open_time: DateTime<Utc>,
     pub is_moonbag: bool,
     pub highest_price: f64,
-    pub status: PositionStatus, // Track lifecycle
+    pub lowest_price: f64,
+    pub direction: PositionDirection,
+    pub status: PositionStatus,
 }
 
 impl Position {
@@ -44,21 +52,41 @@ impl Position {
         if self.entry_price == 0.0 {
             return 0.0;
         }
-        (self.current_price - self.entry_price) / self.entry_price
+        match self.direction {
+            PositionDirection::Long => (self.current_price - self.entry_price) / self.entry_price,
+            PositionDirection::Short => (self.entry_price - self.current_price) / self.entry_price,
+        }
     }
 
+    /// Maximum unrealized gain from entry.
+    /// Long: how far price rose from entry. Short: how far price dropped from entry.
     pub fn max_gain_pct(&self) -> f64 {
         if self.entry_price == 0.0 {
             return 0.0;
         }
-        (self.highest_price - self.entry_price) / self.entry_price
+        match self.direction {
+            PositionDirection::Long => (self.highest_price - self.entry_price) / self.entry_price,
+            PositionDirection::Short => (self.entry_price - self.lowest_price) / self.entry_price,
+        }
     }
 
-    pub fn drawdown_from_high(&self) -> f64 {
-        if self.highest_price == 0.0 {
-            return 0.0;
+    /// Drawdown from peak gain.
+    /// Long: price dropped from highest. Short: price bounced up from lowest.
+    pub fn drawdown_from_peak(&self) -> f64 {
+        match self.direction {
+            PositionDirection::Long => {
+                if self.highest_price == 0.0 {
+                    return 0.0;
+                }
+                (self.highest_price - self.current_price) / self.highest_price
+            }
+            PositionDirection::Short => {
+                if self.lowest_price == 0.0 {
+                    return 0.0;
+                }
+                (self.current_price - self.lowest_price) / self.lowest_price
+            }
         }
-        (self.highest_price - self.current_price) / self.highest_price
     }
 }
 
@@ -163,6 +191,7 @@ impl PortfolioManager {
         price: f64,
         amount: f64,
         cost: f64,
+        direction: PositionDirection,
     ) {
         let pos = Position {
             token_address: token.clone(),
@@ -174,6 +203,8 @@ impl PortfolioManager {
             open_time: Utc::now(),
             is_moonbag: false,
             highest_price: price,
+            lowest_price: price,
+            direction,
             status: PositionStatus::Active,
         };
         self.positions.insert(token, pos);
@@ -184,6 +215,9 @@ impl PortfolioManager {
             pos.current_price = price;
             if price > pos.highest_price {
                 pos.highest_price = price;
+            }
+            if price < pos.lowest_price {
+                pos.lowest_price = price;
             }
         }
     }
@@ -205,26 +239,26 @@ impl PortfolioManager {
         }
     }
 
-    /// Check all active positions for exit conditions based on latest prices
+    /// Check all active positions for exit conditions based on latest prices.
+    /// Works for both long and short positions using direction-aware PnL.
     pub fn check_exits(&self) -> Vec<ExitSignal> {
         let mut signals = Vec::new();
 
         for pos in self.positions.values() {
             let pnl = pos.pnl_pct();
 
-            // 1. Stop Loss
+            // 1. Stop Loss (direction-aware: pnl is negative when losing for both sides)
             if pnl <= self.config.stop_loss_pct {
                 signals.push(ExitSignal {
                     token_address: pos.token_address.clone(),
                     symbol: pos.symbol.clone(),
-                    sell_ratio: 1.0, // Sell All
+                    sell_ratio: 1.0,
                     reason: ExitReason::StopLoss(pnl),
                 });
                 continue;
             }
 
             // 2. Moonbag Take Profit (Target 1)
-            // Only if not already a moonbag
             if !pos.is_moonbag && pnl >= self.config.tp_moonbag_pct {
                 signals.push(ExitSignal {
                     token_address: pos.token_address.clone(),
@@ -235,16 +269,15 @@ impl PortfolioManager {
                 continue;
             }
 
-            // 3. Trailing Stop
-            // Sell all if we had a nice gain but gave back too much
+            // 3. Trailing Stop — uses direction-aware peak drawdown
             let max_gain = pos.max_gain_pct();
-            let dd = pos.drawdown_from_high();
+            let dd = pos.drawdown_from_peak();
 
             if max_gain > self.config.trailing_activation && dd > self.config.trailing_drop {
                 signals.push(ExitSignal {
                     token_address: pos.token_address.clone(),
                     symbol: pos.symbol.clone(),
-                    sell_ratio: 1.0, // Sell All
+                    sell_ratio: 1.0,
                     reason: ExitReason::TrailingStop(max_gain, dd),
                 });
                 continue;

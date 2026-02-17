@@ -22,6 +22,7 @@ fn main() -> anyhow::Result<()> {
         reason: "Test Signal".to_string(),
         strategy_id: "test-strat-001".to_string(),
         exchange: None,
+        mode: None,
     };
 
     let json = serde_json::to_string(&signal)?;

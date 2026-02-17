@@ -197,6 +197,7 @@ mod tests {
             timestamp: Utc::now(),
             reason: "test".to_string(),
             exchange: Some("polygon".to_string()),
+            mode: None,
         };
 
         // 100 * 180 = 18000 > 2000 default max → reject
@@ -226,6 +227,7 @@ mod tests {
             timestamp: Utc::now(),
             reason: "test".to_string(),
             exchange: Some("polygon".to_string()),
+            mode: None,
         };
 
         let result = engine.check_pre_trade(&signal, &None).await;

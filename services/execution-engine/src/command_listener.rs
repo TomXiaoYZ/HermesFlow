@@ -267,13 +267,14 @@ impl CommandListener {
             };
 
             info!(
-                "Received signal: {} {} {} x{} (strategy: {}, exchange: {:?})",
+                "Received signal: {} {} {} x{} (strategy: {}, exchange: {:?}, mode: {:?})",
                 signal.id,
                 signal.side,
                 signal.symbol,
                 signal.quantity,
                 signal.strategy_id,
-                signal.exchange
+                signal.exchange,
+                signal.mode
             );
 
             let route = Self::route_signal(&signal);

@@ -4,3 +4,4 @@ pub mod metrics;
 pub mod portfolio;
 pub mod risk;
 pub mod signal;
+pub mod signal_buffer;

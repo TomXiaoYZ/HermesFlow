@@ -165,19 +165,16 @@ impl EventBus {
                 loop {
                     match pubsub.get_message() {
                         Ok(msg) => match msg.get_payload::<String>() {
-                            Ok(payload) => {
-                                match serde_json::from_str::<OrderUpdate>(&payload) {
-                                    Ok(data) => {
-                                        if tx.blocking_send(data).is_err() {
-                                            break;
-                                        }
+                            Ok(payload) => match serde_json::from_str::<OrderUpdate>(&payload) {
+                                Ok(data) => {
+                                    if tx.blocking_send(data).is_err() {
+                                        break;
                                     }
-                                    Err(e) => tracing::error!(
-                                        "Failed to deserialize order update: {}",
-                                        e
-                                    ),
                                 }
-                            }
+                                Err(e) => {
+                                    tracing::error!("Failed to deserialize order update: {}", e)
+                                }
+                            },
                             Err(e) => tracing::error!("Failed to get payload: {}", e),
                         },
                         Err(e) => {

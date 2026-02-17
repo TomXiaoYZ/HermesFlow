@@ -75,6 +75,7 @@ async fn test_live_strategy_loop() -> anyhow::Result<()> {
                             timestamp: Utc::now(),
                             reason: "UnitTest".to_string(),
                             exchange: None,
+                            mode: None,
                         };
 
                         if risk_engine.check(&signal, Some(1_000_000.0)).await {
