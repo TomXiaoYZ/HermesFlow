@@ -31,7 +31,7 @@ impl StrategyMode {
     }
 
     pub fn all() -> &'static [StrategyMode] {
-        &[StrategyMode::LongOnly, StrategyMode::LongShort]
+        &[StrategyMode::LongShort]
     }
 }
 
