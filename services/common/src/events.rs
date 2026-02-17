@@ -36,6 +36,8 @@ pub struct TradeSignal {
     pub timestamp: DateTime<Utc>,
     pub reason: String,
     pub strategy_id: String,
+    #[serde(default)]
+    pub exchange: Option<String>, // "polygon", "binance", etc. None for legacy Solana signals
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Display, EnumString, PartialEq)]

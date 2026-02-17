@@ -22,14 +22,17 @@ redis = { version = "0.24", features = ["tokio-comp"] }
 # HTTP client
 reqwest = { version = "0.11", features = ["json"] }
 
+# Database (trade persistence — using tokio-postgres directly to avoid sqlx/Solana SDK dep conflicts)
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1"] }
+
 # IBKR (0.1 — will upgrade to 2.5 in Phase 5)
 ibapi = "0.1"
 
 # Solana
-solana-client = "1.16"
-solana-sdk = "1.16"
-solana-program = "1.16"
-solana-transaction-status = "1.16"
+solana-client = "1.18"
+solana-sdk = "1.18"
+solana-program = "1.18"
+solana-transaction-status = "1.18"
 spl-token = "3.5"
 spl-associated-token-account = "1.1"
 bs58 = "0.4"

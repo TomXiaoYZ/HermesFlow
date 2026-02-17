@@ -38,6 +38,7 @@ async fn test_integration_loop() {
         order_type: common::events::OrderType::Market,
         timestamp: Utc::now(),
         reason: "Test".to_string(),
+        exchange: None,
     };
 
     let sig_json = serde_json::to_string(&simulated_signal).unwrap();

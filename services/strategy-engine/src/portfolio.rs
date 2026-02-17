@@ -1,15 +1,22 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use tracing::info;
 
-// AlphaGPT Strategy Constants (Default)
-// In a production app, these should be loaded from a config file or env.
+// Crypto defaults (meme tokens — high volatility)
 pub const DEFAULT_STOP_LOSS_PCT: f64 = -0.15;
 pub const DEFAULT_TP_MOONBAG_PCT: f64 = 1.00; // +100% (2x)
 pub const DEFAULT_MOONBAG_SELL_RATIO: f64 = 0.50; // Sell 50%
 pub const DEFAULT_TRAILING_ACTIVATION: f64 = 0.50; // Activate after +50% gain
 pub const DEFAULT_TRAILING_DROP: f64 = 0.10; // Drop 10% from high triggers sell
+
+// Stock defaults (lower volatility)
+pub const DEFAULT_STOCK_STOP_LOSS_PCT: f64 = -0.05;
+pub const DEFAULT_STOCK_TP_MOONBAG_PCT: f64 = 0.15;
+pub const DEFAULT_STOCK_MOONBAG_SELL_RATIO: f64 = 0.50;
+pub const DEFAULT_STOCK_TRAILING_ACTIVATION: f64 = 0.08;
+pub const DEFAULT_STOCK_TRAILING_DROP: f64 = 0.03;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PositionStatus {
@@ -76,6 +83,34 @@ impl Default for PortfolioConfig {
     }
 }
 
+impl PortfolioConfig {
+    /// Config tuned for US stocks — tighter thresholds for lower volatility
+    pub fn stock_defaults() -> Self {
+        Self {
+            stop_loss_pct: env::var("STOCK_STOP_LOSS_PCT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_STOCK_STOP_LOSS_PCT),
+            tp_moonbag_pct: env::var("STOCK_TP_MOONBAG_PCT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_STOCK_TP_MOONBAG_PCT),
+            moonbag_sell_ratio: env::var("STOCK_MOONBAG_SELL_RATIO")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_STOCK_MOONBAG_SELL_RATIO),
+            trailing_activation: env::var("STOCK_TRAILING_ACTIVATION")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_STOCK_TRAILING_ACTIVATION),
+            trailing_drop: env::var("STOCK_TRAILING_DROP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_STOCK_TRAILING_DROP),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     StopLoss(f64),          // Current PnL
@@ -111,6 +146,14 @@ impl Default for PortfolioManager {
 impl PortfolioManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_config(config: PortfolioConfig) -> Self {
+        Self {
+            positions: HashMap::new(),
+            cash_balance: 0.0,
+            config,
+        }
     }
 
     pub fn add_position(

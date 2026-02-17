@@ -11,6 +11,7 @@ use redis::Commands;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_postgres::NoTls;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -32,6 +33,34 @@ async fn main() -> anyhow::Result<()> {
         })
         .trim()
         .to_string();
+
+    // ========================================
+    // 0. Initialize Database Connection (optional)
+    // ========================================
+    let db = match env::var("DATABASE_URL") {
+        Ok(url) => {
+            match tokio_postgres::connect(&url, NoTls).await {
+                Ok((client, connection)) => {
+                    // Spawn the connection handler in background
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.await {
+                            error!("PostgreSQL connection error: {}", e);
+                        }
+                    });
+                    info!("Connected to PostgreSQL for trade persistence");
+                    Some(Arc::new(client))
+                }
+                Err(e) => {
+                    warn!("DB not available, trades will not be persisted: {}", e);
+                    None
+                }
+            }
+        }
+        Err(_) => {
+            warn!("DATABASE_URL not set, trade persistence disabled");
+            None
+        }
+    };
 
     // ========================================
     // 1. Initialize Solana Trader
@@ -100,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
     // ========================================
     // 4. Setup Command Listener
     // ========================================
-    let mut listener = CommandListener::new(&redis_url)?;
+    let mut listener = CommandListener::new(&redis_url, db)?;
     listener.set_traders(solana.clone(), ibkr.clone(), futu.clone());
 
     // Record status before moves

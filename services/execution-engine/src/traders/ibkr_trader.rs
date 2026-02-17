@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use ibapi::contracts::Contract;
-use ibapi::orders::{Action, Order as IbOrder};
+use ibapi::orders::{Action, Order as IbOrder, OrderNotification};
 use ibapi::Client;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,6 +29,51 @@ unsafe impl Sync for IbClient {}
 #[derive(Clone)]
 pub struct IBKRTrader {
     client: Arc<Mutex<IbClient>>,
+}
+
+/// Accumulated fill data from IBKR order notifications
+struct FillAccumulator {
+    filled_qty: f64,
+    avg_price: f64,
+    status: String,
+}
+
+impl FillAccumulator {
+    fn new() -> Self {
+        Self {
+            filled_qty: 0.0,
+            avg_price: 0.0,
+            status: "Submitted".to_string(),
+        }
+    }
+
+    /// Process an OrderNotification and accumulate fill data
+    fn process(&mut self, notification: &OrderNotification) {
+        match notification {
+            OrderNotification::OrderStatus(os) => {
+                self.status = os.status.clone();
+                if os.filled > 0.0 {
+                    self.filled_qty = os.filled;
+                    self.avg_price = os.average_fill_price;
+                }
+            }
+            OrderNotification::ExecutionData(exec_data) => {
+                info!(
+                    "IBKR execution: shares={}, price={}, exec_id={}",
+                    exec_data.execution.shares,
+                    exec_data.execution.price,
+                    exec_data.execution.execution_id
+                );
+            }
+            OrderNotification::CommissionReport(report) => {
+                info!(
+                    "IBKR commission: ${:.4} (exec_id: {})",
+                    report.commission, report.execution_id
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 impl IBKRTrader {
@@ -58,6 +103,36 @@ impl IBKRTrader {
     fn build_contract(symbol: &str) -> Contract {
         let clean_symbol = symbol.strip_prefix("US.").unwrap_or(symbol);
         Contract::stock(clean_symbol)
+    }
+
+    /// Execute an order and collect fill data from the response iterator
+    fn execute_order(
+        client: &Arc<Mutex<IbClient>>,
+        order_id: i32,
+        contract: &Contract,
+        order: &IbOrder,
+        symbol: &str,
+    ) -> Result<FillAccumulator> {
+        let guard = client
+            .lock()
+            .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
+
+        let mut fill = FillAccumulator::new();
+
+        match guard.0.place_order(order_id, contract, order) {
+            Ok(responses) => {
+                for resp in responses {
+                    info!("IBKR order response: {:?}", resp);
+                    fill.process(&resp);
+                }
+            }
+            Err(e) => {
+                error!("IBKR place_order failed for {}: {}", symbol, e);
+                return Err(anyhow::anyhow!("IBKR place_order error: {}", e));
+            }
+        }
+
+        Ok(fill)
     }
 }
 
@@ -92,30 +167,16 @@ impl Trader for IBKRTrader {
         let client = self.client.clone();
         let sym = symbol.to_string();
 
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let guard = client
-                .lock()
-                .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
-            match guard.0.place_order(order_id, &contract, &order) {
-                Ok(responses) => {
-                    for resp in responses {
-                        info!("IBKR order response: {:?}", resp);
-                    }
-                }
-                Err(e) => {
-                    error!("IBKR place_order failed for {}: {}", sym, e);
-                    return Err(anyhow::anyhow!("IBKR place_order error: {}", e));
-                }
-            }
-            Ok(())
+        let fill = tokio::task::spawn_blocking(move || {
+            Self::execute_order(&client, order_id, &contract, &order, &sym)
         })
         .await??;
 
         Ok(OrderResult {
             order_id: order_id.to_string(),
-            status: "Submitted".to_string(),
-            filled_qty: 0.0,
-            avg_price: 0.0,
+            status: fill.status,
+            filled_qty: fill.filled_qty,
+            avg_price: fill.avg_price,
             broker: "IBKR".to_string(),
             timestamp: Utc::now(),
         })
@@ -146,30 +207,16 @@ impl Trader for IBKRTrader {
         let client = self.client.clone();
         let sym = symbol.to_string();
 
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let guard = client
-                .lock()
-                .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
-            match guard.0.place_order(order_id, &contract, &order) {
-                Ok(responses) => {
-                    for resp in responses {
-                        info!("IBKR order response: {:?}", resp);
-                    }
-                }
-                Err(e) => {
-                    error!("IBKR place_order(sell) failed for {}: {}", sym, e);
-                    return Err(anyhow::anyhow!("IBKR place_order error: {}", e));
-                }
-            }
-            Ok(())
+        let fill = tokio::task::spawn_blocking(move || {
+            Self::execute_order(&client, order_id, &contract, &order, &sym)
         })
         .await??;
 
         Ok(OrderResult {
             order_id: order_id.to_string(),
-            status: "Submitted".to_string(),
-            filled_qty: 0.0,
-            avg_price: 0.0,
+            status: fill.status,
+            filled_qty: fill.filled_qty,
+            avg_price: fill.avg_price,
             broker: "IBKR".to_string(),
             timestamp: Utc::now(),
         })
@@ -234,9 +281,11 @@ impl Trader for IBKRTrader {
     }
 
     async fn get_account_summary(&self) -> Result<AccountSummary> {
-        // ibapi 0.1 does not expose account_summary; estimate from positions
         let positions = self.get_positions().await?;
-        let total_value: f64 = positions.iter().map(|p| p.market_value).sum();
+        let total_value: f64 = positions
+            .iter()
+            .map(|p| p.quantity.abs() * p.avg_cost)
+            .sum();
 
         Ok(AccountSummary {
             net_liquidation: total_value,

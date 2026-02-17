@@ -1,6 +1,7 @@
 use common::events::{OrderSide, TradeSignal};
 use reqwest::Client;
 use serde::Deserialize;
+use std::env;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
@@ -10,6 +11,9 @@ pub struct RiskConfig {
     pub max_drawdown_limit: f64,        // e.g. 0.05 (5% daily)
     pub entry_amount_sol: f64,          // Default entry size in SOL (e.g. 0.1)
     pub check_honeypot: bool,           // Toggle for honeypot check
+    pub trade_size_usd: f64,            // USD amount per stock trade
+    pub max_stock_position_usd: f64,    // Max single stock position value
+    pub max_stock_positions: usize,     // Max number of open stock positions
 }
 
 impl Default for RiskConfig {
@@ -18,17 +22,30 @@ impl Default for RiskConfig {
             min_liquidity_usd: 1.0,
             max_position_size_portion: 0.5,
             max_drawdown_limit: 0.20,
-            entry_amount_sol: 0.02, // 0.02 SOL default testing
+            entry_amount_sol: 0.02,
             check_honeypot: true,
+            trade_size_usd: env::var("TRADE_SIZE_USD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500.0),
+            max_stock_position_usd: env::var("MAX_STOCK_POSITION_USD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5000.0),
+            max_stock_positions: env::var("MAX_STOCK_POSITIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
         }
     }
 }
 
 pub struct RiskEngine {
     config: RiskConfig,
-    current_equity: f64, // Mock current equity (USD or SOL?) - Let's assume SOL for simplicity or track USD.
+    current_equity: f64,
     daily_start_equity: f64,
     http_client: Client,
+    open_stock_positions: usize,
 }
 
 #[derive(Deserialize, Debug)]
@@ -52,8 +69,12 @@ struct RpcResult<T> {
 
 #[derive(Deserialize, Debug)]
 struct AccountInfo {
-    data: [String; 2], // ["base64_data", "base64"]
-                       // ... we just need data
+    data: [String; 2],
+}
+
+/// Check if a symbol looks like a US stock ticker (1-5 uppercase ASCII letters)
+pub fn is_stock_symbol(symbol: &str) -> bool {
+    !symbol.is_empty() && symbol.len() <= 5 && symbol.chars().all(|c| c.is_ascii_uppercase())
 }
 
 impl Default for RiskEngine {
@@ -69,6 +90,7 @@ impl RiskEngine {
             current_equity: 0.0,
             daily_start_equity: 0.0,
             http_client: Client::new(),
+            open_stock_positions: 0,
         }
     }
 
@@ -80,42 +102,83 @@ impl RiskEngine {
         self.config.check_honeypot = enabled;
     }
 
-    /// Calculate safe position size in SOL based on rules
+    pub fn set_open_stock_positions(&mut self, count: usize) {
+        self.open_stock_positions = count;
+    }
+
+    /// Calculate safe position size in SOL based on rules (for crypto)
     pub fn calculate_entry_size(&self) -> f64 {
         let max_size = self.current_equity * self.config.max_position_size_portion;
-        // Limit to configured entry amount or max size
         let size = self.config.entry_amount_sol.min(max_size);
 
         if self.current_equity - size < 0.01 {
-            // Leave dust for fees
             return 0.0;
         }
         size
     }
 
+    /// Calculate stock position size in shares based on USD trade size
+    pub fn calculate_stock_entry_shares(&self, current_price: f64) -> f64 {
+        if current_price <= 0.0 {
+            return 0.0;
+        }
+        (self.config.trade_size_usd / current_price).floor()
+    }
+
     /// Async check for signal validity
     pub async fn check(&self, signal: &TradeSignal, liquidity: Option<f64>) -> bool {
-        // 1. Check Liquidity
-        if let Some(liq) = liquidity {
-            if liq < self.config.min_liquidity_usd {
+        let is_stock = is_stock_symbol(&signal.symbol);
+
+        // 1. Check Liquidity (skip for stocks — they have exchange-level liquidity)
+        if !is_stock {
+            if let Some(liq) = liquidity {
+                if liq < self.config.min_liquidity_usd {
+                    warn!(
+                        "Risk Reject: Liquidity ${} < Min ${}",
+                        liq, self.config.min_liquidity_usd
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // 2. Check Drawdown
+        if self.daily_start_equity > 0.0 {
+            let dd = (self.daily_start_equity - self.current_equity) / self.daily_start_equity;
+            if dd > self.config.max_drawdown_limit {
+                warn!("Risk Reject: Daily Drawdown {:.2}% > Limit", dd * 100.0);
+                return false;
+            }
+        }
+
+        // 3. Stock-specific checks
+        if is_stock && signal.side == OrderSide::Buy {
+            // Max position value check
+            if let Some(price) = signal.price {
+                let position_value = signal.quantity * price;
+                if position_value > self.config.max_stock_position_usd {
+                    warn!(
+                        "Risk Reject: Stock position value ${:.2} > max ${:.2}",
+                        position_value, self.config.max_stock_position_usd
+                    );
+                    return false;
+                }
+            }
+
+            // Max open positions check
+            if self.open_stock_positions >= self.config.max_stock_positions {
                 warn!(
-                    "Risk Reject: Liquidity ${} < Min ${}",
-                    liq, self.config.min_liquidity_usd
+                    "Risk Reject: Already holding {} stock positions (max {})",
+                    self.open_stock_positions, self.config.max_stock_positions
                 );
                 return false;
             }
         }
 
-        // 2. Check Drawdown
-        let dd = (self.daily_start_equity - self.current_equity) / self.daily_start_equity;
-        if dd > self.config.max_drawdown_limit {
-            warn!("Risk Reject: Daily Drawdown {:.2}% > Limit", dd * 100.0);
-            return false;
-        }
-
-        // 3. Honeypot Check (Sell Simulation)
+        // 4. Honeypot Check — skip for stocks (only relevant for crypto tokens)
         if self.config.check_honeypot
             && signal.side == OrderSide::Buy
+            && !is_stock
             && !self.check_honeypot(&signal.symbol).await
         {
             warn!(
@@ -129,26 +192,18 @@ impl RiskEngine {
     }
 
     async fn check_honeypot(&self, token_mint: &str) -> bool {
-        // Skip for SOL
         if token_mint == "So11111111111111111111111111111111111111112" {
             return true;
         }
 
-        // Simulate selling 1000 tokens (arbitrary unit) -> SOL
-        // If route exists, likelihood of honeypot is lower (but not zero).
-        // Real honeypot check involves simulation of transaction.
-        // AlphaGPT used a "Quote Check" as a proxy.
-        // URL: https://quote-api.jup.ag/v6/quote?inputMint=XXX&outputMint=SOL&amount=1000000&slippageBps=50
-
         let sol_mint = "So11111111111111111111111111111111111111112";
-        let amount = 1_000_000; // 1M atoms of token (assuming 6 decimals = 1 token, or just small dust)
+        let amount = 1_000_000;
 
         let url = format!(
             "https://quote-api.jup.ag/v6/quote?inputMint={}&outputMint={}&amount={}&slippageBps=100",
             token_mint, sol_mint, amount
         );
 
-        // Retry logic (3 attempts)
         let mut attempts = 0;
         loop {
             attempts += 1;
@@ -159,11 +214,8 @@ impl RiskEngine {
                             return true;
                         }
                     } else {
-                        // 400/500 errors
                         warn!("Honeypot check HTTP error: {}", resp.status());
                     }
-                    // If we got a response but it wasn't valid, maybe don't retry immediately if it's 400.
-                    // But if it's 500, retry.
                     break;
                 }
                 Err(e) => {
@@ -172,7 +224,6 @@ impl RiskEngine {
                         attempts, e
                     );
                     if attempts >= 3 {
-                        // Fallback to RPC Check if API fails completely
                         warn!("Jupiter API failed 3 times. Trying RPC Fallback...");
                         return self.check_honeypot_rpc(token_mint).await;
                     }
@@ -184,10 +235,9 @@ impl RiskEngine {
     }
 
     async fn check_honeypot_rpc(&self, token_mint: &str) -> bool {
-        let rpc_url = std::env::var("SOLANA_RPC_URL")
+        let rpc_url = env::var("SOLANA_RPC_URL")
             .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
 
-        // JSON RPC Request
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -205,23 +255,13 @@ impl RiskEngine {
                 if let Ok(rpc_resp) = resp.json::<RpcResponse<AccountInfo>>().await {
                     if let Some(result) = rpc_resp.result {
                         if let Some(base64_str) = result.value.data.first() {
-                            // Decode Base64
                             use base64::{engine::general_purpose, Engine as _};
                             if let Ok(data) = general_purpose::STANDARD.decode(base64_str) {
-                                // SPL Token Mint Layout: 82 bytes
-                                // Offset 46-49: Freeze Authority Option (u32)
-                                // Offset 50-81: Freeze Authority Key (32 bytes)
-
                                 if data.len() >= 82 {
-                                    // Check offset 46 (Option tag)
-                                    // 0 = None, 1 = Some
                                     let freeze_option = u32::from_le_bytes([
                                         data[46], data[47], data[48], data[49],
                                     ]);
                                     if freeze_option == 1 {
-                                        // FREEZE AUTHORITY EXISTS!
-                                        // Check if it's not null (sometimes it's 1 but key is zero? unlikely for standard SPL)
-                                        // But safe bet: If Freeze Auth is set, REJECT.
                                         warn!(
                                             "Risk Reject: Freeze Authority detected for {}",
                                             token_mint
@@ -244,8 +284,6 @@ impl RiskEngine {
             }
         }
 
-        // If RPC also fails, we default to reject (conservative) or accept?
-        // Since network is bad, maybe reject to be safe.
         false
     }
 }
@@ -257,50 +295,96 @@ mod tests {
     use common::events::OrderType;
     use uuid::Uuid;
 
+    #[test]
+    fn test_is_stock_symbol() {
+        assert!(is_stock_symbol("AAPL"));
+        assert!(is_stock_symbol("MSFT"));
+        assert!(is_stock_symbol("A"));
+        assert!(!is_stock_symbol(
+            "So11111111111111111111111111111111111111112"
+        ));
+        assert!(!is_stock_symbol("sol"));
+        assert!(!is_stock_symbol(""));
+        assert!(!is_stock_symbol("TOOLONGSYMBOL"));
+    }
+
     #[tokio::test]
     async fn test_position_sizing_logic() {
         let mut engine = RiskEngine::new();
         engine.update_equity(0.5);
-        // Config: 0.5 portion, 0.02 entry default, current equity 0.5 SOL
-        // Max portion size = 0.5 * 0.5 = 0.25 SOL
-        // Entry default = 0.02 SOL
-        // Min(0.25, 0.02) = 0.02
-        // Remainder = 0.5 - 0.02 = 0.48 > 0.01. OK.
 
         let size = engine.calculate_entry_size();
         assert_eq!(size, 0.02);
 
-        // Test Low Balance Cap
-        engine.update_equity(0.015); // Very low
-                                     // Max portion = 0.015 * 0.5 = 0.0075
-                                     // Entry = 0.02
-                                     // Min = 0.0075
-                                     // Remainder = 0.015 - 0.0075 = 0.0075 < 0.01 (dust limit)
-                                     // Should return 0.0
+        engine.update_equity(0.015);
         let size = engine.calculate_entry_size();
         assert_eq!(size, 0.0);
+    }
+
+    #[test]
+    fn test_stock_entry_shares() {
+        let engine = RiskEngine::new();
+        // Default trade_size_usd = 500.0
+        let shares = engine.calculate_stock_entry_shares(180.0);
+        assert_eq!(shares, 2.0); // floor(500/180) = 2
+
+        let shares = engine.calculate_stock_entry_shares(0.0);
+        assert_eq!(shares, 0.0);
     }
 
     #[tokio::test]
     async fn test_risk_check_liquidity() {
         let mut engine = RiskEngine::new();
-        engine.set_check_honeypot(false); // Disable network call for unit test
+        engine.set_check_honeypot(false);
 
         let signal = TradeSignal {
             id: Uuid::new_v4(),
             strategy_id: "test".to_string(),
-            symbol: "TEST".to_string(),
+            symbol: "TEST_TOKEN_LONG_NAME_XXXX".to_string(),
             side: OrderSide::Buy,
             quantity: 1.0,
             price: Some(1.0),
             order_type: OrderType::Market,
             timestamp: Utc::now(),
             reason: "Testing".to_string(),
+            exchange: None,
         };
 
-        // Pass
         assert!(engine.check(&signal, Some(1000.0)).await);
-        // Fail
         assert!(!engine.check(&signal, Some(0.5)).await);
+    }
+
+    #[tokio::test]
+    async fn test_stock_risk_checks() {
+        let mut engine = RiskEngine::new();
+        engine.set_check_honeypot(false);
+
+        // Stock signal — should skip liquidity & honeypot checks
+        let signal = TradeSignal {
+            id: Uuid::new_v4(),
+            strategy_id: "test".to_string(),
+            symbol: "AAPL".to_string(),
+            side: OrderSide::Buy,
+            quantity: 10.0,
+            price: Some(180.0),
+            order_type: OrderType::Market,
+            timestamp: Utc::now(),
+            reason: "Testing".to_string(),
+            exchange: Some("polygon".to_string()),
+        };
+
+        // Position value = 10 * 180 = 1800 < 5000 max → OK
+        assert!(engine.check(&signal, None).await);
+
+        // Max position value exceeded
+        let big_signal = TradeSignal {
+            quantity: 100.0, // 100 * 180 = 18000 > 5000
+            ..signal.clone()
+        };
+        assert!(!engine.check(&big_signal, None).await);
+
+        // Max open positions exceeded
+        engine.set_open_stock_positions(10);
+        assert!(!engine.check(&signal, None).await);
     }
 }

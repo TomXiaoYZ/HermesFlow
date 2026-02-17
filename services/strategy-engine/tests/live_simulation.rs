@@ -74,6 +74,7 @@ async fn test_live_strategy_loop() -> anyhow::Result<()> {
                             order_type: common::events::OrderType::Market,
                             timestamp: Utc::now(),
                             reason: "UnitTest".to_string(),
+                            exchange: None,
                         };
 
                         if risk_engine.check(&signal, Some(1_000_000.0)).await {

@@ -21,6 +21,7 @@ fn main() -> anyhow::Result<()> {
         timestamp: Utc::now(),
         reason: "Test Signal".to_string(),
         strategy_id: "test-strat-001".to_string(),
+        exchange: None,
     };
 
     let json = serde_json::to_string(&signal)?;

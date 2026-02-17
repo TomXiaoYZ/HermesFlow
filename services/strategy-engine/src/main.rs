@@ -1,22 +1,49 @@
 use backtest_engine::vm::vm::StackVM;
 use chrono::Utc;
 use common::events::{OrderSide, OrderType, TradeSignal};
+use std::collections::HashMap;
 use std::env;
 use strategy_engine::event_bus::EventBus;
 use strategy_engine::market_data_manager::MarketDataManager;
-use strategy_engine::risk::RiskEngine;
+use strategy_engine::portfolio::PortfolioConfig;
+use strategy_engine::risk::{is_stock_symbol, RiskEngine};
 use tracing::{error, info, warn};
+
+use serde::Deserialize;
+use std::sync::{Arc, RwLock};
+
+#[derive(Debug, Clone)]
+struct SymbolStrategy {
+    formula: Vec<usize>,
+    mode: String,
+    strategy_id: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct StrategyUpdate {
+    formula: Vec<usize>,
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    meta: StrategyMeta,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+struct StrategyMeta {
+    name: String,
+    description: String,
+}
 
 #[tokio::main]
 #[allow(unreachable_code)]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing (with OpenTelemetry if OTEL_EXPORTER_OTLP_ENDPOINT is set)
     if !common::telemetry::try_init_telemetry("strategy-engine") {
         tracing_subscriber::fmt::init();
     }
     info!("Starting Strategy Engine...");
 
-    // Initialize Prometheus metrics
     if let Err(e) = common::metrics::init_metrics("strategy-engine") {
         error!("Failed to initialize metrics: {}", e);
     }
@@ -24,93 +51,96 @@ async fn main() -> anyhow::Result<()> {
         error!("Failed to initialize strategy metrics: {}", e);
     }
 
-    // Spawn health check server (also serves /metrics when metrics feature enabled)
     tokio::spawn(common::health::start_health_server("strategy-engine", 8082));
 
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let signal_threshold: f64 = env::var("SIGNAL_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.52);
 
     // 1. Setup Components
     let event_bus = EventBus::new(&redis_url)?;
     let mut market_manager = MarketDataManager::new();
-    let vm = StackVM::new(); // In real app, load this from config/DB
+    let vm = StackVM::new();
     let mut risk_engine = RiskEngine::new();
-    let mut portfolio_manager = strategy_engine::portfolio::PortfolioManager::new();
 
-    use serde::Deserialize;
-    use std::sync::{Arc, RwLock};
+    // Two portfolio managers: crypto (default thresholds) and stock (tighter)
+    let mut crypto_portfolio = strategy_engine::portfolio::PortfolioManager::new();
+    let mut stock_portfolio = strategy_engine::portfolio::PortfolioManager::with_config(
+        PortfolioConfig::stock_defaults(),
+    );
 
-    #[derive(Deserialize, Debug)]
-    struct StrategyUpdate {
-        formula: Vec<usize>,
-        meta: StrategyMeta,
-    }
+    // Per-symbol strategy map (populated by evolved formulas from strategy-generator)
+    let strategies: Arc<RwLock<HashMap<String, SymbolStrategy>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
-    #[derive(Deserialize, Debug)]
-    #[allow(dead_code)]
-    struct StrategyMeta {
-        name: String,
-        description: String,
-    }
-
-    // 2. Load Initial Strategy Logic
-    // Try to load from file, otherwise use default
-    let strategy_file = "best_meme_strategy.json";
-    let (initial_formula, initial_name) = match std::fs::read_to_string(strategy_file) {
-        Ok(content) => match serde_json::from_str::<StrategyUpdate>(&content) {
-            Ok(update) => {
-                info!("Loaded strategy from file: {}", update.meta.name);
-                (update.formula, update.meta.name)
-            }
-            Err(e) => {
-                error!("Failed to parse strategy file: {}", e);
-                (vec![0, 19], "Volatility Breakout (Fallback)".to_string())
-            }
-        },
-        Err(_) => {
-            warn!("Strategy file not found, using default.");
-            (vec![0, 19], "Volatility Breakout (Base)".to_string())
-        }
-    };
-
-    let formula_tokens = Arc::new(RwLock::new(initial_formula));
-    let current_strategy_name = Arc::new(RwLock::new(initial_name));
+    // Fallback formula for symbols without an evolved strategy
+    let fallback_formula: Vec<usize> = vec![0, 19]; // Volatility Breakout
 
     info!("Strategy Engine Initialized. Connecting to Event Bus...");
 
-    // 2.1 Spawn Thread to Listen for Formula Updates
-    let _bus_clone = EventBus::new(&redis_url)?;
-    let formula_clone = formula_tokens.clone();
-    let name_clone = current_strategy_name.clone();
+    // 2. Spawn Thread to Listen for Per-Symbol Formula Updates via Pattern Subscribe
+    let formula_strategies = strategies.clone();
+    let redis_url_clone = redis_url.clone();
 
     tokio::spawn(async move {
-        // We need a raw redis connection for pubsub loop
-        let client = redis::Client::open(redis_url.as_str()).unwrap();
-        let mut con = client.get_connection().unwrap();
+        let client = match redis::Client::open(redis_url_clone.as_str()) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to create Redis client for strategy updates: {}", e);
+                return;
+            }
+        };
+        let mut con = match client.get_connection() {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Failed to connect to Redis for strategy updates: {}", e);
+                return;
+            }
+        };
         let mut pubsub = con.as_pubsub();
-        // Subscribe to update channels
-        let _ = pubsub.subscribe("strategy_updates");
 
-        info!("Evolution Listener: Connected to strategy_updates channel");
+        // Pattern subscribe: strategy_updates:{exchange}:{symbol}:{mode}
+        if let Err(e) = pubsub.psubscribe("strategy_updates:polygon:*:*") {
+            error!("Failed to pattern subscribe: {}", e);
+            return;
+        }
+        // Also subscribe to the legacy channel for backward compatibility
+        if let Err(e) = pubsub.subscribe("strategy_updates") {
+            warn!("Failed to subscribe to legacy strategy_updates: {}", e);
+        }
 
-        // Spawn Heartbeat Loop
-        common::heartbeat::spawn_heartbeat("strategy-engine", &redis_url);
+        info!("Evolution Listener: Subscribed to strategy_updates:polygon:*:* pattern");
+
+        common::heartbeat::spawn_heartbeat("strategy-engine", &redis_url_clone);
 
         loop {
             if let Ok(msg) = pubsub.get_message() {
+                let channel: String = msg.get_channel_name().to_string();
                 if let Ok(payload) = msg.get_payload::<String>() {
-                    // Try parsing as StrategyUpdate
                     if let Ok(update) = serde_json::from_str::<StrategyUpdate>(&payload) {
-                        info!(
-                            "Evolution Event: Switching to strategy '{}'",
-                            update.meta.name
-                        );
-                        {
-                            let mut w_formula = formula_clone.write().unwrap();
-                            *w_formula = update.formula;
-                        }
-                        {
-                            let mut w_name = name_clone.write().unwrap();
-                            *w_name = update.meta.name;
+                        // Parse symbol and mode from channel name or payload
+                        let (symbol, mode) = parse_channel_or_payload(&channel, &update);
+
+                        if let Some(sym) = symbol {
+                            let strategy_id = update.meta.name.clone();
+                            info!(
+                                "Evolution Event: {} -> strategy '{}' (mode: {})",
+                                sym,
+                                strategy_id,
+                                mode.as_deref().unwrap_or("unknown")
+                            );
+
+                            let mut w = formula_strategies.write().unwrap();
+                            w.insert(
+                                sym,
+                                SymbolStrategy {
+                                    formula: update.formula,
+                                    mode: mode.unwrap_or_else(|| "long_only".to_string()),
+                                    strategy_id,
+                                },
+                            );
                         }
                     }
                 }
@@ -133,31 +163,27 @@ async fn main() -> anyhow::Result<()> {
             Some(update) = portfolio_rx.recv() => {
                 info!("Portfolio Update: Cash={:.4}, Total={:.4}", update.cash, update.total_equity);
                 risk_engine.update_equity(update.total_equity);
-                // Also update portfolio manager cash if needed, but RiskEngine is the gatekeeper here.
             }
 
             Some(msg) = market_rx.recv() => {
-                // Debug Log
-                info!("Market Data Received: {} Price: {}", msg.symbol, msg.price);
-
                 strategy_engine::metrics::MARKET_DATA_CONSUMED.inc();
                 let lag_secs = (Utc::now() - msg.timestamp).num_milliseconds() as f64 / 1000.0;
                 if lag_secs >= 0.0 {
                     strategy_engine::metrics::MARKET_DATA_LAG_SECONDS.observe(lag_secs);
                 }
 
-                // 4.0 Update Portfolio Prices & Check Exits
-                portfolio_manager.update_price(&msg.symbol, msg.price);
+                let is_stock = is_stock_symbol(&msg.symbol);
+                let portfolio = if is_stock { &mut stock_portfolio } else { &mut crypto_portfolio };
 
-                // Run Exit Logic (Stop Loss / Take Profit)
-                let exit_signals = portfolio_manager.check_exits();
+                // 4.0 Update Portfolio Prices & Check Exits
+                portfolio.update_price(&msg.symbol, msg.price);
+
+                let exit_signals = portfolio.check_exits();
                 for exit in exit_signals {
-                    // Check if we are already closing this position to avoid spam
-                    if let Some(pos) = portfolio_manager.positions.get_mut(&exit.token_address) {
+                    if let Some(pos) = portfolio.positions.get_mut(&exit.token_address) {
                         if pos.status == strategy_engine::portfolio::PositionStatus::Closing {
                             continue;
                         }
-                        // Mark as Closing
                         pos.status = strategy_engine::portfolio::PositionStatus::Closing;
 
                         info!(
@@ -169,27 +195,25 @@ async fn main() -> anyhow::Result<()> {
                             .with_label_values(&["ExitLogic", "sell"])
                             .inc();
 
-                        // Construct Signal
                         let signal = TradeSignal {
                             id: uuid::Uuid::new_v4(),
                             strategy_id: "ExitLogic".to_string(),
                             symbol: exit.symbol.clone(),
                             side: OrderSide::Sell,
-                            quantity: exit.sell_ratio, // Sell Ratio (0.5 or 1.0)
+                            quantity: exit.sell_ratio,
                             price: Some(msg.price),
                             order_type: OrderType::Market,
                             timestamp: Utc::now(),
                             reason: format!("Exit: {:?}", exit.reason),
+                            exchange: if is_stock { Some("polygon".to_string()) } else { None },
                         };
 
-                        // Publish
                         if let Err(e) = event_bus.publish_signal(&signal).await {
                             error!("Failed to publish Exit signal: {}", e);
                         }
 
                         if exit.sell_ratio < 0.99 {
-                            // Partial sell (Moonbag). Mark is_moonbag = true.
-                            if let Some(p) = portfolio_manager.positions.get_mut(&exit.token_address) {
+                            if let Some(p) = portfolio.positions.get_mut(&exit.token_address) {
                                 p.is_moonbag = true;
                                 p.status = strategy_engine::portfolio::PositionStatus::Active;
                             }
@@ -199,49 +223,85 @@ async fn main() -> anyhow::Result<()> {
 
                 // 4.1 Update Buffer / Generate Features
                 if let Some(features) = market_manager.on_update(msg.clone()) {
-                    // 4.2 Run VM (Entry Logic)
-                    let current_formula = { formula_tokens.read().unwrap().clone() };
-                    let strategy_name = { current_strategy_name.read().unwrap().clone() };
+                    // 4.2 Look up per-symbol formula, fall back to default
+                    let (current_formula, strategy_name, _mode) = {
+                        let strats = strategies.read().unwrap();
+                        if let Some(ss) = strats.get(&msg.symbol) {
+                            (ss.formula.clone(), ss.strategy_id.clone(), ss.mode.clone())
+                        } else {
+                            (fallback_formula.clone(), "Fallback".to_string(), "long_only".to_string())
+                        }
+                    };
 
-                    // Start Entry Logic only if we don't hold it
-                    if portfolio_manager.positions.contains_key(&msg.symbol) {
+                    // Skip entry if we already hold this symbol
+                    if portfolio.positions.contains_key(&msg.symbol) {
                         continue;
                     }
 
                     if let Some(result) = vm.execute(&current_formula, &features) {
                         if let Some(last_val) = result.last() {
-                            let threshold = 0.001;
+                            // Use sigmoid threshold for evolved strategies, raw threshold for fallback
+                            let threshold = if strategy_name == "Fallback" {
+                                0.001
+                            } else {
+                                signal_threshold
+                            };
 
-                            if *last_val > threshold {
-                                // ENTRY SIGNAL
-                                // Calculate Size
-                                let amount_sol = risk_engine.calculate_entry_size();
-                                if amount_sol <= 0.0 {
-                                    warn!("Insufficient equity/size for entry.");
-                                    continue;
-                                }
+                            // Apply sigmoid for evolved strategies to normalize output to [0, 1]
+                            let signal_score = if strategy_name != "Fallback" {
+                                1.0 / (1.0 + (-last_val).exp())
+                            } else {
+                                *last_val
+                            };
 
-                                // Construct Signal
+                            if signal_score > threshold {
+                                // Calculate position size
+                                let (shares, exchange) = if is_stock {
+                                    let s = risk_engine.calculate_stock_entry_shares(msg.price);
+                                    if s <= 0.0 {
+                                        warn!("Insufficient price for stock entry: {}", msg.symbol);
+                                        continue;
+                                    }
+                                    (s, Some("polygon".to_string()))
+                                } else {
+                                    let amount_sol = risk_engine.calculate_entry_size();
+                                    if amount_sol <= 0.0 {
+                                        warn!("Insufficient equity/size for entry.");
+                                        continue;
+                                    }
+                                    (amount_sol, None)
+                                };
+
                                 let signal = TradeSignal {
                                     id: uuid::Uuid::new_v4(),
                                     strategy_id: strategy_name.clone(),
                                     symbol: msg.symbol.clone(),
                                     side: OrderSide::Buy,
-                                    quantity: amount_sol,
+                                    quantity: shares,
                                     price: Some(msg.price),
                                     order_type: OrderType::Market,
                                     timestamp: Utc::now(),
-                                    reason: format!("Entry Signal: {:.4}", last_val),
+                                    reason: format!("Entry Signal: {:.4} (thr: {:.4})", signal_score, threshold),
+                                    exchange,
                                 };
 
-                                // Async Risk Check (with Honeypot)
+                                // Update open stock position count for risk engine
+                                if is_stock {
+                                    risk_engine.set_open_stock_positions(
+                                        portfolio.positions.len(),
+                                    );
+                                }
+
                                 let risk_approved = risk_engine.check(&signal, Some(10000.0)).await;
                                 strategy_engine::metrics::RISK_CHECKS_TOTAL
                                     .with_label_values(&[if risk_approved { "approved" } else { "rejected" }])
                                     .inc();
+
                                 if risk_approved {
-                                    // Valid Signal
-                                    info!("ENTRY SIGNAL: {} @ {} (Amt: {} SOL)", msg.symbol, msg.price, amount_sol);
+                                    info!(
+                                        "ENTRY SIGNAL: {} @ {} (Qty: {}, Strategy: {})",
+                                        msg.symbol, msg.price, shares, strategy_name
+                                    );
 
                                     strategy_engine::metrics::SIGNALS_GENERATED_TOTAL
                                         .with_label_values(&[&strategy_name, "buy"])
@@ -250,16 +310,23 @@ async fn main() -> anyhow::Result<()> {
                                     if let Err(e) = event_bus.publish_signal(&signal).await {
                                         error!("Failed to publish Entry signal: {}", e);
                                     } else {
-                                        // Optimistic Portfolio Update
-                                        portfolio_manager.add_position(
+                                        let amount_held = if is_stock {
+                                            shares
+                                        } else {
+                                            shares / msg.price
+                                        };
+                                        portfolio.add_position(
                                             msg.symbol.clone(),
                                             msg.symbol.clone(),
                                             msg.price,
-                                            amount_sol / msg.price,
+                                            amount_held,
                                             msg.price,
                                         );
-                                        strategy_engine::metrics::ACTIVE_POSITIONS
-                                            .set(portfolio_manager.positions.len() as i64);
+                                        strategy_engine::metrics::ACTIVE_POSITIONS.set(
+                                            (crypto_portfolio.positions.len()
+                                                + stock_portfolio.positions.len())
+                                                as i64,
+                                        );
                                     }
                                 }
                             }
@@ -271,4 +338,22 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse symbol and mode from Redis channel name (e.g., "strategy_updates:polygon:AAPL:long_only")
+/// or fall back to payload fields.
+fn parse_channel_or_payload(
+    channel: &str,
+    update: &StrategyUpdate,
+) -> (Option<String>, Option<String>) {
+    let parts: Vec<&str> = channel.split(':').collect();
+    if parts.len() == 4 {
+        // strategy_updates:exchange:symbol:mode
+        let symbol = parts[2].to_string();
+        let mode = parts[3].to_string();
+        return (Some(symbol), Some(mode));
+    }
+
+    // Fall back to payload fields
+    (update.symbol.clone(), update.mode.clone())
 }
