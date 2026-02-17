@@ -5,12 +5,53 @@ use backtest_engine::vm::vm::StackVM;
 use chrono::{DateTime, Utc};
 use ndarray::{Array2, Array3};
 use rust_decimal::prelude::ToPrimitive;
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
 use sqlx::FromRow;
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 
 pub mod data_frame;
 pub mod portfolio;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyMode {
+    LongOnly,
+    LongShort,
+}
+
+impl StrategyMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::LongOnly => "long_only",
+            Self::LongShort => "long_short",
+        }
+    }
+
+    pub fn all() -> &'static [StrategyMode] {
+        &[StrategyMode::LongOnly, StrategyMode::LongShort]
+    }
+}
+
+impl fmt::Display for StrategyMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for StrategyMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "long_only" => Ok(Self::LongOnly),
+            "long_short" => Ok(Self::LongShort),
+            _ => Err(format!("unknown strategy mode: {}", s)),
+        }
+    }
+}
 
 #[derive(Debug, FromRow)]
 pub struct Candle {
@@ -253,7 +294,7 @@ impl Backtester {
     ///   4. fitness = cumulative_pnl - drawdown_penalty - complexity_penalty
     ///   5. Require minimum trading activity
     #[allow(dead_code)]
-    pub fn evaluate_symbol(&self, genome: &mut Genome, symbol: &str) {
+    pub fn evaluate_symbol(&self, genome: &mut Genome, symbol: &str, mode: StrategyMode) {
         let data = match self.cache.get(symbol) {
             Some(d) => d,
             None => {
@@ -273,7 +314,7 @@ impl Backtester {
             }
 
             let split_idx = (len as f64 * 0.7).max(20.0) as usize;
-            let pnl = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx);
+            let pnl = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx, mode);
 
             // Parsimony pressure: penalize formulas longer than 10 tokens.
             // Shorter formulas are less likely to overfit.
@@ -291,7 +332,7 @@ impl Backtester {
     }
 
     /// PnL-based evaluation on out-of-sample data (last 30%).
-    pub fn evaluate_symbol_oos(&self, genome: &Genome, symbol: &str) -> f64 {
+    pub fn evaluate_symbol_oos(&self, genome: &Genome, symbol: &str, mode: StrategyMode) -> f64 {
         let data = match self.cache.get(symbol) {
             Some(d) => d,
             None => return 0.0,
@@ -311,7 +352,7 @@ impl Backtester {
                 return 0.0;
             }
 
-            self.pnl_fitness(sig_slice, ret_slice, split_idx, len)
+            self.pnl_fitness(sig_slice, ret_slice, split_idx, len, mode)
         } else {
             0.0
         }
@@ -322,7 +363,13 @@ impl Backtester {
     /// Runs VM once, then evaluates PnL on K equal-sized temporal folds.
     /// Fitness = mean(fold_pnls) - std_penalty * std(fold_pnls) - complexity_penalty.
     /// Strategies must perform consistently across all time regimes.
-    pub fn evaluate_symbol_kfold(&self, genome: &mut Genome, symbol: &str, k: usize) {
+    pub fn evaluate_symbol_kfold(
+        &self,
+        genome: &mut Genome,
+        symbol: &str,
+        k: usize,
+        mode: StrategyMode,
+    ) {
         let data = match self.cache.get(symbol) {
             Some(d) => d,
             None => {
@@ -358,7 +405,7 @@ impl Backtester {
         for i in 0..k {
             let start = i * fold_size;
             let end = if i == k - 1 { len } else { (i + 1) * fold_size };
-            let pnl = self.pnl_fitness(sig_slice, ret_slice, start, end);
+            let pnl = self.pnl_fitness(sig_slice, ret_slice, start, end, mode);
             if pnl > -9.0 {
                 // Valid fold (not rejected by minimum activity check)
                 fold_pnls.push(pnl);
@@ -399,7 +446,13 @@ impl Backtester {
     }
 
     /// Diagnostic: return per-fold PnL for monitoring/frontend display.
-    pub fn evaluate_symbol_fold_detail(&self, genome: &Genome, symbol: &str, k: usize) -> Vec<f64> {
+    pub fn evaluate_symbol_fold_detail(
+        &self,
+        genome: &Genome,
+        symbol: &str,
+        k: usize,
+        mode: StrategyMode,
+    ) -> Vec<f64> {
         let data = match self.cache.get(symbol) {
             Some(d) => d,
             None => return vec![],
@@ -426,23 +479,36 @@ impl Backtester {
         for i in 0..k {
             let start = i * fold_size;
             let end = if i == k - 1 { len } else { (i + 1) * fold_size };
-            fold_pnls.push(self.pnl_fitness(sig_slice, ret_slice, start, end));
+            fold_pnls.push(self.pnl_fitness(sig_slice, ret_slice, start, end, mode));
         }
         fold_pnls
     }
 
     /// Core PnL fitness computation used by both IS and OOS evaluation.
     ///
-    /// Signal processing: sigmoid → threshold → binary long position
-    /// Cost model: IBKR 1bp base fee + market impact
-    /// Penalty: large per-bar losses
-    fn pnl_fitness(&self, sig: &[f64], ret: &[f64], start: usize, end: usize) -> f64 {
+    /// Signal processing: sigmoid -> threshold -> position
+    ///   - LongOnly: pos = 1.0 if sigmoid > upper, else 0.0
+    ///   - LongShort: pos = 1.0 if sigmoid > upper, -1.0 if sigmoid < lower, else 0.0
+    ///   - Cost model: IBKR 1bp base fee + 50% borrow premium for short entries
+    ///   - Penalty: large per-bar losses
+    fn pnl_fitness(
+        &self,
+        sig: &[f64],
+        ret: &[f64],
+        start: usize,
+        end: usize,
+        mode: StrategyMode,
+    ) -> f64 {
         let n = end - start;
         if n < 10 {
             return -10.0;
         }
 
-        let threshold = adaptive_threshold(sig, start, end);
+        let upper = adaptive_threshold(sig, start, end);
+        let lower = match mode {
+            StrategyMode::LongShort => adaptive_lower_threshold(sig, start, end),
+            StrategyMode::LongOnly => 0.0, // unused
+        };
         let fee = self.base_fee();
         let mut prev_pos = 0.0_f64;
         let mut cum_pnl = 0.0_f64;
@@ -451,16 +517,37 @@ impl Backtester {
         let mut big_loss_count = 0_u32;
 
         for i in start..end {
-            // Signal → sigmoid → binary position (long-only)
             let raw = sig[i];
             let sig_val = sigmoid(raw);
-            let pos = if sig_val > threshold { 1.0 } else { 0.0 };
+            let pos = match mode {
+                StrategyMode::LongOnly => {
+                    if sig_val > upper {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                StrategyMode::LongShort => {
+                    if sig_val > upper {
+                        1.0
+                    } else if sig_val < lower {
+                        -1.0
+                    } else {
+                        0.0
+                    }
+                }
+            };
 
-            // Turnover and costs
+            // Turnover and costs — short entries incur 50% borrow premium
             let turnover = (pos - prev_pos).abs();
-            let cost = turnover * fee;
+            let entering_short = pos < -0.5 && prev_pos > -0.5;
+            let cost = if entering_short {
+                turnover * fee * 1.5
+            } else {
+                turnover * fee
+            };
 
-            // PnL for this bar
+            // PnL for this bar (short: pos=-1.0 * positive_return = loss, negative_return = gain)
             let bar_pnl = pos * ret[i] - cost;
             cum_pnl += bar_pnl;
 
@@ -468,7 +555,7 @@ impl Backtester {
             if turnover > 0.5 {
                 trade_count += 1;
             }
-            if pos > 0.5 {
+            if pos.abs() > 0.5 {
                 active_bars += 1;
             }
 
@@ -518,7 +605,7 @@ impl Backtester {
 
     /// Evaluate a genome across all cached symbols (PnL-based, in-sample).
     #[allow(dead_code)]
-    pub fn evaluate(&self, genome: &mut Genome) {
+    pub fn evaluate(&self, genome: &mut Genome, mode: StrategyMode) {
         if self.cache.is_empty() {
             genome.fitness = 0.0;
             return;
@@ -537,7 +624,7 @@ impl Backtester {
                     continue;
                 }
                 let split_idx = (len as f64 * 0.7).max(20.0) as usize;
-                let score = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx);
+                let score = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx, mode);
                 total_score += score;
                 valid_count += 1.0;
             }
@@ -558,7 +645,7 @@ impl Backtester {
 
     /// Evaluate a genome across all cached symbols (PnL-based, out-of-sample).
     #[allow(dead_code)]
-    pub fn evaluate_oos(&self, genome: &Genome) -> f64 {
+    pub fn evaluate_oos(&self, genome: &Genome, mode: StrategyMode) -> f64 {
         if self.cache.is_empty() {
             return 0.0;
         }
@@ -578,7 +665,7 @@ impl Backtester {
                 if split_idx >= len {
                     continue;
                 }
-                let score = self.pnl_fitness(sig_slice, ret_slice, split_idx, len);
+                let score = self.pnl_fitness(sig_slice, ret_slice, split_idx, len, mode);
                 total_score += score;
                 count += 1.0;
             }
@@ -611,6 +698,18 @@ fn adaptive_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
     }
     let idx = ((vals.len() as f64) * 0.70) as usize;
     vals[idx.min(vals.len() - 1)].clamp(0.52, 0.80)
+}
+
+/// Compute an adaptive lower sigmoid threshold as the 30th percentile of sigmoid(signal),
+/// clamped to [0.20, 0.48]. Goes short on bottom ~30% of signals.
+fn adaptive_lower_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
+    let mut vals: Vec<f64> = (start..end).map(|i| sigmoid(sig[i])).collect();
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if vals.is_empty() {
+        return 0.35;
+    }
+    let idx = ((vals.len() as f64) * 0.30) as usize;
+    vals[idx.min(vals.len() - 1)].clamp(0.20, 0.48)
 }
 
 #[allow(dead_code)]
@@ -665,6 +764,7 @@ impl Backtester {
         genome: &[i32],
         symbol: &str,
         days: i64,
+        mode: StrategyMode,
     ) -> anyhow::Result<serde_json::Value> {
         if !self.cache.contains_key(symbol) {
             self.load_data(&[symbol.to_string()], days).await?;
@@ -689,25 +789,52 @@ impl Backtester {
                 .min(ret_slice.len())
                 .min(features.shape()[2]);
 
-            let threshold = adaptive_threshold(sig_slice, 0, len);
+            let upper = adaptive_threshold(sig_slice, 0, len);
+            let lower = match mode {
+                StrategyMode::LongShort => adaptive_lower_threshold(sig_slice, 0, len),
+                StrategyMode::LongOnly => 0.0,
+            };
             let fee = self.base_fee();
             let mut equity_curve = Vec::with_capacity(len);
             let mut current_equity = 1.0_f64;
             let mut prev_pos = 0.0_f64;
             let mut period_returns = Vec::with_capacity(len);
 
-            // Trade tracking: entry → exit pairs
+            // Trade tracking: entry -> exit pairs with direction
             let mut trades: Vec<serde_json::Value> = Vec::new();
             let mut in_trade = false;
             let mut trade_entry_bar = 0_usize;
             let mut trade_entry_equity = 1.0_f64;
+            let mut trade_direction: &str = "long";
 
             for i in 0..len {
                 let sig_val = sigmoid(sig_slice[i]);
-                let pos = if sig_val > threshold { 1.0 } else { 0.0 };
+                let pos = match mode {
+                    StrategyMode::LongOnly => {
+                        if sig_val > upper {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    StrategyMode::LongShort => {
+                        if sig_val > upper {
+                            1.0
+                        } else if sig_val < lower {
+                            -1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                };
                 let r = ret_slice[i];
                 let turnover = (pos - prev_pos).abs();
-                let cost = turnover * fee;
+                let entering_short = pos < -0.5 && prev_pos > -0.5;
+                let cost = if entering_short {
+                    turnover * fee * 1.5
+                } else {
+                    turnover * fee
+                };
                 let pnl = pos * r - cost;
 
                 let prev_equity = current_equity;
@@ -720,6 +847,7 @@ impl Backtester {
                             "entry": trade_entry_bar, "exit": i,
                             "bars": i - trade_entry_bar,
                             "pnl": -1.0,
+                            "direction": trade_direction,
                         }));
                         in_trade = false;
                     }
@@ -729,22 +857,25 @@ impl Backtester {
                     break;
                 }
 
-                // Track trade entry/exit
+                // Track trade entry/exit (handles long->short and short->long transitions)
                 if turnover > 0.5 {
-                    if pos > 0.5 {
-                        // Trade entry
-                        in_trade = true;
-                        trade_entry_bar = i;
-                        trade_entry_equity = prev_equity;
-                    } else if in_trade {
-                        // Trade exit
+                    // Close existing trade first
+                    if in_trade {
                         trades.push(serde_json::json!({
                             "entry": trade_entry_bar,
                             "exit": i,
                             "bars": i - trade_entry_bar,
                             "pnl": (current_equity / trade_entry_equity) - 1.0,
+                            "direction": trade_direction,
                         }));
                         in_trade = false;
+                    }
+                    // Open new trade if entering a position
+                    if pos.abs() > 0.5 {
+                        in_trade = true;
+                        trade_entry_bar = i;
+                        trade_entry_equity = current_equity;
+                        trade_direction = if pos > 0.5 { "long" } else { "short" };
                     }
                 }
 
@@ -766,6 +897,7 @@ impl Backtester {
                     "exit": len.saturating_sub(1),
                     "bars": len.saturating_sub(1) - trade_entry_bar,
                     "pnl": (current_equity / trade_entry_equity) - 1.0,
+                    "direction": trade_direction,
                 }));
             }
 
@@ -775,6 +907,7 @@ impl Backtester {
             return Ok(serde_json::json!({
                 "symbol": symbol,
                 "days": days,
+                "mode": mode.as_str(),
                 "metrics": metrics,
                 "trades": trades,
                 "equity_curve": equity_curve

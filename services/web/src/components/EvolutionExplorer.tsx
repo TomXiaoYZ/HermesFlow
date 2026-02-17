@@ -31,8 +31,11 @@ interface Exchange {
     factor_count: number;
 }
 
+type StrategyMode = "long_only" | "long_short";
+
 interface SymbolOverview {
     symbol: string;
+    mode?: string;
     latest_gen: number;
     best_fitness: number | null;
     best_oos_ic: number | null;
@@ -51,6 +54,7 @@ interface Trade {
     exit: number;
     bars: number;
     pnl: number;
+    direction?: "long" | "short";
 }
 
 interface BacktestMetrics {
@@ -133,6 +137,7 @@ function fmtNum(value: number | null | undefined, decimals = 4): string {
 export default function EvolutionExplorer() {
     const [exchanges, setExchanges] = useState<Exchange[]>([]);
     const [activeExchange, setActiveExchange] = useState<string>("");
+    const [activeMode, setActiveMode] = useState<StrategyMode>("long_only");
     const [overview, setOverview] = useState<SymbolOverview[]>([]);
     const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
     const [generations, setGenerations] = useState<Generation[]>([]);
@@ -154,12 +159,12 @@ export default function EvolutionExplorer() {
             .catch(() => setExchanges([]));
     }, []);
 
-    // Fetch overview for the active exchange
+    // Fetch overview for the active exchange and mode
     const fetchOverview = useCallback(async () => {
         if (!activeExchange) return;
         try {
             setLoading(true);
-            const res = await fetch(`/api/v1/evolution/${activeExchange}/overview`);
+            const res = await fetch(`/api/v1/evolution/${activeExchange}/overview?mode=${activeMode}`);
             const data = await res.json();
             const symbols: SymbolOverview[] = data.symbols || [];
             setOverview(symbols);
@@ -171,7 +176,7 @@ export default function EvolutionExplorer() {
         } finally {
             setLoading(false);
         }
-    }, [activeExchange, selectedSymbol]);
+    }, [activeExchange, activeMode, selectedSymbol]);
 
     useEffect(() => {
         fetchOverview();
@@ -179,14 +184,14 @@ export default function EvolutionExplorer() {
         return () => clearInterval(interval);
     }, [fetchOverview]);
 
-    // Fetch per-symbol generations when selected symbol changes
+    // Fetch per-symbol generations when selected symbol or mode changes
     const fetchSymbolGenerations = useCallback(async () => {
         if (!activeExchange || !selectedSymbol) return;
         try {
             setDetailLoading(true);
             await loadFactorConfigForExchange(activeExchange);
             const res = await fetch(
-                `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations?limit=200`
+                `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations?limit=200&mode=${activeMode}`
             );
             const data = await res.json();
             setGenerations(data.generations || []);
@@ -195,7 +200,7 @@ export default function EvolutionExplorer() {
         } finally {
             setDetailLoading(false);
         }
-    }, [activeExchange, selectedSymbol]);
+    }, [activeExchange, selectedSymbol, activeMode]);
 
     useEffect(() => {
         fetchSymbolGenerations();
@@ -217,7 +222,7 @@ export default function EvolutionExplorer() {
         (async () => {
             try {
                 const res = await fetch(
-                    `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations/${latestBt.generation}`
+                    `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations/${latestBt.generation}?mode=${activeMode}`
                 );
                 const data = await res.json();
                 if (data.backtest) {
@@ -236,7 +241,7 @@ export default function EvolutionExplorer() {
                 /* latest detail fetch failed */
             }
         })();
-    }, [activeExchange, selectedSymbol, generations]);
+    }, [activeExchange, selectedSymbol, activeMode, generations]);
 
     const handleExpandRow = async (gen: number) => {
         if (expandedGen === gen) {
@@ -248,7 +253,7 @@ export default function EvolutionExplorer() {
         setExpandedDetail(null);
         try {
             const res = await fetch(
-                `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations/${gen}`
+                `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations/${gen}?mode=${activeMode}`
             );
             const data = await res.json();
             if (data.backtest) {
@@ -307,6 +312,24 @@ export default function EvolutionExplorer() {
                             }`}
                         >
                             {ex.exchange}
+                        </button>
+                    ))}
+                    <span className="w-px h-4 bg-white/10 mx-1" />
+                    {(["long_only", "long_short"] as StrategyMode[]).map((m) => (
+                        <button
+                            key={m}
+                            onClick={() => {
+                                setActiveMode(m);
+                                setGenerations([]);
+                                setLatestDetail(null);
+                            }}
+                            className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-all cursor-pointer ${
+                                activeMode === m
+                                    ? "bg-violet-500/15 border border-violet-500/40 text-violet-300"
+                                    : "bg-white/5 border border-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                            }`}
+                        >
+                            {m === "long_only" ? "Long Only" : "Long/Short"}
                         </button>
                     ))}
                     <span className="text-[10px] text-slate-600 font-mono ml-1">
@@ -592,7 +615,7 @@ export default function EvolutionExplorer() {
                                                         </button>
 
                                                         {isExpanded && (
-                                                            <BacktestDetail generation={g} detail={expandedDetail} exchange={activeExchange} symbol={selectedSymbol || ""} />
+                                                            <BacktestDetail generation={g} detail={expandedDetail} exchange={activeExchange} symbol={selectedSymbol || ""} mode={activeMode} />
                                                         )}
                                                     </React.Fragment>
                                                 );
@@ -683,6 +706,7 @@ function TradePnlChart({ trades }: { trades: Trade[] }) {
     const data = trades.map((t, i) => ({
         idx: i + 1,
         pnl: +(t.pnl * 100).toFixed(2),
+        isShort: t.direction === "short",
     }));
     // Cumulative PnL
     let cum = 0;
@@ -712,7 +736,11 @@ function TradePnlChart({ trades }: { trades: Trade[] }) {
                             <ReferenceLine y={0} stroke="#475569" strokeOpacity={0.5} />
                             <Bar dataKey="pnl" radius={[1, 1, 0, 0]}>
                                 {data.map((d, i) => (
-                                    <Cell key={i} fill={d.pnl >= 0 ? "#34d399" : "#f87171"} fillOpacity={0.7} />
+                                    <Cell
+                                        key={i}
+                                        fill={d.isShort ? (d.pnl >= 0 ? "#a78bfa" : "#f87171") : (d.pnl >= 0 ? "#34d399" : "#f87171")}
+                                        fillOpacity={0.7}
+                                    />
                                 ))}
                             </Bar>
                         </BarChart>
@@ -850,6 +878,7 @@ function LatestBacktestPanel({
                                     <thead className="sticky top-0 bg-slate-950/90 z-10">
                                         <tr className="text-slate-600 uppercase tracking-wider">
                                             <th className="text-left px-2 py-1.5 font-bold">#</th>
+                                            <th className="text-left px-2 py-1.5 font-bold">Dir</th>
                                             <th className="text-right px-2 py-1.5 font-bold">Entry Bar</th>
                                             <th className="text-right px-2 py-1.5 font-bold">Exit Bar</th>
                                             <th className="text-right px-2 py-1.5 font-bold">Duration</th>
@@ -865,6 +894,9 @@ function LatestBacktestPanel({
                                                 return (
                                                     <tr key={i} className={`border-t border-white/5 ${i % 2 === 1 ? "bg-white/[0.02]" : ""}`}>
                                                         <td className="px-2 py-1 text-slate-500 font-mono">{i + 1}</td>
+                                                        <td className={`px-2 py-1 font-mono font-bold ${trade.direction === "short" ? "text-red-400" : "text-emerald-400"}`}>
+                                                            {trade.direction === "short" ? "SHORT" : "LONG"}
+                                                        </td>
                                                         <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.entry}</td>
                                                         <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.exit}</td>
                                                         <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.bars}b</td>
@@ -894,11 +926,13 @@ function BacktestDetail({
     detail,
     exchange,
     symbol,
+    mode,
 }: {
     generation: Generation;
     detail: BacktestData | null;
     exchange: string;
     symbol: string;
+    mode: StrategyMode;
 }) {
     const bt = detail || generation.backtest;
     if (!bt) return null;
@@ -918,6 +952,7 @@ function BacktestDetail({
                 body: JSON.stringify({
                     genome: generation.best_genome,
                     token_address: symbol,
+                    mode,
                 }),
             });
         } catch {
@@ -1105,6 +1140,7 @@ function BacktestDetail({
                                     <thead className="sticky top-0 bg-slate-950/90">
                                         <tr className="text-slate-600 uppercase tracking-wider">
                                             <th className="text-left px-2 py-1.5 font-bold">#</th>
+                                            <th className="text-left px-2 py-1.5 font-bold">Dir</th>
                                             <th className="text-right px-2 py-1.5 font-bold">Entry</th>
                                             <th className="text-right px-2 py-1.5 font-bold">Exit</th>
                                             <th className="text-right px-2 py-1.5 font-bold">Bars</th>
@@ -1115,6 +1151,9 @@ function BacktestDetail({
                                         {detail.trades.map((trade, i) => (
                                             <tr key={i} className={`border-t border-white/5 ${i % 2 === 1 ? "bg-white/[0.02]" : ""}`}>
                                                 <td className="px-2 py-1 text-slate-500 font-mono">{i + 1}</td>
+                                                <td className={`px-2 py-1 font-mono font-bold ${trade.direction === "short" ? "text-red-400" : "text-emerald-400"}`}>
+                                                    {trade.direction === "short" ? "SHORT" : "LONG"}
+                                                </td>
                                                 <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.entry}</td>
                                                 <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.exit}</td>
                                                 <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.bars}</td>

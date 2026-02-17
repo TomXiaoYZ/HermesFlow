@@ -12,6 +12,7 @@ mod backtest;
 mod genetic;
 
 use backtest::Backtester;
+use backtest::StrategyMode;
 use backtest_engine::config::FactorConfig;
 use genetic::GeneticAlgorithm;
 
@@ -89,28 +90,38 @@ async fn main() -> anyhow::Result<()> {
         api::start_api_server(pool_api, api_exchanges, api_port).await;
     });
 
-    // Spawn one evolution task per (exchange, symbol) pair
+    // Spawn two evolution tasks per (exchange, symbol) pair: long_only + long_short
     let mut handles = Vec::new();
     for ec in exchange_configs {
         let pool_sym = pool.clone();
         let symbols = load_symbols(&pool_sym, &ec.exchange).await;
+        let modes = StrategyMode::all();
         info!(
-            "[{}] Spawning {} per-symbol evolution tasks",
+            "[{}] Spawning {} per-symbol evolution tasks (x{} modes = {} total)",
             ec.exchange,
-            symbols.len()
+            symbols.len(),
+            modes.len(),
+            symbols.len() * modes.len()
         );
         for symbol in symbols {
-            let pool = pool.clone();
-            let redis_url = redis_url.clone();
-            let config = ec.clone();
-            let sym = symbol.clone();
-            let ex_name = ec.exchange.clone();
-            let handle = tokio::spawn(async move {
-                if let Err(e) = run_symbol_evolution(pool, &redis_url, config, sym.clone()).await {
-                    error!("[{}:{}] Evolution loop failed: {}", ex_name, sym, e);
-                }
-            });
-            handles.push(handle);
+            for &mode in modes {
+                let pool = pool.clone();
+                let redis_url = redis_url.clone();
+                let config = ec.clone();
+                let sym = symbol.clone();
+                let ex_name = ec.exchange.clone();
+                let handle = tokio::spawn(async move {
+                    if let Err(e) =
+                        run_symbol_evolution(pool, &redis_url, config, sym.clone(), mode).await
+                    {
+                        error!(
+                            "[{}:{}:{}] Evolution loop failed: {}",
+                            ex_name, sym, mode, e
+                        );
+                    }
+                });
+                handles.push(handle);
+            }
         }
     }
 
@@ -272,20 +283,22 @@ async fn load_symbols(pool: &PgPool, exchange: &str) -> Vec<String> {
     symbols
 }
 
-/// Run the evolution loop for a single (exchange, symbol) pair.
+/// Run the evolution loop for a single (exchange, symbol, mode) triple.
 async fn run_symbol_evolution(
     pool: PgPool,
     redis_url: &str,
     config: ExchangeConfig,
     symbol: String,
+    mode: StrategyMode,
 ) -> anyhow::Result<()> {
     let exchange = &config.exchange;
     let resolution = &config.resolution;
     let exchange_lower = exchange.to_lowercase();
+    let mode_str = mode.as_str();
 
     info!(
-        "[{}:{}] Starting per-symbol evolution: resolution={}, lookback={}d",
-        exchange, symbol, resolution, config.lookback_days
+        "[{}:{}:{}] Starting per-symbol evolution: resolution={}, lookback={}d",
+        exchange, symbol, mode_str, resolution, config.lookback_days
     );
 
     let factor_config = load_factor_config(&config.factor_config);
@@ -294,8 +307,11 @@ async fn run_symbol_evolution(
     let client = redis::Client::open(redis_url.to_string())?;
     let mut redis_conn = client.get_async_connection().await?;
 
-    let redis_key_status = format!("strategy:{}:{}:status", exchange_lower, symbol);
-    let redis_channel = format!("strategy_updates:{}:{}", exchange_lower, symbol);
+    let redis_key_status = format!("strategy:{}:{}:{}:status", exchange_lower, symbol, mode_str);
+    let redis_channel = format!(
+        "strategy_updates:{}:{}:{}",
+        exchange_lower, symbol, mode_str
+    );
 
     let mut backtester = Backtester::new(
         pool.clone(),
@@ -308,32 +324,36 @@ async fn run_symbol_evolution(
 
     // Load data for this single symbol
     info!(
-        "[{}:{}] Loading {} days of data...",
-        exchange, symbol, config.lookback_days
+        "[{}:{}:{}] Loading {} days of data...",
+        exchange, symbol, mode_str, config.lookback_days
     );
     if let Err(e) = backtester
         .load_data(std::slice::from_ref(&symbol), config.lookback_days)
         .await
     {
-        error!("[{}:{}] Failed to load data: {}", exchange, symbol, e);
+        error!(
+            "[{}:{}:{}] Failed to load data: {}",
+            exchange, symbol, mode_str, e
+        );
     }
 
-    // Resume from last generation for this (exchange, symbol)
+    // Resume from last generation for this (exchange, symbol, mode)
     use sqlx::Row;
     let last_gen_row = sqlx::query(
         "SELECT generation, best_genome FROM strategy_generations \
-         WHERE exchange = $1 AND symbol = $2 ORDER BY generation DESC LIMIT 1",
+         WHERE exchange = $1 AND symbol = $2 AND mode = $3 ORDER BY generation DESC LIMIT 1",
     )
     .bind(exchange)
     .bind(&symbol)
+    .bind(mode_str)
     .fetch_optional(&pool)
     .await;
 
     if let Ok(Some(row)) = last_gen_row {
         if let Ok(max_gen) = row.try_get::<i32, _>("generation") {
             info!(
-                "[{}:{}] Resuming from generation {}",
-                exchange, symbol, max_gen
+                "[{}:{}:{}] Resuming from generation {}",
+                exchange, symbol, mode_str, max_gen
             );
             ga.generation = max_gen as usize + 1;
         }
@@ -354,35 +374,37 @@ async fn run_symbol_evolution(
 
         // Evaluate each genome via K-fold temporal cross-validation
         for genome in ga.population.iter_mut() {
-            backtester.evaluate_symbol_kfold(genome, &symbol, k);
+            backtester.evaluate_symbol_kfold(genome, &symbol, k, mode);
         }
         ga.evolve();
 
         // Log stagnation events
         if ga.stagnation() == 50 {
             warn!(
-                "[{}:{}] Gen {} — stagnation detected (50 gens without improvement), increasing exploration",
-                exchange, symbol, gen
+                "[{}:{}:{}] Gen {} — stagnation detected (50 gens without improvement), increasing exploration",
+                exchange, symbol, mode_str, gen
             );
         }
         if ga.stagnation() > 0 && ga.stagnation().is_multiple_of(100) {
             warn!(
-                "[{}:{}] Gen {} — population restart triggered after {} stagnant gens",
+                "[{}:{}:{}] Gen {} — population restart triggered after {} stagnant gens",
                 exchange,
                 symbol,
+                mode_str,
                 gen,
                 ga.stagnation()
             );
         }
 
         if let Some(best) = ga.best_genome.clone() {
-            let oos_pnl = backtester.evaluate_symbol_oos(&best, &symbol);
-            let fold_pnls = backtester.evaluate_symbol_fold_detail(&best, &symbol, k);
+            let oos_pnl = backtester.evaluate_symbol_oos(&best, &symbol, mode);
+            let fold_pnls = backtester.evaluate_symbol_fold_detail(&best, &symbol, k, mode);
             let stag = ga.stagnation();
             info!(
-                "[{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4} tokens: {} stag: {} K: {} folds: {:?}",
+                "[{}:{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4} tokens: {} stag: {} K: {} folds: {:?}",
                 exchange,
                 symbol,
+                mode_str,
                 gen,
                 best.fitness,
                 oos_pnl,
@@ -397,14 +419,15 @@ async fn run_symbol_evolution(
             let gap_threshold = best.fitness.abs().max(0.1) * 0.5;
             if best.fitness > 0.05 && is_oos_gap > gap_threshold && oos_pnl < 0.0 && stag > 20 {
                 warn!(
-                    "[{}:{}] Gen {} — IS-OOS divergence detected (IS={:.3}, OOS={:.3}, gap={:.3}, thresh={:.3}, stag={}), forcing restart",
-                    exchange, symbol, gen, best.fitness, oos_pnl, is_oos_gap, gap_threshold, stag
+                    "[{}:{}:{}] Gen {} — IS-OOS divergence detected (IS={:.3}, OOS={:.3}, gap={:.3}, thresh={:.3}, stag={}), forcing restart",
+                    exchange, symbol, mode_str, gen, best.fitness, oos_pnl, is_oos_gap, gap_threshold, stag
                 );
                 ga.force_restart();
             }
 
+            let strategy_id = format!("{}_{}_{}_gen_{}", exchange_lower, symbol, mode_str, gen);
             let payload = serde_json::json!({
-                "strategy_id": format!("{}_{}_gen_{}", exchange_lower, symbol, gen),
+                "strategy_id": &strategy_id,
                 "timestamp": chrono::Utc::now().timestamp(),
                 "formula": best.tokens,
                 "generation": gen,
@@ -415,10 +438,11 @@ async fn run_symbol_evolution(
                 "best_tokens": best.tokens,
                 "exchange": exchange,
                 "symbol": symbol,
+                "mode": mode_str,
                 "resolution": resolution,
                 "meta": {
-                    "name": format!("{}-Gen{}-PnL{:.2}", symbol, gen, best.fitness),
-                    "description": format!("{} Evolved Strategy. IS PnL: {:.4}, OOS PnL: {:.4}", symbol, best.fitness, oos_pnl)
+                    "name": format!("{}-{}-Gen{}-PnL{:.2}", symbol, mode_str, gen, best.fitness),
+                    "description": format!("{} {} Evolved Strategy. IS PnL: {:.4}, OOS PnL: {:.4}", symbol, mode_str, best.fitness, oos_pnl)
                 }
             });
             let payload_str = payload.to_string();
@@ -433,16 +457,16 @@ async fn run_symbol_evolution(
                 .await
                 .unwrap_or(());
 
-            // DB persist with (exchange, symbol, generation) key
+            // DB persist with (exchange, symbol, mode, generation) key
             let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
-            let strategy_id = format!("{}_{}_gen_{}", exchange_lower, symbol, gen);
             let _ = sqlx::query(
-                "INSERT INTO strategy_generations (exchange, symbol, generation, fitness, best_genome, metadata, strategy_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
-                 ON CONFLICT (exchange, symbol, generation) DO UPDATE SET fitness = $4, best_genome = $5, metadata = $6, strategy_id = $7"
+                "INSERT INTO strategy_generations (exchange, symbol, mode, generation, fitness, best_genome, metadata, strategy_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                 ON CONFLICT (exchange, symbol, mode, generation) DO UPDATE SET fitness = $5, best_genome = $6, metadata = $7, strategy_id = $8"
             )
             .bind(exchange)
             .bind(&symbol)
+            .bind(mode_str)
             .bind(gen as i32)
             .bind(best.fitness)
             .bind(&tokens_i32)
@@ -450,21 +474,22 @@ async fn run_symbol_evolution(
             .bind(&strategy_id)
             .execute(&pool)
             .await
-            .map_err(|e| error!("[{}:{}] DB persist failed: {}", exchange, symbol, e));
+            .map_err(|e| error!("[{}:{}:{}] DB persist failed: {}", exchange, symbol, mode_str, e));
 
             // Single-symbol backtest every 5 generations
             if gen.is_multiple_of(5) {
                 let tokens_i32: Vec<i32> = best.tokens.iter().map(|&x| x as i32).collect();
                 match backtester
-                    .run_detailed_simulation(&tokens_i32, &symbol, config.lookback_days)
+                    .run_detailed_simulation(&tokens_i32, &symbol, config.lookback_days, mode)
                     .await
                 {
                     Ok(sim) => {
                         let m = sim["metrics"].as_object().unwrap();
                         info!(
-                            "[{}:{}] Backtest: PnL={:.2}%, Sharpe={:.2}, Sortino={:.2}, PF={:.2}, MaxDD={:.2}%",
+                            "[{}:{}:{}] Backtest: PnL={:.2}%, Sharpe={:.2}, Sortino={:.2}, PF={:.2}, MaxDD={:.2}%",
                             exchange,
                             symbol,
+                            mode_str,
                             m["total_return"].as_f64().unwrap_or(0.0) * 100.0,
                             m.get("sharpe_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0),
                             m.get("sortino_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0),
@@ -472,25 +497,28 @@ async fn run_symbol_evolution(
                             m.get("max_drawdown").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100.0,
                         );
 
-                        // Keep only the latest backtest per (exchange, symbol)
+                        // Keep only the latest backtest per (exchange, symbol, mode)
                         let _ = sqlx::query(
                             "DELETE FROM backtest_results \
-                             WHERE token_address = $1 AND strategy_id LIKE $2",
+                             WHERE token_address = $1 AND mode = $2 \
+                             AND strategy_id LIKE $3",
                         )
                         .bind(&symbol)
+                        .bind(mode_str)
                         .bind(format!("{}_%", exchange_lower))
                         .execute(&pool)
                         .await;
 
                         let _ = sqlx::query(
                             "INSERT INTO backtest_results \
-                             (strategy_id, genome, token_address, pnl_percent, win_rate, total_trades, \
+                             (strategy_id, genome, token_address, mode, pnl_percent, win_rate, total_trades, \
                               sharpe_ratio, max_drawdown, equity_curve, trades, metrics, created_at) \
-                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())"
+                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())"
                         )
                         .bind(&strategy_id)
                         .bind(&tokens_i32)
                         .bind(&symbol)
+                        .bind(mode_str)
                         .bind(m["total_return"].as_f64().unwrap_or(0.0))
                         .bind(m["win_rate"].as_f64().unwrap_or(0.0))
                         .bind(m["total_trades"].as_i64().unwrap_or(0) as i32)
@@ -501,19 +529,23 @@ async fn run_symbol_evolution(
                         .bind(&sim["metrics"])
                         .execute(&pool)
                         .await
-                        .map_err(|e| error!("[{}:{}] Backtest persist failed: {}", exchange, symbol, e));
+                        .map_err(|e| error!("[{}:{}:{}] Backtest persist failed: {}", exchange, symbol, mode_str, e));
                     }
-                    Err(e) => error!("[{}:{}] Backtest sim failed: {}", exchange, symbol, e),
+                    Err(e) => error!(
+                        "[{}:{}:{}] Backtest sim failed: {}",
+                        exchange, symbol, mode_str, e
+                    ),
                 }
             }
 
-            // Cleanup old generations for this symbol
+            // Cleanup old generations for this (symbol, mode)
             if gen.is_multiple_of(10) && gen > 1000 {
                 let _ = sqlx::query(
-                    "DELETE FROM strategy_generations WHERE exchange = $1 AND symbol = $2 AND generation < $3",
+                    "DELETE FROM strategy_generations WHERE exchange = $1 AND symbol = $2 AND mode = $3 AND generation < $4",
                 )
                 .bind(exchange)
                 .bind(&symbol)
+                .bind(mode_str)
                 .bind(gen as i32 - 1000)
                 .execute(&pool)
                 .await;
