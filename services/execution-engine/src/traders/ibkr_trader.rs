@@ -16,6 +16,27 @@ fn next_order_id() -> i32 {
     NEXT_ORDER_ID.fetch_add(1, Ordering::SeqCst)
 }
 
+/// Ensure NEXT_ORDER_ID is at least `min_id`.
+/// Called from main.rs after querying the DB for the highest persisted order_id.
+pub fn set_min_order_id(min_id: i32) {
+    loop {
+        let current = NEXT_ORDER_ID.load(Ordering::SeqCst);
+        if min_id <= current {
+            return;
+        }
+        if NEXT_ORDER_ID
+            .compare_exchange(current, min_id, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            info!(
+                "NEXT_ORDER_ID bumped from {} to {} (DB max)",
+                current, min_id
+            );
+            return;
+        }
+    }
+}
+
 /// Wrapper to allow ibapi::Client across thread boundaries.
 /// ibapi::Client uses RefCell internally (not Send/Sync).
 /// We guarantee exclusive access through Mutex and only use it in spawn_blocking.
@@ -94,6 +115,11 @@ impl IBKRTrader {
         .await??;
 
         info!("Connected to IBKR at {}", addr);
+
+        // Seed NEXT_ORDER_ID from IBKR's next valid order ID (set during connection handshake)
+        let ibkr_next = ib_client.0.next_order_id();
+        let prev = NEXT_ORDER_ID.swap(ibkr_next, Ordering::SeqCst);
+        info!("IBKR next_order_id: {} (was {})", ibkr_next, prev);
 
         Ok(Self {
             client: Arc::new(Mutex::new(ib_client)),

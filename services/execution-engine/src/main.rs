@@ -109,6 +109,27 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ========================================
+    // 2b. Sync order ID counter with DB max to avoid uniqueness conflicts
+    // ========================================
+    if let Some(ref db_client) = db {
+        match db_client
+            .query_one(
+                "SELECT COALESCE(MAX(order_id::bigint), 0)::bigint FROM trade_orders WHERE order_id ~ '^\\d+$'",
+                &[],
+            )
+            .await
+        {
+            Ok(row) => {
+                let max_id: i64 = row.get(0);
+                if max_id > 0 {
+                    execution_engine::traders::ibkr_trader::set_min_order_id((max_id + 1) as i32);
+                }
+            }
+            Err(e) => warn!("Failed to query max order_id from DB: {}", e),
+        }
+    }
+
+    // ========================================
     // 3. Initialize Futu Trader
     // ========================================
     let futu_bridge_url =
