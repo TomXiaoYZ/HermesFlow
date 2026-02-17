@@ -585,10 +585,15 @@ export default function EvolutionExplorer() {
                                     </div>
                                 )}
 
-                                {/* Latest Backtest Panel */}
-                                {latestDetail && (
+                                {/* Latest Backtest Panel or Overview Summary */}
+                                {latestDetail ? (
                                     <LatestBacktestPanel
                                         detail={latestDetail}
+                                        symbol={selectedSymbol}
+                                    />
+                                ) : selectedOverview.best_pnl != null && (
+                                    <BacktestSummaryPanel
+                                        overview={selectedOverview}
                                         symbol={selectedSymbol}
                                     />
                                 )}
@@ -827,6 +832,111 @@ function TradePnlChart({ trades }: { trades: Trade[] }) {
                             <Area type="monotone" dataKey="cum" stroke="#818cf8" strokeWidth={1.5} fill="url(#cumPnlGrad)" />
                         </AreaChart>
                     </ResponsiveContainer>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function BacktestSummaryPanel({
+    overview,
+    symbol,
+}: {
+    overview: SymbolOverview;
+    symbol: string;
+}) {
+    const foldPnls = overview.fold_pnls;
+    const allPositive = foldPnls ? foldPnls.every(p => p >= 0) : false;
+    const allNegative = foldPnls ? foldPnls.every(p => p < 0) : false;
+    const avgFold = foldPnls && foldPnls.length > 0
+        ? foldPnls.reduce((a, b) => a + b, 0) / foldPnls.length
+        : null;
+
+    return (
+        <div className="px-5 py-3">
+            <div className="bg-slate-900/30 border border-white/5 rounded-xl backdrop-blur-sm overflow-hidden">
+                <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/5">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        Backtest Summary — {symbol}
+                    </h4>
+                    <span className="text-[10px] text-slate-600">
+                        from best generation
+                    </span>
+                </div>
+
+                <div className="p-4 space-y-4">
+                    {/* Key metrics row */}
+                    <div className="grid grid-cols-5 gap-1.5">
+                        <MetricCell label="Backtest PnL" value={fmtPct(overview.best_pnl)} positive={(overview.best_pnl ?? 0) >= 0} />
+                        <MetricCell label="Sharpe Ratio" value={fmtNum(overview.sharpe_ratio, 2)} positive={(overview.sharpe_ratio ?? 0) >= 0} />
+                        <MetricCell label="Max Drawdown" value={overview.max_drawdown != null ? fmtPct(overview.max_drawdown) : "—"} positive={false} />
+                        <MetricCell label="Win Rate" value={overview.win_rate != null ? fmtPct(overview.win_rate) : "—"} positive={(overview.win_rate ?? 0) > 0.5} />
+                        <MetricCell label="Avg Fold PnL" value={avgFold != null ? avgFold.toFixed(4) : "—"} positive={(avgFold ?? 0) >= 0} />
+                    </div>
+
+                    {/* Fold Performance — larger version */}
+                    {foldPnls && foldPnls.length > 0 && (
+                        <div>
+                            <div className="flex items-center justify-between mb-2">
+                                <h5 className="text-[9px] text-slate-600 uppercase tracking-widest font-bold">
+                                    Fold Performance (K={foldPnls.length})
+                                </h5>
+                                <span className={`text-[9px] font-mono font-bold ${
+                                    allPositive ? "text-emerald-400" : allNegative ? "text-red-400" : "text-amber-400"
+                                }`}>
+                                    {allPositive ? "All folds positive" : allNegative ? "All folds negative" : "Mixed results"}
+                                </span>
+                            </div>
+                            <div className="bg-white/[0.02] rounded-lg border border-white/5 p-3">
+                                <div className="flex items-end gap-2 h-28">
+                                    {foldPnls.map((pnl, i) => {
+                                        const maxAbs = Math.max(...foldPnls.map(Math.abs), 0.01);
+                                        const height = Math.abs(pnl) / maxAbs * 100;
+                                        return (
+                                            <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
+                                                <div
+                                                    className={`w-full rounded-sm transition-all ${pnl >= 0 ? "bg-emerald-500/60" : "bg-red-500/60"}`}
+                                                    style={{ height: `${Math.max(height, 4)}%` }}
+                                                    title={`Fold ${i + 1}: ${pnl.toFixed(4)}`}
+                                                />
+                                                <span className="text-[9px] text-slate-500 mt-1 font-mono">{pnl.toFixed(3)}</span>
+                                                <span className="text-[8px] text-slate-700 font-mono">F{i + 1}</span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Cross-validation summary */}
+                    {foldPnls && foldPnls.length > 0 && (
+                        <div className="grid grid-cols-4 gap-1.5">
+                            <MetricCell
+                                label="Best Fold"
+                                value={`F${foldPnls.indexOf(Math.max(...foldPnls)) + 1}: ${Math.max(...foldPnls).toFixed(3)}`}
+                                positive
+                            />
+                            <MetricCell
+                                label="Worst Fold"
+                                value={`F${foldPnls.indexOf(Math.min(...foldPnls)) + 1}: ${Math.min(...foldPnls).toFixed(3)}`}
+                                positive={Math.min(...foldPnls) >= 0}
+                            />
+                            <MetricCell
+                                label="Fold Std Dev"
+                                value={(() => {
+                                    const mean = foldPnls.reduce((a, b) => a + b, 0) / foldPnls.length;
+                                    const variance = foldPnls.reduce((sum, p) => sum + (p - mean) ** 2, 0) / foldPnls.length;
+                                    return Math.sqrt(variance).toFixed(4);
+                                })()}
+                            />
+                            <MetricCell
+                                label="Positive Folds"
+                                value={`${foldPnls.filter(p => p >= 0).length} / ${foldPnls.length}`}
+                                positive={foldPnls.filter(p => p >= 0).length > foldPnls.length / 2}
+                            />
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
