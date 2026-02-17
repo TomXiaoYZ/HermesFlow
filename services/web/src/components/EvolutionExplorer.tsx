@@ -429,6 +429,32 @@ export default function EvolutionExplorer() {
                                                 </span>
                                             </div>
                                         </div>
+                                        <div className="flex items-center gap-3 mt-1">
+                                            <div className="flex items-center gap-1">
+                                                <span className="text-[8px] text-slate-600 uppercase">BT</span>
+                                                <span className={`text-[10px] font-mono font-bold ${
+                                                    sym.best_pnl != null ? (sym.best_pnl >= 0 ? "text-emerald-400" : "text-red-400") : "text-slate-600"
+                                                }`}>
+                                                    {sym.best_pnl != null ? fmtPct(sym.best_pnl) : "—"}
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-1">
+                                                <span className="text-[8px] text-slate-600 uppercase">Sharpe</span>
+                                                <span className={`text-[10px] font-mono ${
+                                                    sym.sharpe_ratio != null ? (sym.sharpe_ratio >= 0 ? "text-emerald-400/70" : "text-red-400/70") : "text-slate-600"
+                                                }`}>
+                                                    {fmtNum(sym.sharpe_ratio, 2)}
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-1 ml-auto">
+                                                <span className="text-[8px] text-slate-600 uppercase">WR</span>
+                                                <span className={`text-[10px] font-mono ${
+                                                    sym.win_rate != null ? (sym.win_rate > 0.5 ? "text-emerald-400/70" : "text-red-400/70") : "text-slate-600"
+                                                }`}>
+                                                    {sym.win_rate != null ? `${(sym.win_rate * 100).toFixed(0)}%` : "—"}
+                                                </span>
+                                            </div>
+                                        </div>
                                     </button>
                                 );
                             })}
@@ -464,14 +490,41 @@ export default function EvolutionExplorer() {
                                 </div>
 
                                 {/* Metric summary */}
-                                <div className="grid grid-cols-6 gap-2 px-5 py-3 border-b border-white/5 bg-slate-950/30">
+                                <div className="grid grid-cols-8 gap-2 px-5 py-3 border-b border-white/5 bg-slate-950/30">
                                     <MetricCell label="IS PnL" value={fmtNum(selectedOverview.best_fitness)} positive={(selectedOverview.best_fitness ?? 0) > 0} />
                                     <MetricCell label="OOS PnL" value={fmtNum(selectedOverview.best_oos_ic)} positive={(selectedOverview.best_oos_ic ?? 0) > 0} />
                                     <MetricCell label="Backtest PnL" value={selectedOverview.best_pnl != null ? fmtPct(selectedOverview.best_pnl) : "—"} positive={(selectedOverview.best_pnl ?? 0) >= 0} />
                                     <MetricCell label="Sharpe" value={fmtNum(selectedOverview.sharpe_ratio, 2)} positive={(selectedOverview.sharpe_ratio ?? 0) >= 0} />
                                     <MetricCell label="Max DD" value={selectedOverview.max_drawdown != null ? fmtPct(selectedOverview.max_drawdown) : "—"} positive={false} />
+                                    <MetricCell label="Win Rate" value={selectedOverview.win_rate != null ? fmtPct(selectedOverview.win_rate) : "—"} positive={(selectedOverview.win_rate ?? 0) > 0.5} />
+                                    <MetricCell label="Trades" value={latestDetail?.bt?.total_trades != null ? String(latestDetail.bt.total_trades) : "—"} />
                                     <MetricCell label="Stagnation" value={selectedOverview.stagnation != null ? String(selectedOverview.stagnation) : "—"} positive={(selectedOverview.stagnation ?? 0) < 50} />
                                 </div>
+
+                                {/* Fold PnL Mini Bars */}
+                                {selectedOverview.fold_pnls && selectedOverview.fold_pnls.length > 0 && (
+                                    <div className="flex items-center gap-2 px-5 py-2 border-b border-white/5 bg-slate-950/20">
+                                        <span className="text-[9px] text-slate-600 uppercase tracking-wider font-bold shrink-0">
+                                            Folds (K={selectedOverview.fold_pnls.length})
+                                        </span>
+                                        <div className="flex items-end gap-1 h-10 flex-1">
+                                            {selectedOverview.fold_pnls.map((pnl, i) => {
+                                                const maxAbs = Math.max(...selectedOverview.fold_pnls!.map(Math.abs), 0.01);
+                                                const height = Math.abs(pnl) / maxAbs * 100;
+                                                return (
+                                                    <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
+                                                        <div
+                                                            className={`w-full rounded-sm ${pnl >= 0 ? "bg-emerald-500/60" : "bg-red-500/60"}`}
+                                                            style={{ height: `${Math.max(height, 4)}%` }}
+                                                            title={`Fold ${i + 1}: ${pnl.toFixed(4)}`}
+                                                        />
+                                                        <span className="text-[7px] text-slate-600 mt-0.5 font-mono">{pnl.toFixed(2)}</span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* Fitness Chart */}
                                 {chartData.length > 0 && (
@@ -801,7 +854,14 @@ function LatestBacktestPanel({
                         Latest Backtest — {symbol} (Gen #{gen.generation})
                     </h4>
                     <span className="text-[10px] text-slate-600">
-                        {trades.length} trades
+                        {(() => {
+                            const longCount = trades.filter(t => t.direction !== "short").length;
+                            const shortCount = trades.filter(t => t.direction === "short").length;
+                            if (shortCount > 0) {
+                                return `${trades.length} trades (${longCount}L / ${shortCount}S)`;
+                            }
+                            return `${trades.length} trades`;
+                        })()}
                     </span>
                 </div>
 
@@ -817,6 +877,18 @@ function LatestBacktestPanel({
                         <MetricCell label="Avg Win" value={fmtPct(m?.avg_win)} positive />
                         <MetricCell label="Avg Loss" value={fmtPct(m?.avg_loss)} positive={false} />
                     </div>
+
+                    {/* Extended trade stats row */}
+                    {m && (
+                        <div className="grid grid-cols-6 gap-1.5">
+                            <MetricCell label="Profit Factor" value={fmtNum(m.profit_factor, 2)} positive={(m.profit_factor ?? 0) >= 1} />
+                            <MetricCell label="Calmar" value={fmtNum(m.calmar_ratio, 2)} positive={(m.calmar_ratio ?? 0) >= 0} />
+                            <MetricCell label="Avg Hold Bars" value={m.avg_holding_bars != null ? m.avg_holding_bars.toFixed(1) : "—"} />
+                            <MetricCell label="Max Consec W" value={m.max_consecutive_wins != null ? String(m.max_consecutive_wins) : "—"} positive={true} />
+                            <MetricCell label="Max Consec L" value={m.max_consecutive_losses != null ? String(m.max_consecutive_losses) : "—"} positive={false} />
+                            <MetricCell label="Avg Trade Ret" value={fmtPct(m.avg_trade_return)} positive={(m.avg_trade_return ?? 0) >= 0} />
+                        </div>
+                    )}
 
                     {/* Charts row: Equity curve + Trade PnL */}
                     <div className="grid grid-cols-2 gap-4">
