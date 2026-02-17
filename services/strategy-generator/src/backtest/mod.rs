@@ -29,16 +29,13 @@ pub struct Candle {
 pub struct CachedData {
     pub features: Array3<f64>,
     pub returns: Array2<f64>,
+    #[allow(dead_code)]
+    pub open: Array2<f64>,
+    #[allow(dead_code)]
+    pub close: Array2<f64>,
     pub liquidity: Array2<f64>,
     pub amount: Array2<f64>,
     pub timestamps: Vec<i64>,
-}
-
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
-pub enum OptimizationMetric {
-    Sharpe,
-    IC,
 }
 
 pub struct Backtester {
@@ -46,8 +43,6 @@ pub struct Backtester {
     vm: StackVM,
     cache: HashMap<String, CachedData>,
     factor_config: FactorConfig,
-    #[allow(dead_code)]
-    pub metric: OptimizationMetric,
     pub exchange: String,
     pub resolution: String,
 }
@@ -59,22 +54,18 @@ impl Backtester {
         exchange: String,
         resolution: String,
     ) -> Self {
+        tracing::info!("Initializing Backtester with PnL-based fitness");
         Self {
             pool,
             vm: StackVM::from_config(&factor_config),
             cache: HashMap::new(),
             factor_config,
-            metric: {
-                tracing::info!("Initializing Backtester with OptimizationMetric::IC");
-                OptimizationMetric::IC
-            },
             exchange,
             resolution,
         }
     }
 
     /// Annualization factor for Sharpe ratio based on resolution and exchange.
-    #[allow(dead_code)]
     fn annualization_factor(&self) -> f64 {
         match self.resolution.as_str() {
             "1d" => 252.0_f64.sqrt(),
@@ -109,9 +100,9 @@ impl Backtester {
     }
 
     /// Estimate trade capacity. For stocks, liquidity field is 0 so use volume.
+    #[allow(dead_code)]
     fn capacity(&self, liquidity: f64, amount: f64) -> f64 {
         if self.exchange == "Polygon" {
-            // Stocks: use amount (≈ volume * price) as capacity proxy, $1M floor for liquid stocks
             amount.max(1e6)
         } else if liquidity > 0.0 {
             liquidity
@@ -187,8 +178,13 @@ impl Backtester {
                 FeatureEngineer::compute_features_from_config(&self.factor_config, &ohlcv);
 
             // Calculate Future Returns
-            let mut max_price = -f64::INFINITY;
+            // Open-to-open with 1-bar execution delay:
+            //   Signal at bar i → execute at open[i+1] → exit at open[i+2]
+            //   return[i] = open[i+2] / open[i+1] - 1
+            // This avoids look-ahead bias: signal uses data up to close[i],
+            // trade enters at next bar's open, exits at the bar after.
             let mut min_price = f64::INFINITY;
+            let mut max_price = f64::NEG_INFINITY;
             for x in close.iter() {
                 if *x > max_price {
                     max_price = *x;
@@ -205,13 +201,12 @@ impl Backtester {
             );
 
             let mut future_ret = Array2::<f64>::zeros((1, len));
-            let mut max_ret = -f64::INFINITY;
-            for i in 0..len - 1 {
-                let curr = close[[0, i]];
-                let next = close[[0, i + 1]];
-                let r = if curr.abs() > 1e-9 {
-                    let raw_r = next / curr - 1.0;
-                    raw_r.clamp(-0.99, 10.0)
+            let mut max_ret = f64::NEG_INFINITY;
+            for i in 0..len.saturating_sub(2) {
+                let exec_price = open[[0, i + 1]];
+                let exit_price = open[[0, i + 2]];
+                let r = if exec_price.abs() > 1e-9 {
+                    (exit_price / exec_price - 1.0).clamp(-0.99, 10.0)
                 } else {
                     0.0
                 };
@@ -227,6 +222,8 @@ impl Backtester {
                 CachedData {
                     features,
                     returns: future_ret,
+                    open: open.clone(),
+                    close: close.clone(),
                     liquidity: liq,
                     amount,
                     timestamps,
@@ -239,7 +236,14 @@ impl Backtester {
         Ok(())
     }
 
-    /// Evaluate a genome on a single symbol's in-sample data (first 70%).
+    /// PnL-based fitness for a single symbol's in-sample data (first 70%).
+    ///
+    /// Matches AlphaGPT's approach:
+    ///   1. sigmoid(raw_signal) → [0, 1]
+    ///   2. position = 1.0 if sigmoid > threshold, else 0.0 (long-only)
+    ///   3. net_pnl = position * open-to-open return - turnover * fee
+    ///   4. fitness = cumulative_pnl - drawdown_penalty
+    ///   5. Require minimum trading activity
     pub fn evaluate_symbol(&self, genome: &mut Genome, symbol: &str) {
         let data = match self.cache.get(symbol) {
             Some(d) => d,
@@ -254,25 +258,19 @@ impl Backtester {
             let ret_slice = data.returns.as_slice().unwrap();
 
             let len = sig_slice.len().min(ret_slice.len());
-            if len < 2 {
+            if len < 20 {
                 genome.fitness = -1000.0;
                 return;
             }
 
-            let split_idx = (len as f64 * 0.7) as usize;
-            let split_idx = split_idx.max(2);
-
-            let s = &sig_slice[..split_idx];
-            let r = &ret_slice[..split_idx];
-
-            let ic = spearman_rank_corr(s, r);
-            genome.fitness = if ic.is_nan() { -999.0 } else { ic };
+            let split_idx = (len as f64 * 0.7).max(20.0) as usize;
+            genome.fitness = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx);
         } else {
             genome.fitness = -1000.0;
         }
     }
 
-    /// Evaluate a genome on a single symbol's out-of-sample data (last 30%).
+    /// PnL-based evaluation on out-of-sample data (last 30%).
     pub fn evaluate_symbol_oos(&self, genome: &Genome, symbol: &str) -> f64 {
         let data = match self.cache.get(symbol) {
             Some(d) => d,
@@ -284,35 +282,87 @@ impl Backtester {
             let ret_slice = data.returns.as_slice().unwrap();
 
             let len = sig_slice.len().min(ret_slice.len());
-            if len < 4 {
+            if len < 20 {
                 return 0.0;
             }
 
-            let split_idx = (len as f64 * 0.7) as usize;
-            let split_idx = split_idx.max(2);
+            let split_idx = (len as f64 * 0.7).max(20.0) as usize;
             if split_idx >= len {
                 return 0.0;
             }
 
-            let s = &sig_slice[split_idx..len];
-            let r = &ret_slice[split_idx..len];
-
-            if s.len() < 2 {
-                return 0.0;
-            }
-
-            let ic = spearman_rank_corr(s, r);
-            if ic.is_nan() {
-                0.0
-            } else {
-                ic
-            }
+            self.pnl_fitness(sig_slice, ret_slice, split_idx, len)
         } else {
             0.0
         }
     }
 
-    /// Evaluate a genome using in-sample data (first 70%) across all cached symbols.
+    /// Core PnL fitness computation used by both IS and OOS evaluation.
+    ///
+    /// Signal processing: sigmoid → threshold → binary long position
+    /// Cost model: IBKR 1bp base fee + market impact
+    /// Penalty: large per-bar losses
+    fn pnl_fitness(&self, sig: &[f64], ret: &[f64], start: usize, end: usize) -> f64 {
+        let n = end - start;
+        if n < 10 {
+            return -10.0;
+        }
+
+        let threshold = 0.65;
+        let fee = self.base_fee();
+        let mut prev_pos = 0.0_f64;
+        let mut cum_pnl = 0.0_f64;
+        let mut trade_count = 0_u32;
+        let mut active_bars = 0_u32;
+        let mut big_loss_count = 0_u32;
+
+        for i in start..end {
+            // Signal → sigmoid → binary position (long-only)
+            let raw = sig[i];
+            let sig_val = sigmoid(raw);
+            let pos = if sig_val > threshold { 1.0 } else { 0.0 };
+
+            // Turnover and costs
+            let turnover = (pos - prev_pos).abs();
+            let cost = turnover * fee;
+
+            // PnL for this bar
+            let bar_pnl = pos * ret[i] - cost;
+            cum_pnl += bar_pnl;
+
+            // Track activity
+            if turnover > 0.5 {
+                trade_count += 1;
+            }
+            if pos > 0.5 {
+                active_bars += 1;
+            }
+
+            // Track large per-bar losses (> 2% for equities)
+            if bar_pnl < -0.02 {
+                big_loss_count += 1;
+            }
+
+            prev_pos = pos;
+        }
+
+        // Minimum activity: must trade at least 5 times and be active 5% of bars
+        if trade_count < 5 || (active_bars as f64) < (n as f64 * 0.05) {
+            return -10.0;
+        }
+
+        // Drawdown penalty: 0.5 per big loss event (adapted from AlphaGPT's 2.0 for crypto)
+        let dd_penalty = big_loss_count.saturating_sub(3) as f64 * 0.5;
+
+        let fitness = cum_pnl - dd_penalty;
+        if fitness.is_nan() {
+            -10.0
+        } else {
+            fitness
+        }
+    }
+
+    /// Evaluate a genome across all cached symbols (PnL-based, in-sample).
     #[allow(dead_code)]
     pub fn evaluate(&self, genome: &mut Genome) {
         if self.cache.is_empty() {
@@ -328,109 +378,27 @@ impl Backtester {
             if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
                 let sig_slice = signal.as_slice().unwrap();
                 let ret_slice = data.returns.as_slice().unwrap();
-
                 let len = sig_slice.len().min(ret_slice.len());
-                if len < 2 {
+                if len < 20 {
                     continue;
                 }
-
-                // Train/test split: use first 70% for fitness (in-sample)
-                let split_idx = (len as f64 * 0.7) as usize;
-                let split_idx = split_idx.max(2); // Ensure at least 2 data points
-
-                let s = &sig_slice[..split_idx];
-                let r = &ret_slice[..split_idx];
-
-                match self.metric {
-                    OptimizationMetric::IC => {
-                        let ic = spearman_rank_corr(s, r);
-                        total_score += ic;
-                        valid_count += 1.0;
-                    }
-                    OptimizationMetric::Sharpe => {
-                        let liq_slice = data.liquidity.as_slice().unwrap();
-                        let amt_slice = data.amount.as_slice().unwrap();
-
-                        let mut strat_returns = Vec::with_capacity(split_idx);
-                        let mut trade_count = 0;
-                        let mut prev_sig = 0.0;
-                        let portfolio_size = 10_000.0;
-                        let fee = self.base_fee();
-
-                        for i in 0..split_idx {
-                            let mut val_s = s[i].clamp(-1.0, 1.0);
-                            let val_r = r[i];
-                            let liq = liq_slice[i.min(liq_slice.len() - 1)];
-                            let amt = amt_slice[i.min(amt_slice.len() - 1)];
-
-                            let cap = self.capacity(liq, amt);
-                            let trade_val = val_s.abs() * portfolio_size;
-                            let impact = trade_val / (cap + 1e-9);
-
-                            if impact > 0.05 {
-                                val_s = 0.0;
-                            }
-
-                            if (val_s - prev_sig).abs() > 0.1 {
-                                trade_count += 1;
-                            }
-
-                            let turnover = (val_s - prev_sig).abs();
-                            let cost = if turnover > 0.0 {
-                                turnover * (fee + impact)
-                            } else {
-                                0.0
-                            };
-
-                            let pnl = val_s * val_r - cost;
-                            strat_returns.push(pnl);
-                            prev_sig = val_s;
-                        }
-
-                        if trade_count < 5 {
-                            total_score -= 5.0;
-                            valid_count += 1.0;
-                            continue;
-                        }
-
-                        let n = strat_returns.len() as f64;
-                        let mean_ret: f64 = strat_returns.iter().sum::<f64>() / n;
-                        let var_ret: f64 = strat_returns
-                            .iter()
-                            .map(|x| (x - mean_ret).powi(2))
-                            .sum::<f64>()
-                            / (n - 1.0);
-                        let std_ret = var_ret.sqrt();
-
-                        let sharpe = if std_ret > 1e-6 {
-                            mean_ret / std_ret * self.annualization_factor()
-                        } else {
-                            0.0
-                        };
-
-                        total_score += sharpe;
-                        valid_count += 1.0;
-                    }
-                }
+                let split_idx = (len as f64 * 0.7).max(20.0) as usize;
+                let score = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx);
+                total_score += score;
+                valid_count += 1.0;
             }
-            // VM failure: skip symbol instead of aborting entire evaluation
         }
 
-        // Require at least 20% of symbols to produce valid signals
         if valid_count < 1.0 || valid_count / total_symbols < 0.2 {
             genome.fitness = -1000.0;
             return;
         }
 
         let avg_score = total_score / valid_count;
-        if avg_score.is_nan() {
-            genome.fitness = -999.0;
-        } else {
-            genome.fitness = avg_score;
-        }
+        genome.fitness = if avg_score.is_nan() { -999.0 } else { avg_score };
     }
 
-    /// Evaluate a genome on out-of-sample data (last 30%) across all cached symbols.
+    /// Evaluate a genome across all cached symbols (PnL-based, out-of-sample).
     #[allow(dead_code)]
     pub fn evaluate_oos(&self, genome: &Genome) -> f64 {
         if self.cache.is_empty() {
@@ -444,44 +412,34 @@ impl Backtester {
             if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
                 let sig_slice = signal.as_slice().unwrap();
                 let ret_slice = data.returns.as_slice().unwrap();
-
                 let len = sig_slice.len().min(ret_slice.len());
-                if len < 4 {
+                if len < 20 {
                     continue;
                 }
-
-                let split_idx = (len as f64 * 0.7) as usize;
-                let split_idx = split_idx.max(2);
+                let split_idx = (len as f64 * 0.7).max(20.0) as usize;
                 if split_idx >= len {
                     continue;
                 }
-
-                let s = &sig_slice[split_idx..len];
-                let r = &ret_slice[split_idx..len];
-
-                if s.len() < 2 {
-                    continue;
-                }
-
-                let ic = spearman_rank_corr(s, r);
-                total_score += ic;
+                let score = self.pnl_fitness(sig_slice, ret_slice, split_idx, len);
+                total_score += score;
                 count += 1.0;
             }
         }
 
         if count > 0.0 {
             let avg = total_score / count;
-            if avg.is_nan() {
-                0.0
-            } else {
-                avg
-            }
+            if avg.is_nan() { 0.0 } else { avg }
         } else {
             0.0
         }
     }
 }
 
+fn sigmoid(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+#[allow(dead_code)]
 fn spearman_rank_corr(x: &[f64], y: &[f64]) -> f64 {
     let n = x.len();
     if n < 2 {
@@ -492,6 +450,7 @@ fn spearman_rank_corr(x: &[f64], y: &[f64]) -> f64 {
     pearson_corr(&rx, &ry)
 }
 
+#[allow(dead_code)]
 fn rank_vector(x: &[f64]) -> Vec<f64> {
     let mut indices: Vec<usize> = (0..x.len()).collect();
     indices.sort_by(|&a, &b| x[a].partial_cmp(&x[b]).unwrap_or(std::cmp::Ordering::Equal));
@@ -502,6 +461,7 @@ fn rank_vector(x: &[f64]) -> Vec<f64> {
     ranks
 }
 
+#[allow(dead_code)]
 fn pearson_corr(x: &[f64], y: &[f64]) -> f64 {
     let n = x.len() as f64;
     let mean_x = x.iter().sum::<f64>() / n;
@@ -543,8 +503,6 @@ impl Backtester {
         let data = self.cache.get(symbol).unwrap();
         let features = &data.features;
         let future_ret = &data.returns;
-        let liquidity = &data.liquidity;
-        let amount = &data.amount;
 
         let genome_usize: Vec<usize> = genome.iter().map(|&x| x as usize).collect();
 
@@ -557,46 +515,36 @@ impl Backtester {
                 .min(ret_slice.len())
                 .min(features.shape()[2]);
 
+            let threshold = 0.65_f64;
+            let fee = self.base_fee();
             let mut equity_curve = Vec::with_capacity(len);
-            let mut current_equity = 1.0;
+            let mut current_equity = 1.0_f64;
             let mut win = 0;
             let mut total = 0;
-            let mut prev_sig = 0.0;
-            let portfolio_size = 10_000.0;
-            let fee = self.base_fee();
+            let mut prev_pos = 0.0_f64;
 
             for i in 0..len {
-                let mut s = sig_slice[i].clamp(-1.0, 1.0);
+                // Sigmoid + threshold → binary long position
+                let sig_val = sigmoid(sig_slice[i]);
+                let pos = if sig_val > threshold { 1.0 } else { 0.0 };
                 let r = ret_slice[i];
-                let liq = liquidity[[0, i]];
-                let amt = amount[[0, i]];
 
-                let cap = self.capacity(liq, amt);
+                let turnover = (pos - prev_pos).abs();
+                let cost = turnover * fee;
 
-                let trade_val = s.abs() * portfolio_size;
-                let impact = trade_val / (cap + 1e-9);
-
-                if impact > 0.05 {
-                    s = 0.0;
-                }
-
-                let turnover = (s - prev_sig).abs();
-                let cost = if turnover > 0.0 {
-                    turnover * (fee + impact)
-                } else {
-                    0.0
-                };
-
-                let pnl = s * r - cost;
+                let pnl = pos * r - cost;
 
                 current_equity *= 1.0 + pnl;
 
                 if current_equity <= 0.0 {
                     current_equity = 0.0;
+                    equity_curve.push(serde_json::json!({
+                        "i": i, "equity": 0.0, "pos": pos, "ret": r, "cost": cost
+                    }));
                     break;
                 }
 
-                if turnover > 0.0 && (s - prev_sig).abs() > 0.1 {
+                if turnover > 0.5 {
                     total += 1;
                     if pnl > 0.0 {
                         win += 1;
@@ -606,12 +554,11 @@ impl Backtester {
                 equity_curve.push(serde_json::json!({
                     "i": i,
                     "equity": current_equity,
-                    "sig": s,
+                    "pos": pos,
                     "ret": r,
-                    "cost": cost,
-                    "impact": impact
+                    "cost": cost
                 }));
-                prev_sig = s;
+                prev_pos = pos;
             }
 
             let total_ret = current_equity - 1.0;
@@ -653,7 +600,7 @@ impl Backtester {
                     / (n - 1.0);
                 let std_r = var_r.sqrt();
                 if std_r > 1e-9 {
-                    mean_r / std_r * 252.0_f64.sqrt()
+                    mean_r / std_r * self.annualization_factor()
                 } else {
                     0.0
                 }

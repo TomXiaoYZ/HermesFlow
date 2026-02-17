@@ -355,10 +355,10 @@ async fn run_symbol_evolution(
         ga.evolve();
 
         if let Some(best) = &ga.best_genome {
-            let oos_ic = backtester.evaluate_symbol_oos(best, &symbol);
+            let oos_pnl = backtester.evaluate_symbol_oos(best, &symbol);
             info!(
-                "[{}:{}] Gen {} Fitness: {:.4} OOS IC: {:.4}",
-                exchange, symbol, gen, best.fitness, oos_ic
+                "[{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4}",
+                exchange, symbol, gen, best.fitness, oos_pnl
             );
 
             let payload = serde_json::json!({
@@ -367,14 +367,14 @@ async fn run_symbol_evolution(
                 "formula": best.tokens,
                 "generation": gen,
                 "fitness": best.fitness,
-                "oos_ic": oos_ic,
+                "oos_ic": oos_pnl,
                 "best_tokens": best.tokens,
                 "exchange": exchange,
                 "symbol": symbol,
                 "resolution": resolution,
                 "meta": {
-                    "name": format!("{}-Gen{}-{:.2}", symbol, gen, best.fitness),
-                    "description": format!("{} Evolved Strategy. IC: {:.4}", symbol, best.fitness)
+                    "name": format!("{}-Gen{}-PnL{:.2}", symbol, gen, best.fitness),
+                    "description": format!("{} Evolved Strategy. IS PnL: {:.4}, OOS PnL: {:.4}", symbol, best.fitness, oos_pnl)
                 }
             });
             let payload_str = payload.to_string();
