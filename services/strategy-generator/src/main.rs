@@ -472,6 +472,16 @@ async fn run_symbol_evolution(
                             m.get("max_drawdown").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100.0,
                         );
 
+                        // Keep only the latest backtest per (exchange, symbol)
+                        let _ = sqlx::query(
+                            "DELETE FROM backtest_results \
+                             WHERE token_address = $1 AND strategy_id LIKE $2",
+                        )
+                        .bind(&symbol)
+                        .bind(format!("{}_%", exchange_lower))
+                        .execute(&pool)
+                        .await;
+
                         let _ = sqlx::query(
                             "INSERT INTO backtest_results \
                              (strategy_id, genome, token_address, pnl_percent, win_rate, total_trades, \
