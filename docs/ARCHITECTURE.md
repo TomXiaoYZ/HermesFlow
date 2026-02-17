@@ -80,10 +80,14 @@ graph TD
 ### 2.4 Strategy Generator (Rust)
 - **Tech**: Actix-web, SQLx, genetic algorithm engine
 - **Role**:
-  - Evolves trading strategies using genetic algorithms.
-  - Evaluates fitness via the backtest engine.
-  - Persists top-performing strategies to the database.
-  - Exposes an API for triggering generation runs and retrieving results.
+  - Evolves trading strategies using genetic algorithms (GA) with K-fold cross-validation.
+  - Runs dual-mode parallel evolution per symbol: **Long Only** (positions 0/1) and **Long Short** (positions -1/0/1).
+  - Evaluates fitness via the backtest engine (stack-based VM executing strategy bytecode on historical candle data).
+  - Performs out-of-sample (OOS) validation and detailed simulation with equity curve + trade-level tracking.
+  - Persists generation results (`strategy_generations`) and backtest results (`backtest_results`) to TimescaleDB.
+  - Periodic cleanup of old generations (retains last 1000 + guards against orphaned forward generations).
+  - **Resume logic**: On startup, queries the last generation per (exchange, symbol, mode) and resumes from there. Handles DB errors with retry. Cleans orphaned generations from previous runs.
+  - Exposes REST API: `/overview`, `/generations`, `/generations/:gen`, `/backtest` (re-run), `/exchanges`.
 - **Port**: 8082 (external API), 8084 (internal health).
 
 ### 2.5 Backtest Engine (Rust library crate)
@@ -94,13 +98,17 @@ graph TD
   - Used as a dependency by strategy-engine and strategy-generator.
 
 ### 2.6 Execution Engine (Rust)
-- **Tech**: Tokio, Solana SDK, reqwest
+- **Tech**: Tokio, Solana SDK, ibapi, reqwest
 - **Role**:
-  - Listens for trade commands on Redis.
+  - Subscribes to `trade_signals` channel on Redis via `CommandListener`.
+  - Routes signals by exchange/symbol format: Polygon → IBKR, US/HK/SH/SZ → Futu, SOL/base58 → Solana.
   - Executes trades across multiple venues:
     - **Raydium** (Solana DEX): On-chain swaps with ATA management, wSOL wrapping.
-    - **IBKR** (US equities): Via TWS API (TCP gateway).
+    - **IBKR** (US equities): Via `ibapi` crate v0.1 (blocking, wrapped in `spawn_blocking`). Supports Market/Limit/MOC orders. Fill accumulation from `OrderNotification` stream.
     - **Futu** (HK stocks): Via futu-bridge HTTP bridge.
+  - **Risk Engine** (`StockRiskEngine`): Pre-trade checks for order value ($2000 max), position count (5 max), daily loss cap ($500), duplicate signal detection.
+  - **Trade Recording**: Persists to 3 tables — `trade_orders`, `trade_executions`, `trade_positions` (UPSERT for cumulative position tracking).
+  - Publishes `OrderUpdate` events to Redis `order_updates` channel.
   - Manages execution guards, retry logic, RPC fallback.
 - **Port**: 8083 (health endpoint only, no public port).
 
@@ -359,6 +367,99 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is not set, each service falls back to its ow
 - `opentelemetry-otlp = "0.15"` (features: `grpc-tonic`)
 - `tracing-opentelemetry = "0.23"`
 
+## 9. IBKR Trading Pipeline
+
+End-to-end signal flow for US equities via Interactive Brokers:
+
+```
+Strategy Engine                    Execution Engine                       Database
+─────────────                      ────────────────                       ────────
+ market data (Redis)               CommandListener                       TimescaleDB
+       │                           subscribes to                              │
+       ▼                           trade_signals                              │
+ VM evaluates strategy                  │                                     │
+       │                                ▼                                     │
+       ▼                     route by exchange/symbol                         │
+ generate TradeSignal        (polygon → IBKR path)                            │
+       │                                │                                     │
+       ▼                                ▼                                     │
+ publish to Redis ──────────► StockRiskEngine                                 │
+ (trade_signals)              check_pre_trade()                               │
+                                        │                                     │
+                               ┌── pass ─┤── reject ──► log + skip            │
+                               │         │                                    │
+                               ▼         │                                    │
+                          IBKRTrader     │                                    │
+                          buy()/sell()   │                                    │
+                               │         │                                    │
+                               ▼         │                                    │
+                          TWS Gateway    │                                    │
+                          (port 7497)    │                                    │
+                               │         │                                    │
+                               ▼         │                                    │
+                          OrderResult    │                                    │
+                               │         │                                    │
+                               ├─────────┼──► INSERT trade_orders ───────────►│
+                               ├─────────┼──► INSERT trade_executions ───────►│
+                               ├─────────┼──► UPSERT trade_positions ────────►│
+                               │         │                                    │
+                               ▼         │                                    │
+                          publish to Redis                                    │
+                          (order_updates) ──► Gateway ──► WebSocket ──► UI
+```
+
+### 9.1 Trading Database Schema
+
+| Table | Key Columns | Purpose |
+|-------|-------------|---------|
+| `trade_orders` | exchange, symbol, side, order_type, quantity, status, strategy_id | Order lifecycle tracking |
+| `trade_executions` | order_id, execution_id, price, quantity, commission | Fill-level audit trail |
+| `trade_positions` | (account_id, exchange, symbol) UNIQUE, quantity (signed), avg_price | Real-time position state |
+| `trade_accounts` | account_id, exchange, total_balance, available_balance | Account-level balances |
+
+### 9.2 Risk Controls
+
+| Parameter | Default | Source |
+|-----------|---------|--------|
+| Max order value | $2,000 | `RISK_MAX_ORDER_VALUE` |
+| Max open positions | 5 | `RISK_MAX_POSITIONS` |
+| Max daily loss | $500 | `RISK_MAX_DAILY_LOSS` |
+| Trade size per signal | $500 | `TRADE_SIZE_USD` |
+| Signal threshold (stocks) | 0.52 | `SIGNAL_THRESHOLD` |
+
+### 9.3 IBKR Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IBKR_HOST` | `host.docker.internal` | TWS/Gateway hostname |
+| `IBKR_PORT` | `7497` | TWS paper=7497, live=7496; Gateway paper=4002, live=4001 |
+| `IBKR_CLIENT_ID` | `1` | API client identifier |
+
+## 10. Development Progress
+
+### Module Completion Status (as of 2026-02-17)
+
+| Module | Status | Completion | Notes |
+|--------|--------|------------|-------|
+| **Data Engine** | Production | 95% | 12+ collectors, 7-stage DQ, circuit breaker, dead letter |
+| **Gateway** | Production | 90% | REST proxy, WebSocket broadcast, metrics. Missing: IBKR-specific endpoints |
+| **Strategy Engine** | Production | 90% | VM execution, stock signal routing, risk checks, portfolio management |
+| **Strategy Generator** | Production | 90% | GA evolution, dual-mode (LO/LS), K-fold CV, OOS validation, resume logic |
+| **Backtest Engine** | Production | 95% | 10+ factors, stack VM, detailed simulation, equity curve |
+| **Execution Engine** | Functional | 70% | IBKR/Futu/Solana routing, risk engine, trade recording. Missing: account sync, modern API |
+| **User Management** | Active | 80% | JWT auth, RBAC, multi-tenancy |
+| **Futu Bridge** | Active | 85% | HK stock bridge via OpenD |
+| **Web Frontend** | Active | 75% | Strategy Lab, Market Overview, Trade Panel (stub). Missing: IBKR account UI |
+| **Infrastructure** | Production | 90% | TimescaleDB, Redis, ClickHouse, Prometheus, Grafana, Jaeger, Vector |
+
+### Known Gaps
+
+1. **IBKR ibapi v0.1**: Blocking API, no async support, limited error handling. Planned upgrade to v2.5+.
+2. **Account sync**: No real-time portfolio/balance sync from IBKR — only tracks from execution callbacks.
+3. **Paper trading toggle**: No runtime switch between paper/live; configured via port number only.
+4. **Frontend trading UI**: `TradeExecutionPanel.tsx` is a stub (display-only, no controls).
+5. **Gateway IBKR endpoints**: No `/api/v1/ibkr/account`, `/positions`, `/orders` REST endpoints.
+
 ## Appendix A: Architecture Decision Records (ADR)
 
 ### ADR-001: Adoption of TimescaleDB (2026-01-17)
@@ -410,3 +511,23 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is not set, each service falls back to its ow
 1. Freshness checks (Stage 0-1) are cheap queries that benefit from frequent execution for early stale-data detection.
 2. Analytical checks (gap detection, cross-source divergence) involve expensive JOINs and window functions; running them every 30s would waste database resources.
 3. `guarded_task()` with `AtomicBool` + `tokio::time::timeout` prevents task pile-up under load.
+
+### ADR-007: Dual-Mode Strategy Evolution (2026-02)
+
+**Context**: A single strategy mode (long-only) limited the genetic algorithm's search space and couldn't capture short-selling opportunities in bearish regimes.
+**Decision**: Run two parallel GA evolution tasks per (exchange, symbol) pair — one Long Only (positions 0/1) and one Long Short (positions -1/0/1). Each mode has independent population, fitness tracking, and database records keyed by `(exchange, symbol, mode, generation)`.
+**Rationale**:
+1. Long Only strategies suit trend-following in bull markets; Long Short captures mean-reversion and bearish opportunities.
+2. Parallel evolution doubles throughput but with independent populations — no cross-contamination of fitness landscapes.
+3. Database PK includes `mode`, so both modes coexist cleanly. Frontend tab switching filters by mode via `?mode=` query parameter.
+4. Short entry carries a 1.5x fee multiplier (borrow premium), making the fitness function mode-aware.
+
+### ADR-008: IBKR Signal-to-Execution Pipeline via Redis (2026-02)
+
+**Context**: Needed to connect the strategy engine's real-time signals to IBKR order execution without tight coupling between services.
+**Decision**: Use Redis Pub/Sub as the signal bus. Strategy Engine publishes `TradeSignal` to `trade_signals` channel; Execution Engine subscribes, routes by exchange/symbol, applies risk checks, executes via IBKR TWS API, persists results, and publishes `OrderUpdate` to `order_updates` channel.
+**Rationale**:
+1. Redis Pub/Sub decouples signal generation from execution — services can restart independently.
+2. Risk engine as a pre-trade gate prevents runaway order submission.
+3. Three-table recording (orders → executions → positions) provides full audit trail.
+4. `ibapi` v0.1's blocking API is wrapped in `spawn_blocking` to avoid blocking the Tokio runtime. Planned upgrade to async-native API.

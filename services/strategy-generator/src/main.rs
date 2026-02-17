@@ -359,8 +359,7 @@ async fn run_symbol_evolution(
         }
         if let Ok(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome") {
             if !ga.population.is_empty() {
-                ga.population[0].tokens =
-                    best_tokens.into_iter().map(|x| x as usize).collect();
+                ga.population[0].tokens = best_tokens.into_iter().map(|x| x as usize).collect();
             }
         }
     };
