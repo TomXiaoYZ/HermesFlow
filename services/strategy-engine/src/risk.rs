@@ -29,7 +29,10 @@ impl Default for RiskConfig {
             max_position_size_portion: 0.5,
             max_drawdown_limit: 0.20,
             entry_amount_sol: 0.02,
-            check_honeypot: true,
+            check_honeypot: env::var("CHECK_HONEYPOT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(false),
             trade_size_usd: env::var("TRADE_SIZE_USD")
                 .ok()
                 .and_then(|v| v.parse().ok())
