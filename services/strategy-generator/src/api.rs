@@ -235,7 +235,9 @@ async fn get_generation(
             br.max_drawdown,
             br.win_rate,
             br.total_trades,
-            br.equity_curve
+            br.equity_curve,
+            br.trades,
+            br.metrics
         FROM strategy_generations sg
         LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
         WHERE sg.exchange = $1 AND sg.generation = $2"#,
@@ -447,10 +449,13 @@ async fn get_symbol_generation(
             br.max_drawdown,
             br.win_rate,
             br.total_trades,
-            br.equity_curve
+            br.equity_curve,
+            br.trades,
+            br.metrics
         FROM strategy_generations sg
         LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
-        WHERE sg.exchange = $1 AND sg.symbol = $2 AND sg.generation = $3"#,
+        WHERE sg.exchange = $1 AND sg.symbol = $2 AND sg.generation = $3
+        ORDER BY br.created_at DESC LIMIT 1"#,
     )
     .bind(&exchange_name)
     .bind(&symbol)
@@ -497,7 +502,15 @@ fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> 
         });
         if include_equity {
             let equity_curve: Option<Value> = row.get("equity_curve");
+            let trades: Option<Value> = row.try_get("trades").unwrap_or(None);
+            let metrics: Option<Value> = row.try_get("metrics").unwrap_or(None);
             bt["equity_curve"] = equity_curve.unwrap_or(json!(null));
+            if let Some(t) = trades {
+                bt["trades"] = t;
+            }
+            if let Some(m) = metrics {
+                bt["metrics"] = m;
+            }
         }
         Some(bt)
     } else {

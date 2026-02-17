@@ -441,18 +441,21 @@ async fn run_symbol_evolution(
                     Ok(sim) => {
                         let m = sim["metrics"].as_object().unwrap();
                         info!(
-                            "[{}:{}] Backtest: PnL={:.2}%, Sharpe={:.2}",
+                            "[{}:{}] Backtest: PnL={:.2}%, Sharpe={:.2}, Sortino={:.2}, PF={:.2}, MaxDD={:.2}%",
                             exchange,
                             symbol,
                             m["total_return"].as_f64().unwrap_or(0.0) * 100.0,
-                            m.get("sharpe_ratio")
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(0.0)
+                            m.get("sharpe_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            m.get("sortino_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            m.get("profit_factor").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            m.get("max_drawdown").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100.0,
                         );
 
                         let _ = sqlx::query(
-                            "INSERT INTO backtest_results (strategy_id, genome, token_address, pnl_percent, win_rate, total_trades, sharpe_ratio, max_drawdown, equity_curve, created_at) \
-                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())"
+                            "INSERT INTO backtest_results \
+                             (strategy_id, genome, token_address, pnl_percent, win_rate, total_trades, \
+                              sharpe_ratio, max_drawdown, equity_curve, trades, metrics, created_at) \
+                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())"
                         )
                         .bind(&strategy_id)
                         .bind(&tokens_i32)
@@ -463,6 +466,8 @@ async fn run_symbol_evolution(
                         .bind(m.get("sharpe_ratio").and_then(|v| v.as_f64()).unwrap_or(0.0))
                         .bind(m.get("max_drawdown").and_then(|v| v.as_f64()).unwrap_or(0.0))
                         .bind(&sim["equity_curve"])
+                        .bind(&sim["trades"])
+                        .bind(&sim["metrics"])
                         .execute(&pool)
                         .await
                         .map_err(|e| error!("[{}:{}] Backtest persist failed: {}", exchange, symbol, e));

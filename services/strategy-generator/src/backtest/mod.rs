@@ -538,111 +538,292 @@ impl Backtester {
             let fee = self.base_fee();
             let mut equity_curve = Vec::with_capacity(len);
             let mut current_equity = 1.0_f64;
-            let mut win = 0;
-            let mut total = 0;
             let mut prev_pos = 0.0_f64;
+            let mut period_returns = Vec::with_capacity(len);
+
+            // Trade tracking: entry → exit pairs
+            let mut trades: Vec<serde_json::Value> = Vec::new();
+            let mut in_trade = false;
+            let mut trade_entry_bar = 0_usize;
+            let mut trade_entry_equity = 1.0_f64;
 
             for i in 0..len {
-                // Sigmoid + threshold → binary long position
                 let sig_val = sigmoid(sig_slice[i]);
                 let pos = if sig_val > threshold { 1.0 } else { 0.0 };
                 let r = ret_slice[i];
-
                 let turnover = (pos - prev_pos).abs();
                 let cost = turnover * fee;
-
                 let pnl = pos * r - cost;
 
+                let prev_equity = current_equity;
                 current_equity *= 1.0 + pnl;
 
                 if current_equity <= 0.0 {
                     current_equity = 0.0;
+                    if in_trade {
+                        trades.push(serde_json::json!({
+                            "entry": trade_entry_bar, "exit": i,
+                            "bars": i - trade_entry_bar,
+                            "pnl": -1.0,
+                        }));
+                        in_trade = false;
+                    }
                     equity_curve.push(serde_json::json!({
                         "i": i, "equity": 0.0, "pos": pos, "ret": r, "cost": cost
                     }));
                     break;
                 }
 
+                // Track trade entry/exit
                 if turnover > 0.5 {
-                    total += 1;
-                    if pnl > 0.0 {
-                        win += 1;
+                    if pos > 0.5 {
+                        // Trade entry
+                        in_trade = true;
+                        trade_entry_bar = i;
+                        trade_entry_equity = prev_equity;
+                    } else if in_trade {
+                        // Trade exit
+                        trades.push(serde_json::json!({
+                            "entry": trade_entry_bar,
+                            "exit": i,
+                            "bars": i - trade_entry_bar,
+                            "pnl": (current_equity / trade_entry_equity) - 1.0,
+                        }));
+                        in_trade = false;
                     }
                 }
 
+                // Period return for Sharpe/Sortino
+                if i > 0 && prev_equity > 0.0 {
+                    period_returns.push(current_equity / prev_equity - 1.0);
+                }
+
                 equity_curve.push(serde_json::json!({
-                    "i": i,
-                    "equity": current_equity,
-                    "pos": pos,
-                    "ret": r,
-                    "cost": cost
+                    "i": i, "equity": current_equity, "pos": pos, "ret": r, "cost": cost
                 }));
                 prev_pos = pos;
             }
 
-            let total_ret = current_equity - 1.0;
-            let win_rate = if total > 0 {
-                win as f64 / total as f64
-            } else {
-                0.0
-            };
-
-            // Compute Sharpe ratio and max drawdown from equity curve
-            let mut max_equity = 1.0;
-            let mut max_drawdown = 0.0;
-            let mut period_returns = Vec::with_capacity(equity_curve.len());
-
-            for i in 0..equity_curve.len() {
-                let eq = equity_curve[i]["equity"].as_f64().unwrap_or(1.0);
-                if eq > max_equity {
-                    max_equity = eq;
-                }
-                let dd = (max_equity - eq) / max_equity;
-                if dd > max_drawdown {
-                    max_drawdown = dd;
-                }
-                if i > 0 {
-                    let prev_eq = equity_curve[i - 1]["equity"].as_f64().unwrap_or(1.0);
-                    if prev_eq > 0.0 {
-                        period_returns.push(eq / prev_eq - 1.0);
-                    }
-                }
+            // Close any trade still open at the end
+            if in_trade {
+                trades.push(serde_json::json!({
+                    "entry": trade_entry_bar,
+                    "exit": len.saturating_sub(1),
+                    "bars": len.saturating_sub(1) - trade_entry_bar,
+                    "pnl": (current_equity / trade_entry_equity) - 1.0,
+                }));
             }
 
-            let n = period_returns.len() as f64;
-            let sharpe_ratio = if n > 1.0 {
-                let mean_r = period_returns.iter().sum::<f64>() / n;
-                let var_r = period_returns
-                    .iter()
-                    .map(|&x| (x - mean_r).powi(2))
-                    .sum::<f64>()
-                    / (n - 1.0);
-                let std_r = var_r.sqrt();
-                if std_r > 1e-9 {
-                    mean_r / std_r * self.annualization_factor()
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
+            let metrics = self.compute_trade_stats(
+                current_equity,
+                &trades,
+                &period_returns,
+                &equity_curve,
+            );
 
             return Ok(serde_json::json!({
                 "symbol": symbol,
                 "days": days,
-                "metrics": {
-                    "total_return": total_ret,
-                    "final_equity": current_equity,
-                    "win_rate": win_rate,
-                    "total_trades": total,
-                    "sharpe_ratio": sharpe_ratio,
-                    "max_drawdown": max_drawdown
-                },
+                "metrics": metrics,
+                "trades": trades,
                 "equity_curve": equity_curve
             }));
         }
 
         Err(anyhow::anyhow!("VM execution failed"))
+    }
+
+    /// Compute comprehensive trade-level and portfolio-level statistics.
+    fn compute_trade_stats(
+        &self,
+        final_equity: f64,
+        trades: &[serde_json::Value],
+        period_returns: &[f64],
+        equity_curve: &[serde_json::Value],
+    ) -> serde_json::Value {
+        let total_ret = final_equity - 1.0;
+        let total_trades = trades.len();
+
+        // Per-trade P&L
+        let trade_pnls: Vec<f64> = trades
+            .iter()
+            .filter_map(|t| t["pnl"].as_f64())
+            .collect();
+
+        let wins: Vec<f64> = trade_pnls.iter().filter(|&&p| p > 0.0).copied().collect();
+        let losses: Vec<f64> = trade_pnls.iter().filter(|&&p| p <= 0.0).copied().collect();
+        let win_count = wins.len();
+        let loss_count = losses.len();
+        let win_rate = if total_trades > 0 {
+            win_count as f64 / total_trades as f64
+        } else {
+            0.0
+        };
+
+        let avg_win = if !wins.is_empty() {
+            wins.iter().sum::<f64>() / wins.len() as f64
+        } else {
+            0.0
+        };
+        let avg_loss = if !losses.is_empty() {
+            losses.iter().sum::<f64>() / losses.len() as f64
+        } else {
+            0.0
+        };
+
+        let max_win = trade_pnls.iter().copied().fold(0.0_f64, f64::max);
+        let max_loss = trade_pnls.iter().copied().fold(0.0_f64, f64::min);
+
+        let gross_profit: f64 = wins.iter().sum();
+        let gross_loss: f64 = losses.iter().map(|l| l.abs()).sum();
+        let profit_factor = if gross_loss > 1e-9 {
+            gross_profit / gross_loss
+        } else if gross_profit > 0.0 {
+            f64::INFINITY
+        } else {
+            0.0
+        };
+
+        let avg_holding_bars = if total_trades > 0 {
+            trades
+                .iter()
+                .filter_map(|t| t["bars"].as_f64())
+                .sum::<f64>()
+                / total_trades as f64
+        } else {
+            0.0
+        };
+
+        // Max consecutive wins/losses
+        let (max_consec_wins, max_consec_losses) = {
+            let (mut mw, mut ml, mut cw, mut cl) = (0_u32, 0_u32, 0_u32, 0_u32);
+            for &pnl in &trade_pnls {
+                if pnl > 0.0 {
+                    cw += 1;
+                    cl = 0;
+                    mw = mw.max(cw);
+                } else {
+                    cl += 1;
+                    cw = 0;
+                    ml = ml.max(cl);
+                }
+            }
+            (mw, ml)
+        };
+
+        // Max drawdown
+        let mut peak = 1.0_f64;
+        let mut max_drawdown = 0.0_f64;
+        for v in equity_curve {
+            let eq = v["equity"].as_f64().unwrap_or(1.0);
+            if eq > peak {
+                peak = eq;
+            }
+            let dd = (peak - eq) / peak;
+            if dd > max_drawdown {
+                max_drawdown = dd;
+            }
+        }
+
+        // Sharpe ratio
+        let n = period_returns.len() as f64;
+        let ann = self.annualization_factor();
+        let (mean_r, std_r) = if n > 1.0 {
+            let m = period_returns.iter().sum::<f64>() / n;
+            let v = period_returns
+                .iter()
+                .map(|&x| (x - m).powi(2))
+                .sum::<f64>()
+                / (n - 1.0);
+            (m, v.sqrt())
+        } else {
+            (0.0, 0.0)
+        };
+        let sharpe_ratio = if std_r > 1e-9 {
+            mean_r / std_r * ann
+        } else {
+            0.0
+        };
+
+        // Sortino ratio (downside deviation only)
+        let sortino_ratio = if n > 1.0 {
+            let downside_var = period_returns
+                .iter()
+                .filter(|&&r| r < 0.0)
+                .map(|&r| r.powi(2))
+                .sum::<f64>()
+                / n;
+            let downside_std = downside_var.sqrt();
+            if downside_std > 1e-9 {
+                mean_r / downside_std * ann
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        // Calmar ratio (annualized return / max drawdown)
+        let calmar_ratio = if max_drawdown > 1e-9 && n > 0.0 {
+            let bars_per_year = match self.resolution.as_str() {
+                "1d" => 252.0,
+                "1h" => {
+                    if self.exchange == "Polygon" {
+                        252.0 * 6.5
+                    } else {
+                        365.0 * 24.0
+                    }
+                }
+                _ => 252.0 * 96.0,
+            };
+            let annual_factor = bars_per_year / n;
+            let annualized_ret = (1.0 + total_ret).powf(annual_factor) - 1.0;
+            annualized_ret / max_drawdown
+        } else {
+            0.0
+        };
+
+        // Average trade return and std
+        let avg_trade_return = if total_trades > 0 {
+            trade_pnls.iter().sum::<f64>() / total_trades as f64
+        } else {
+            0.0
+        };
+        let trade_return_std = if total_trades > 1 {
+            let var = trade_pnls
+                .iter()
+                .map(|&p| (p - avg_trade_return).powi(2))
+                .sum::<f64>()
+                / (total_trades as f64 - 1.0);
+            var.sqrt()
+        } else {
+            0.0
+        };
+
+        serde_json::json!({
+            "total_return": total_ret,
+            "final_equity": final_equity,
+            "total_trades": total_trades,
+            "win_rate": win_rate,
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown": max_drawdown,
+            "sortino_ratio": sortino_ratio,
+            "calmar_ratio": calmar_ratio,
+            "profit_factor": profit_factor,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "max_win": max_win,
+            "max_loss": max_loss,
+            "avg_holding_bars": avg_holding_bars,
+            "max_consecutive_wins": max_consec_wins,
+            "max_consecutive_losses": max_consec_losses,
+            "avg_trade_return": avg_trade_return,
+            "trade_return_std": trade_return_std,
+            "win_count": win_count,
+            "loss_count": loss_count,
+            "gross_profit": gross_profit,
+            "gross_loss": gross_loss,
+        })
     }
 
     pub async fn run_portfolio_simulation(
