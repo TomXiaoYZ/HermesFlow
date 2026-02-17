@@ -1,4 +1,4 @@
-use common::events::{MarketDataUpdate, PortfolioUpdate, StrategyLog, TradeSignal};
+use common::events::{MarketDataUpdate, OrderUpdate, PortfolioUpdate, StrategyLog, TradeSignal};
 
 use anyhow::Result;
 use redis::Commands;
@@ -127,6 +127,53 @@ impl EventBus {
                                     }
                                     Err(e) => tracing::error!(
                                         "Failed to deserialize portfolio data: {}",
+                                        e
+                                    ),
+                                }
+                            }
+                            Err(e) => tracing::error!("Failed to get payload: {}", e),
+                        },
+                        Err(e) => {
+                            tracing::error!("Redis subscription error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => tracing::error!("Failed to connect to Redis for subscription: {}", e),
+        });
+
+        Ok(rx)
+    }
+
+    pub async fn subscribe_order_updates(
+        &self,
+        channel_name: &str,
+    ) -> Result<mpsc::Receiver<OrderUpdate>> {
+        let (tx, rx) = mpsc::channel(100);
+        let client = self.client.clone();
+        let channel_name = channel_name.to_string();
+
+        thread::spawn(move || match client.get_connection() {
+            Ok(mut conn) => {
+                let mut pubsub = conn.as_pubsub();
+                if let Err(e) = pubsub.subscribe(&channel_name) {
+                    tracing::error!("Failed to subscribe to {}: {}", channel_name, e);
+                    return;
+                }
+
+                loop {
+                    match pubsub.get_message() {
+                        Ok(msg) => match msg.get_payload::<String>() {
+                            Ok(payload) => {
+                                match serde_json::from_str::<OrderUpdate>(&payload) {
+                                    Ok(data) => {
+                                        if tx.blocking_send(data).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => tracing::error!(
+                                        "Failed to deserialize order update: {}",
                                         e
                                     ),
                                 }

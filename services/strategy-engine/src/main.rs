@@ -1,6 +1,6 @@
 use backtest_engine::vm::vm::StackVM;
 use chrono::Utc;
-use common::events::{OrderSide, OrderType, TradeSignal};
+use common::events::{OrderSide, OrderStatus, OrderType, TradeSignal};
 use std::collections::HashMap;
 use std::env;
 use strategy_engine::event_bus::EventBus;
@@ -154,8 +154,11 @@ async fn main() -> anyhow::Result<()> {
     let mut portfolio_rx = event_bus
         .subscribe_portfolio_updates("portfolio_updates")
         .await?;
+    let mut order_rx = event_bus
+        .subscribe_order_updates("order_updates")
+        .await?;
 
-    info!("Listening for Market Data and Portfolio Updates...");
+    info!("Listening for Market Data, Portfolio Updates, and Order Updates...");
 
     // 4. Main Loop
     loop {
@@ -163,6 +166,35 @@ async fn main() -> anyhow::Result<()> {
             Some(update) = portfolio_rx.recv() => {
                 info!("Portfolio Update: Cash={:.4}, Total={:.4}", update.cash, update.total_equity);
                 risk_engine.update_equity(update.total_equity);
+            }
+
+            Some(order) = order_rx.recv() => {
+                match order.status {
+                    OrderStatus::Failed | OrderStatus::Cancelled | OrderStatus::Rejected => {
+                        let is_stock = is_stock_symbol(&order.symbol);
+                        let portfolio = if is_stock { &mut stock_portfolio } else { &mut crypto_portfolio };
+
+                        if portfolio.positions.remove(&order.symbol).is_some() {
+                            warn!(
+                                "Order {} for {} {}: removed phantom position (open_positions: {})",
+                                order.status, order.symbol,
+                                order.message.as_deref().unwrap_or(""),
+                                portfolio.positions.len()
+                            );
+                            strategy_engine::metrics::ACTIVE_POSITIONS.set(
+                                (crypto_portfolio.positions.len()
+                                    + stock_portfolio.positions.len()) as i64,
+                            );
+                        }
+                    }
+                    OrderStatus::Filled => {
+                        info!(
+                            "Order Filled: {} qty={:.4} avg_price={:.4}",
+                            order.symbol, order.filled_quantity, order.filled_avg_price
+                        );
+                    }
+                    _ => {}
+                }
             }
 
             Some(msg) = market_rx.recv() => {
