@@ -108,6 +108,27 @@ export default function Dashboard() {
                     setLogs(prev => [log, ...prev.slice(0, 99)]);
                 }
 
+                if (type === "order_update") {
+                    // Update signal status based on execution result
+                    const status: TradeSignal["status"] =
+                        data.status === "Filled" ? "FILLED" :
+                        data.status === "Failed" || data.status === "Cancelled" ? "REJECTED" : "PENDING";
+
+                    if (data.signal_id) {
+                        setSignals(prev => prev.map(s =>
+                            s.id === data.signal_id ? { ...s, status, price: data.filled_avg_price || s.price } : s
+                        ));
+                    }
+
+                    const log: LogEntry = {
+                        timestamp: new Date().toLocaleTimeString(),
+                        level: status === "REJECTED" ? "WARN" : "INFO",
+                        message: `Order ${data.order_id || "?"}: ${data.status} ${data.symbol} (${data.message || ""})`,
+                        module: "EXECUTION"
+                    };
+                    setLogs(prev => [log, ...prev.slice(0, 99)]);
+                }
+
                 if (type === "portfolio") {
                     if (data.cash !== undefined) {
                         setPortfolioValue(data.cash); // Simplified for MVP

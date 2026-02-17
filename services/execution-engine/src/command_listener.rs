@@ -133,6 +133,22 @@ impl CommandListener {
         }
     }
 
+    /// Determine asset type from exchange/routing context
+    fn asset_type_for(signal: &TradeSignal) -> &'static str {
+        match signal.exchange.as_deref() {
+            Some("polygon") => "STK",
+            Some("binance") | Some("okx") | Some("bybit") => "CRYPTO",
+            _ => {
+                // Solana addresses are long base58 strings
+                if signal.symbol.len() > 30 || signal.symbol == "SOL" {
+                    "CRYPTO"
+                } else {
+                    "STK"
+                }
+            }
+        }
+    }
+
     /// Persist an order to the trade_orders table
     async fn persist_order(
         db: &PgClient,
@@ -142,19 +158,23 @@ impl CommandListener {
         let exchange = signal.exchange.as_deref().unwrap_or("IBKR");
         let side = signal.side.to_string();
         let order_type = signal.order_type.to_string();
+        let asset_type = Self::asset_type_for(signal);
+        let limit_price = signal.price;
 
         let res = db
             .execute(
-                "INSERT INTO trade_orders (order_id, exchange, symbol, side, order_type, quantity, filled_qty, avg_price, status, strategy_id, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())",
+                "INSERT INTO trade_orders (order_id, exchange, symbol, asset_type, side, order_type, quantity, filled_qty, price, avg_price, status, strategy_id, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())",
                 &[
                     &result.order_id,
                     &exchange,
                     &signal.symbol,
+                    &asset_type,
                     &side,
                     &order_type,
                     &signal.quantity,
                     &result.filled_qty,
+                    &limit_price,
                     &result.avg_price,
                     &result.status,
                     &signal.strategy_id,

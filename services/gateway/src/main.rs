@@ -146,6 +146,7 @@ async fn main() {
         // Subscribe to relevant channels
         let channels = [
             "trade_signals",
+            "order_updates",
             "portfolio_updates",
             "market_data",
             "strategy_logs",
@@ -168,6 +169,7 @@ async fn main() {
                     let channel_name = msg.get_channel_name();
                     let event_type = match channel_name {
                         "trade_signals" => "signal",
+                        "order_updates" => "order_update",
                         "portfolio_updates" => "portfolio",
                         "market_data" => "market",
                         "strategy_logs" => "log",
