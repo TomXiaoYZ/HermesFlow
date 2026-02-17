@@ -2,7 +2,7 @@ use common::events::{OrderSide, TradeSignal};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct RiskConfig {
@@ -194,7 +194,7 @@ impl RiskEngine {
                 ),
             };
             if open_count >= max_allowed {
-                warn!(
+                debug!(
                     "Risk Reject: Already holding {} stock positions in {} mode (max {})",
                     open_count, mode, max_allowed
                 );

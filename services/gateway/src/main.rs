@@ -561,12 +561,6 @@ async fn data_engine_proxy(
         path, query_string
     );
 
-    error!(
-        "[GATEWAY DEBUG] Query: {:?}, Target: {}",
-        parts.uri.query(),
-        target_url
-    );
-
     // Read body content
     let body_bytes = axum::body::to_bytes(body, usize::MAX)
         .await

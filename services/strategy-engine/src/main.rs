@@ -11,7 +11,7 @@ use strategy_engine::portfolio::{
 use strategy_engine::risk::{is_stock_symbol, RiskEngine};
 use strategy_engine::signal_buffer::SignalBuffer;
 use tokio_postgres::NoTls;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use serde::Deserialize;
 use std::sync::{Arc, RwLock};
@@ -563,7 +563,7 @@ async fn try_entry(
     let (shares, exchange) = if is_stock {
         let s = risk_engine.calculate_stock_entry_shares(price);
         if s <= 0.0 {
-            warn!("Insufficient price for stock entry: {}", symbol);
+            debug!("Insufficient price for stock entry: {}", symbol);
             return;
         }
         (s, Some("polygon".to_string()))

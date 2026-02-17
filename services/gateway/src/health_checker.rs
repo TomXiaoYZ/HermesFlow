@@ -5,9 +5,12 @@ use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceHealth {
-    pub service: String,
     pub status: String,
+    #[serde(default)]
+    pub service: String,
+    #[serde(default)]
     pub timestamp: String,
+    #[serde(default)]
     pub details: Option<serde_json::Value>,
 }
 
