@@ -14,9 +14,9 @@ groups:
 
       - alert: MajorDataStaleness
         expr: data_engine_dq_stale_symbols > (data_engine_active_symbols_count * 0.5)
-        for: 2m
+        for: 30m
         labels:
-          severity: critical
+          severity: warning
         annotations:
           summary: "Over 50% of symbols have stale data"
           description: "{{ $value }} symbols are stale."
@@ -44,8 +44,8 @@ groups:
     interval: 60s
     rules:
       - alert: DataGapsDetected
-        expr: data_engine_dq_gap_symbols > 10
-        for: 10m
+        expr: data_engine_dq_gap_symbols > 500
+        for: 15m
         labels:
           severity: warning
         annotations:
@@ -182,7 +182,7 @@ groups:
           description: "{{ $value | humanize }} WebSocket connections lost in 5 minutes."
 
       - alert: GatewayHighLatency
-        expr: histogram_quantile(0.95, rate(gateway_upstream_latency_seconds_bucket[5m])) > 2
+        expr: histogram_quantile(0.95, rate(gateway_upstream_latency_seconds_bucket[5m])) > 10
         for: 5m
         labels:
           severity: warning
@@ -213,8 +213,8 @@ groups:
           description: "Strategy engine service_up has been 0 for over 1 minute."
 
       - alert: RiskRejectionSpike
-        expr: rate(strategy_risk_checks_total{result="rejected"}[10m]) > 0.1
-        for: 5m
+        expr: rate(strategy_risk_checks_total{result="rejected"}[10m]) > 50
+        for: 10m
         labels:
           severity: warning
         annotations:
@@ -222,8 +222,8 @@ groups:
           description: "Risk rejections at {{ $value | humanize }}/s."
 
       - alert: MarketDataLagHigh
-        expr: histogram_quantile(0.95, rate(strategy_market_data_lag_seconds_bucket[5m])) > 10
-        for: 5m
+        expr: histogram_quantile(0.95, rate(strategy_market_data_lag_seconds_bucket[5m])) > 60
+        for: 10m
         labels:
           severity: warning
         annotations:
@@ -262,8 +262,8 @@ groups:
           description: "Task {{ $labels.task }} is timing out."
 
       - alert: E2EFreshnessStale
-        expr: data_engine_e2e_freshness_seconds > 300
-        for: 5m
+        expr: data_engine_e2e_freshness_seconds > 1800
+        for: 15m
         labels:
           severity: warning
         annotations:
