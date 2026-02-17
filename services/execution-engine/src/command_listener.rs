@@ -167,10 +167,12 @@ impl CommandListener {
             None => "default".to_string(),
         };
 
+        let mode = signal.mode.as_deref();
+
         let res = db
             .execute(
-                "INSERT INTO trade_orders (order_id, exchange, symbol, asset_type, side, order_type, quantity, filled_qty, price, avg_price, status, strategy_id, account_id, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7::float8, $8::float8, $9::float8, $10::float8, $11, $12, $13, NOW(), NOW())",
+                "INSERT INTO trade_orders (order_id, exchange, symbol, asset_type, side, order_type, quantity, filled_qty, price, avg_price, status, strategy_id, account_id, mode, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7::float8, $8::float8, $9::float8, $10::float8, $11, $12, $13, $14, NOW(), NOW())",
                 &[
                     &result.order_id,
                     &exchange,
@@ -185,6 +187,7 @@ impl CommandListener {
                     &result.status,
                     &signal.strategy_id,
                     &account_id,
+                    &mode,
                 ],
             )
             .await;

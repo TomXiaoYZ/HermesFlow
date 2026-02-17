@@ -206,6 +206,9 @@ async fn main() {
         .route("/api/v1/watchlist", axum::routing::any(watchlist_proxy))
         .route("/api/v1/jobs/*path", axum::routing::any(jobs_proxy))
         .route("/api/v1/evolution/*path", get(evolution_proxy))
+        .route("/api/v1/trades/history", get(get_trade_history))
+        .route("/api/v1/trades/positions", get(get_trade_positions))
+        .route("/api/v1/trades/strategy/:strategy_id", get(get_trade_strategy))
         .route("/api/auth/login", axum::routing::any(auth_handler::proxy_handler))
         .layer(CorsLayer::permissive()) // Enable CORS for local dev
         .with_state(app_state);
@@ -728,4 +731,191 @@ async fn evolution_proxy(
                 .into_response()
         }
     }
+}
+
+// --- Trade Query Types ---
+
+#[derive(Deserialize)]
+struct TradeHistoryQuery {
+    mode: Option<String>,
+    symbol: Option<String>,
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+// --- Trade Query Endpoints ---
+
+async fn get_trade_history(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TradeHistoryQuery>,
+) -> Json<Value> {
+    use sqlx::Row;
+    let limit = params.limit.unwrap_or(100).min(500);
+
+    let mut query = String::from(
+        "SELECT order_id, symbol, side, quantity, filled_qty, avg_price, status, strategy_id, mode, account_id, created_at FROM trade_orders WHERE 1=1"
+    );
+    let mut bind_idx = 0u32;
+    let mut binds_mode = None;
+    let mut binds_symbol = None;
+    let mut binds_status = None;
+
+    if let Some(ref mode) = params.mode {
+        bind_idx += 1;
+        query.push_str(&format!(" AND mode = ${}", bind_idx));
+        binds_mode = Some(mode.clone());
+    }
+    if let Some(ref symbol) = params.symbol {
+        bind_idx += 1;
+        query.push_str(&format!(" AND symbol = ${}", bind_idx));
+        binds_symbol = Some(symbol.clone());
+    }
+    if let Some(ref status) = params.status {
+        bind_idx += 1;
+        query.push_str(&format!(" AND status = ${}", bind_idx));
+        binds_status = Some(status.clone());
+    }
+
+    query.push_str(&format!(" ORDER BY created_at DESC LIMIT {}", limit));
+
+    let mut q = sqlx::query(&query);
+    if let Some(ref m) = binds_mode {
+        q = q.bind(m);
+    }
+    if let Some(ref s) = binds_symbol {
+        q = q.bind(s);
+    }
+    if let Some(ref st) = binds_status {
+        q = q.bind(st);
+    }
+
+    match q.fetch_all(&state.pg_pool).await {
+        Ok(rows) => {
+            let results: Vec<Value> = rows
+                .iter()
+                .map(|row| {
+                    json!({
+                        "order_id": row.get::<String, _>("order_id"),
+                        "symbol": row.get::<String, _>("symbol"),
+                        "side": row.get::<String, _>("side"),
+                        "quantity": row.get::<sqlx::types::Decimal, _>("quantity").to_string(),
+                        "filled_qty": row.get::<Option<sqlx::types::Decimal>, _>("filled_qty").map(|v| v.to_string()),
+                        "avg_price": row.get::<Option<sqlx::types::Decimal>, _>("avg_price").map(|v| v.to_string()),
+                        "status": row.get::<String, _>("status"),
+                        "strategy_id": row.get::<Option<String>, _>("strategy_id"),
+                        "mode": row.get::<Option<String>, _>("mode"),
+                        "account_id": row.get::<Option<String>, _>("account_id"),
+                        "created_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at").map(|t| t.to_rfc3339()),
+                    })
+                })
+                .collect();
+            Json(json!(results))
+        }
+        Err(e) => {
+            error!("Failed to fetch trade history: {}", e);
+            Json(json!({"error": "Failed to fetch trade history"}))
+        }
+    }
+}
+
+async fn get_trade_positions(State(state): State<Arc<AppState>>) -> Json<Value> {
+    use sqlx::Row;
+    let query = "SELECT account_id, exchange, symbol, quantity, avg_price, unrealized_pnl, updated_at FROM trade_positions ORDER BY account_id, symbol";
+
+    match sqlx::query(query).fetch_all(&state.pg_pool).await {
+        Ok(rows) => {
+            let results: Vec<Value> = rows
+                .iter()
+                .map(|row| {
+                    json!({
+                        "account_id": row.get::<String, _>("account_id"),
+                        "exchange": row.get::<String, _>("exchange"),
+                        "symbol": row.get::<String, _>("symbol"),
+                        "quantity": row.get::<sqlx::types::Decimal, _>("quantity").to_string(),
+                        "avg_price": row.get::<sqlx::types::Decimal, _>("avg_price").to_string(),
+                        "unrealized_pnl": row.get::<Option<sqlx::types::Decimal>, _>("unrealized_pnl").map(|v| v.to_string()),
+                        "updated_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("updated_at").map(|t| t.to_rfc3339()),
+                    })
+                })
+                .collect();
+            Json(json!(results))
+        }
+        Err(e) => {
+            error!("Failed to fetch trade positions: {}", e);
+            Json(json!({"error": "Failed to fetch trade positions"}))
+        }
+    }
+}
+
+async fn get_trade_strategy(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(strategy_id): axum::extract::Path<String>,
+) -> Json<Value> {
+    use sqlx::Row;
+
+    // Fetch orders for this strategy
+    let orders_query = "SELECT order_id, symbol, side, quantity, filled_qty, avg_price, status, mode, account_id, created_at FROM trade_orders WHERE strategy_id = $1 ORDER BY created_at DESC";
+
+    let orders = match sqlx::query(orders_query)
+        .bind(&strategy_id)
+        .fetch_all(&state.pg_pool)
+        .await
+    {
+        Ok(rows) => rows
+            .iter()
+            .map(|row| {
+                json!({
+                    "order_id": row.get::<String, _>("order_id"),
+                    "symbol": row.get::<String, _>("symbol"),
+                    "side": row.get::<String, _>("side"),
+                    "quantity": row.get::<sqlx::types::Decimal, _>("quantity").to_string(),
+                    "filled_qty": row.get::<Option<sqlx::types::Decimal>, _>("filled_qty").map(|v| v.to_string()),
+                    "avg_price": row.get::<Option<sqlx::types::Decimal>, _>("avg_price").map(|v| v.to_string()),
+                    "status": row.get::<String, _>("status"),
+                    "mode": row.get::<Option<String>, _>("mode"),
+                    "account_id": row.get::<Option<String>, _>("account_id"),
+                    "created_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at").map(|t| t.to_rfc3339()),
+                })
+            })
+            .collect::<Vec<Value>>(),
+        Err(e) => {
+            error!("Failed to fetch orders for strategy {}: {}", strategy_id, e);
+            return Json(json!({"error": "Failed to fetch strategy orders"}));
+        }
+    };
+
+    // Fetch strategy generation metadata
+    let gen_query = "SELECT exchange, symbol, mode, generation, fitness, metadata, timestamp FROM strategy_generations WHERE strategy_id = $1 LIMIT 1";
+
+    let generation = match sqlx::query(gen_query)
+        .bind(&strategy_id)
+        .fetch_optional(&state.pg_pool)
+        .await
+    {
+        Ok(Some(row)) => {
+            json!({
+                "exchange": row.get::<String, _>("exchange"),
+                "symbol": row.get::<String, _>("symbol"),
+                "mode": row.get::<String, _>("mode"),
+                "generation": row.get::<i32, _>("generation"),
+                "fitness": row.get::<f64, _>("fitness"),
+                "metadata": row.get::<Value, _>("metadata"),
+                "timestamp": row.get::<chrono::DateTime<chrono::Utc>, _>("timestamp").to_rfc3339(),
+            })
+        }
+        Ok(None) => Value::Null,
+        Err(e) => {
+            error!(
+                "Failed to fetch generation for strategy {}: {}",
+                strategy_id, e
+            );
+            Value::Null
+        }
+    };
+
+    Json(json!({
+        "strategy_id": strategy_id,
+        "orders": orders,
+        "generation": generation,
+    }))
 }

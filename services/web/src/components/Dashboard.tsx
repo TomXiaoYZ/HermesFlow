@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Activity, TrendingUp, Database, Zap, LogOut, LayoutDashboard, Beaker, Search, Server, Settings } from "lucide-react";
+import { Activity, TrendingUp, Database, Zap, LogOut, LayoutDashboard, Beaker, Search, Server, Settings, Wallet } from "lucide-react";
 import { useRouter } from "next/navigation";
 import DataPipeline, { DataMetrics } from "@/components/DataPipeline";
 import TradeExecutionPanel from "@/components/TradeExecutionPanel";
@@ -10,6 +10,7 @@ import StrategyLab from "@/components/StrategyLab";
 import { cn } from "@/lib/utils";
 import SystemStatus from "@/components/SystemStatus";
 import DataDiscovery from "@/components/DataDiscovery";
+import LiveTrading from "@/components/LiveTrading";
 import dynamic from 'next/dynamic';
 // Dynamic import to prevent SSR hydration issues with lightweight-charts
 const MarketOverview = dynamic(() => import('@/components/MarketOverview'), {
@@ -39,12 +40,14 @@ export default function Dashboard() {
     const router = useRouter();
     const [wsConnected, setWsConnected] = useState(false);
     const [systemHealth, setSystemHealth] = useState<"healthy" | "degraded" | "offline">("offline");
-    const [activeTab, setActiveTab] = useState<"overview" | "market" | "strategy-lab" | "system" | "data-discovery" | "settings">("overview");
+    const [activeTab, setActiveTab] = useState<"overview" | "market" | "strategy-lab" | "live-trading" | "system" | "data-discovery" | "settings">("overview");
 
     // Centralized State
     const [signals, setSignals] = useState<TradeSignal[]>([]);
     const [portfolioValue, setPortfolioValue] = useState(0);
     const [pnl24h, setPnl24h] = useState(0);
+    const [portfolioPositions, setPortfolioPositions] = useState<{ symbol: string; quantity: number; market_value: number }[]>([]);
+    const [totalEquity, setTotalEquity] = useState(0);
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [heartbeats, setHeartbeats] = useState<Record<string, number>>({});
     const [metrics, setMetrics] = useState<DataMetrics>({
@@ -131,8 +134,13 @@ export default function Dashboard() {
 
                 if (type === "portfolio") {
                     if (data.cash !== undefined) {
-                        setPortfolioValue(data.cash); // Simplified for MVP
-                        // TODO: Calculate PnL from history
+                        setPortfolioValue(data.cash);
+                    }
+                    if (data.total_equity !== undefined) {
+                        setTotalEquity(data.total_equity);
+                    }
+                    if (Array.isArray(data.positions)) {
+                        setPortfolioPositions(data.positions);
                     }
                 }
 
@@ -225,6 +233,13 @@ export default function Dashboard() {
                         color="blue"
                     />
                     <NavItem
+                        active={activeTab === "live-trading"}
+                        onClick={() => setActiveTab("live-trading")}
+                        icon={<Wallet className="w-5 h-5" />}
+                        label="Live Trading"
+                        color="orange"
+                    />
+                    <NavItem
                         active={activeTab === "system"}
                         onClick={() => setActiveTab("system")}
                         icon={<Server className="w-5 h-5" />}
@@ -280,6 +295,7 @@ export default function Dashboard() {
                                 {activeTab === "overview" && "Mission Control"}
                                 {activeTab === "strategy-lab" && "Alpha Strategy Lab"}
                                 {activeTab === "data-discovery" && "Data Intelligence"}
+                                {activeTab === "live-trading" && "Live Trading"}
                                 {activeTab === "system" && "System Operations"}
                                 {activeTab === "settings" && "Settings"}
                             </h2>
@@ -287,6 +303,7 @@ export default function Dashboard() {
                                 {activeTab === "overview" && "Real-time market surveillance and execution monitoring."}
                                 {activeTab === "strategy-lab" && "Design, backtest, and optimize trading strategies."}
                                 {activeTab === "data-discovery" && "Explore market data, active tokens, and quality metrics."}
+                                {activeTab === "live-trading" && "Per-account trade history, positions, and strategy traceability."}
                                 {activeTab === "system" && "Monitor infrastructure health and system logs."}
                                 {activeTab === "settings" && "Configure external exchange connections and data preferences."}
                             </p>
@@ -330,6 +347,19 @@ export default function Dashboard() {
                         </div>
                     )}
 
+                    {activeTab === "live-trading" && (
+                        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            <LiveTrading
+                                signals={signals}
+                                portfolioData={{
+                                    cash: portfolioValue,
+                                    total_equity: totalEquity,
+                                    positions: portfolioPositions,
+                                }}
+                            />
+                        </div>
+                    )}
+
                     {activeTab === "system" && (
                         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                             <SystemStatus
@@ -365,6 +395,7 @@ function NavItem({ active, onClick, icon, label, color }: { active: boolean; onC
         emerald: "text-emerald-400 group-hover:text-emerald-300",
         cyan: "text-cyan-400 group-hover:text-cyan-300",
         slate: "text-slate-400 group-hover:text-slate-300",
+        orange: "text-orange-400 group-hover:text-orange-300",
     };
 
     const activeBg: Record<string, string> = {
@@ -374,6 +405,7 @@ function NavItem({ active, onClick, icon, label, color }: { active: boolean; onC
         emerald: "bg-emerald-500/10 border-emerald-500/50 text-white",
         cyan: "bg-cyan-500/10 border-cyan-500/50 text-white",
         slate: "bg-slate-500/10 border-slate-500/50 text-white",
+        orange: "bg-orange-500/10 border-orange-500/50 text-white",
     };
 
     const activeIndicator: Record<string, string> = {
@@ -383,6 +415,7 @@ function NavItem({ active, onClick, icon, label, color }: { active: boolean; onC
         emerald: "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]",
         cyan: "bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.5)]",
         slate: "bg-slate-500 shadow-[0_0_10px_rgba(100,116,139,0.5)]",
+        orange: "bg-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.5)]",
     };
 
     return (
