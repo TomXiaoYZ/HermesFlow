@@ -149,7 +149,9 @@ impl CommandListener {
         }
     }
 
-    /// Persist an order to the trade_orders table
+    /// Persist an order to the trade_orders table.
+    /// Uses float8 casts so tokio_postgres can serialize f64 natively;
+    /// PostgreSQL implicitly converts float8 → numeric for the column.
     async fn persist_order(
         db: &PgClient,
         signal: &TradeSignal,
@@ -164,7 +166,7 @@ impl CommandListener {
         let res = db
             .execute(
                 "INSERT INTO trade_orders (order_id, exchange, symbol, asset_type, side, order_type, quantity, filled_qty, price, avg_price, status, strategy_id, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7::float8, $8::float8, $9::float8, $10::float8, $11, $12, NOW(), NOW())",
                 &[
                     &result.order_id,
                     &exchange,
@@ -199,7 +201,7 @@ impl CommandListener {
         let res = db
             .execute(
                 "INSERT INTO trade_executions (execution_id, order_id, price, quantity, trade_time)
-                 VALUES ($1, $2, $3, $4, NOW())",
+                 VALUES ($1, $2, $3::float8, $4::float8, NOW())",
                 &[
                     &execution_id,
                     &result.order_id,
@@ -229,11 +231,11 @@ impl CommandListener {
         let res = db
             .execute(
                 "INSERT INTO trade_positions (account_id, exchange, symbol, quantity, avg_price, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, NOW())
+                 VALUES ($1, $2, $3, $4::float8, $5::float8, NOW())
                  ON CONFLICT (account_id, exchange, symbol) DO UPDATE
-                 SET quantity = trade_positions.quantity + $4,
-                     avg_price = CASE WHEN $4 > 0 THEN
-                         (trade_positions.quantity * trade_positions.avg_price + $4 * $5) / NULLIF(trade_positions.quantity + $4, 0)
+                 SET quantity = trade_positions.quantity + $4::float8,
+                     avg_price = CASE WHEN $4::float8 > 0 THEN
+                         (trade_positions.quantity * trade_positions.avg_price + $4::float8 * $5::float8) / NULLIF(trade_positions.quantity + $4::float8, 0)
                      ELSE trade_positions.avg_price END,
                      updated_at = NOW()",
                 &[&account_id, &exchange, &symbol, &signed_qty, &price],
