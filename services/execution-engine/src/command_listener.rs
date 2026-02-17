@@ -341,7 +341,11 @@ impl CommandListener {
                             }
                         });
                     } else {
-                        warn!("No Solana trader configured, dropping signal");
+                        warn!("No Solana trader configured, rejecting signal for {}", signal.symbol);
+                        let update = Self::make_failed_update(&signal, "No Solana trader configured");
+                        if let Err(e) = self.publish_update(&update) {
+                            error!("Failed to publish no-trader rejection: {}", e);
+                        }
                     }
                 }
 
@@ -410,9 +414,13 @@ impl CommandListener {
                         });
                     } else {
                         warn!(
-                            "No IBKR trader configured, dropping signal for {}",
+                            "No IBKR trader configured, rejecting signal for {}",
                             signal.symbol
                         );
+                        let update = Self::make_failed_update(&signal, "No IBKR trader configured");
+                        if let Err(e) = self.publish_update(&update) {
+                            error!("Failed to publish no-trader rejection: {}", e);
+                        }
                     }
                 }
 
@@ -457,9 +465,13 @@ impl CommandListener {
                         });
                     } else {
                         warn!(
-                            "No Futu trader configured, dropping signal for {}",
+                            "No Futu trader configured, rejecting signal for {}",
                             signal.symbol
                         );
+                        let update = Self::make_failed_update(&signal, "No Futu trader configured");
+                        if let Err(e) = self.publish_update(&update) {
+                            error!("Failed to publish no-trader rejection: {}", e);
+                        }
                     }
                 }
             }
