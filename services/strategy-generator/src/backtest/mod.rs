@@ -621,6 +621,46 @@ impl Backtester {
                 0.0
             };
 
+            // Compute Sharpe ratio and max drawdown from equity curve
+            let mut max_equity = 1.0;
+            let mut max_drawdown = 0.0;
+            let mut period_returns = Vec::with_capacity(equity_curve.len());
+
+            for i in 0..equity_curve.len() {
+                let eq = equity_curve[i]["equity"].as_f64().unwrap_or(1.0);
+                if eq > max_equity {
+                    max_equity = eq;
+                }
+                let dd = (max_equity - eq) / max_equity;
+                if dd > max_drawdown {
+                    max_drawdown = dd;
+                }
+                if i > 0 {
+                    let prev_eq = equity_curve[i - 1]["equity"].as_f64().unwrap_or(1.0);
+                    if prev_eq > 0.0 {
+                        period_returns.push(eq / prev_eq - 1.0);
+                    }
+                }
+            }
+
+            let n = period_returns.len() as f64;
+            let sharpe_ratio = if n > 1.0 {
+                let mean_r = period_returns.iter().sum::<f64>() / n;
+                let var_r = period_returns
+                    .iter()
+                    .map(|&x| (x - mean_r).powi(2))
+                    .sum::<f64>()
+                    / (n - 1.0);
+                let std_r = var_r.sqrt();
+                if std_r > 1e-9 {
+                    mean_r / std_r * 252.0_f64.sqrt()
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
             return Ok(serde_json::json!({
                 "symbol": symbol,
                 "days": days,
@@ -628,7 +668,9 @@ impl Backtester {
                     "total_return": total_ret,
                     "final_equity": current_equity,
                     "win_rate": win_rate,
-                    "total_trades": total
+                    "total_trades": total,
+                    "sharpe_ratio": sharpe_ratio,
+                    "max_drawdown": max_drawdown
                 },
                 "equity_curve": equity_curve
             }));

@@ -259,49 +259,88 @@ export default function EvolutionExplorer() {
             ) : (
                 <div className="flex-1 min-h-0 flex">
                     {/* Left Panel: Symbol Overview Grid */}
-                    <div className="w-[360px] shrink-0 border-r border-white/5 overflow-y-auto custom-scrollbar p-3">
-                        <div className="grid grid-cols-3 gap-1.5">
+                    <div className="w-[340px] shrink-0 border-r border-white/5 overflow-y-auto custom-scrollbar">
+                        {/* Summary bar */}
+                        <div className="px-3 py-2.5 border-b border-white/5 bg-black/20">
+                            <div className="flex items-center justify-between text-[10px]">
+                                <span className="text-slate-500">{overview.length} symbols</span>
+                                <div className="flex items-center gap-3">
+                                    <span className="flex items-center gap-1 text-emerald-500/70">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                        {overview.filter(s => getStatus(s, overview) === "improving").length}
+                                    </span>
+                                    <span className="flex items-center gap-1 text-amber-500/70">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                        {overview.filter(s => getStatus(s, overview) === "plateau").length}
+                                    </span>
+                                    <span className="flex items-center gap-1 text-red-500/70">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                                        {overview.filter(s => getStatus(s, overview) === "stagnant").length}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="p-2 space-y-1">
                             {overview.map((sym) => {
                                 const isSelected = selectedSymbol === sym.symbol;
                                 const status = getStatus(sym, overview);
+                                const statusBorderColor = status === "improving" ? "border-l-emerald-500/60" : status === "plateau" ? "border-l-amber-500/40" : "border-l-red-500/40";
                                 return (
                                     <button
                                         key={sym.symbol}
                                         onClick={() => setSelectedSymbol(sym.symbol)}
-                                        className={`text-left p-2 rounded-lg border transition-all cursor-pointer ${
+                                        className={`w-full text-left px-3 py-2 rounded-lg border-l-2 transition-all cursor-pointer ${statusBorderColor} ${
                                             isSelected
-                                                ? "border-indigo-500/50 bg-indigo-500/5"
-                                                : "border-white/5 bg-slate-900/50 hover:bg-white/[0.04] hover:border-white/10"
+                                                ? "bg-indigo-500/8 border border-r border-t border-b border-indigo-500/30"
+                                                : "bg-transparent hover:bg-white/[0.03] border border-r-transparent border-t-transparent border-b-transparent"
                                         }`}
                                     >
-                                        <div className="flex items-center justify-between mb-1">
-                                            <span className="text-[11px] font-bold text-slate-200">
-                                                {sym.symbol}
-                                            </span>
-                                            <StatusIcon status={status} />
-                                        </div>
                                         <div className="flex items-center justify-between">
-                                            <span className="text-[9px] text-slate-600">IC</span>
-                                            <span className={`text-[10px] font-mono font-bold ${
-                                                (sym.best_fitness ?? 0) > 0 ? "text-emerald-400" : "text-slate-500"
-                                            }`}>
-                                                {fmtNum(sym.best_fitness)}
-                                            </span>
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[11px] font-bold text-slate-200 w-10">
+                                                    {sym.symbol}
+                                                </span>
+                                                <span className="text-[9px] text-slate-600 truncate max-w-[80px]">
+                                                    {SYMBOL_NAMES[sym.symbol] || ""}
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-1.5">
+                                                <StatusIcon status={status} />
+                                                <span className="text-[9px] text-slate-700 font-mono">#{sym.latest_gen}</span>
+                                            </div>
                                         </div>
-                                        <div className="flex items-center justify-between mt-0.5">
-                                            <span className="text-[9px] text-slate-600">OOS</span>
-                                            <span className={`text-[10px] font-mono ${
-                                                (sym.best_oos_ic ?? 0) > 0 ? "text-cyan-400/70" : "text-slate-600"
-                                            }`}>
-                                                {fmtNum(sym.best_oos_ic)}
-                                            </span>
+                                        <div className="flex items-center gap-3 mt-1.5">
+                                            <div className="flex items-center gap-1">
+                                                <span className="text-[8px] text-slate-600 uppercase">IC</span>
+                                                <span className={`text-[10px] font-mono font-bold ${
+                                                    (sym.best_fitness ?? 0) > 0.05 ? "text-emerald-400" : (sym.best_fitness ?? 0) > 0 ? "text-emerald-400/60" : "text-slate-500"
+                                                }`}>
+                                                    {fmtNum(sym.best_fitness)}
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-1">
+                                                <span className="text-[8px] text-slate-600 uppercase">OOS</span>
+                                                <span className={`text-[10px] font-mono ${
+                                                    (sym.best_oos_ic ?? 0) > 0.03 ? "text-cyan-400/80" : (sym.best_oos_ic ?? 0) > 0 ? "text-cyan-400/40" : "text-slate-600"
+                                                }`}>
+                                                    {fmtNum(sym.best_oos_ic)}
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-1 ml-auto">
+                                                <span className="text-[8px] text-slate-600 uppercase">PnL</span>
+                                                <span className={`text-[10px] font-mono font-bold ${
+                                                    sym.best_pnl != null && sym.best_pnl >= 0 ? "text-emerald-400" : sym.best_pnl != null ? "text-red-400/70" : "text-slate-700"
+                                                }`}>
+                                                    {sym.best_pnl != null ? fmtPct(sym.best_pnl) : "—"}
+                                                </span>
+                                            </div>
                                         </div>
                                     </button>
                                 );
                             })}
                         </div>
                         {overview.length === 0 && (
-                            <div className="text-center py-8 text-xs text-slate-600">
+                            <div className="text-center py-12 text-xs text-slate-600">
                                 No symbols evolving yet.
                             </div>
                         )}

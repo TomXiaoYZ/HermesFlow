@@ -297,12 +297,18 @@ async fn get_overview(State(state): State<ApiState>, Path(exchange): Path<String
             sg.fitness AS best_fitness,
             sg.timestamp AS last_updated,
             sg.metadata,
-            br.pnl_percent,
-            br.sharpe_ratio,
-            br.max_drawdown,
-            br.win_rate
+            best_bt.pnl_percent,
+            best_bt.sharpe_ratio,
+            best_bt.max_drawdown,
+            best_bt.win_rate
         FROM strategy_generations sg
-        LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
+        LEFT JOIN LATERAL (
+            SELECT br.pnl_percent, br.sharpe_ratio, br.max_drawdown, br.win_rate
+            FROM backtest_results br
+            WHERE br.token_address = sg.symbol
+            ORDER BY br.created_at DESC
+            LIMIT 1
+        ) best_bt ON true
         WHERE sg.exchange = $1
         AND sg.generation = (
             SELECT MAX(sg2.generation) FROM strategy_generations sg2
