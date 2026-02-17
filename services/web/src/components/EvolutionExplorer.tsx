@@ -13,6 +13,10 @@ import {
     AreaChart,
     Area,
     Scatter,
+    BarChart,
+    Bar,
+    Cell,
+    ReferenceLine,
 } from "recharts";
 import {
     decodeGenome,
@@ -136,6 +140,7 @@ export default function EvolutionExplorer() {
     const [expandedDetail, setExpandedDetail] = useState<BacktestData | null>(null);
     const [loading, setLoading] = useState(true);
     const [detailLoading, setDetailLoading] = useState(false);
+    const [latestDetail, setLatestDetail] = useState<{ gen: Generation; bt: BacktestData } | null>(null);
 
     // Load exchanges
     useEffect(() => {
@@ -197,6 +202,41 @@ export default function EvolutionExplorer() {
         const interval = setInterval(fetchSymbolGenerations, 15000);
         return () => clearInterval(interval);
     }, [fetchSymbolGenerations]);
+
+    // Auto-fetch latest backtest detail when generations change
+    useEffect(() => {
+        if (!activeExchange || !selectedSymbol || generations.length === 0) {
+            setLatestDetail(null);
+            return;
+        }
+        const latestBt = generations.find((g) => g.backtest != null);
+        if (!latestBt) {
+            setLatestDetail(null);
+            return;
+        }
+        (async () => {
+            try {
+                const res = await fetch(
+                    `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations/${latestBt.generation}`
+                );
+                const data = await res.json();
+                if (data.backtest) {
+                    const bt = data.backtest;
+                    if (bt.equity_curve && Array.isArray(bt.equity_curve)) {
+                        bt.equity_curve = bt.equity_curve.map(
+                            (pt: { t?: number; i?: number; equity?: number }) => ({
+                                timestamp: (pt.t || pt.i || 0) * 1000,
+                                value: pt.equity ?? 0,
+                            })
+                        );
+                    }
+                    setLatestDetail({ gen: { ...latestBt, ...data }, bt });
+                }
+            } catch {
+                /* latest detail fetch failed */
+            }
+        })();
+    }, [activeExchange, selectedSymbol, generations]);
 
     const handleExpandRow = async (gen: number) => {
         if (expandedGen === gen) {
@@ -469,6 +509,14 @@ export default function EvolutionExplorer() {
                                     </div>
                                 )}
 
+                                {/* Latest Backtest Panel */}
+                                {latestDetail && (
+                                    <LatestBacktestPanel
+                                        detail={latestDetail}
+                                        symbol={selectedSymbol}
+                                    />
+                                )}
+
                                 {/* Generation Table */}
                                 <div className="px-5 pb-5 pt-2">
                                     <div className="bg-slate-900/30 border border-white/5 rounded-xl backdrop-blur-sm overflow-hidden">
@@ -627,6 +675,216 @@ function MetricCell({ label, value, positive }: { label: string; value: string; 
             }`}>
                 {value}
             </span>
+        </div>
+    );
+}
+
+function TradePnlChart({ trades }: { trades: Trade[] }) {
+    const data = trades.map((t, i) => ({
+        idx: i + 1,
+        pnl: +(t.pnl * 100).toFixed(2),
+    }));
+    // Cumulative PnL
+    let cum = 0;
+    const cumData = trades.map((t, i) => {
+        cum += t.pnl * 100;
+        return { idx: i + 1, cum: +cum.toFixed(2) };
+    });
+
+    return (
+        <div className="space-y-3">
+            {/* Per-trade PnL bar chart */}
+            <div>
+                <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
+                    Per-Trade PnL (%)
+                </h5>
+                <div className="h-32 bg-white/[0.02] rounded-lg border border-white/5 p-1">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={data} barCategoryGap={1}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.2} />
+                            <XAxis dataKey="idx" stroke="#475569" fontSize={8} tickLine={false} axisLine={false} interval={Math.max(0, Math.floor(data.length / 10) - 1)} />
+                            <YAxis stroke="#475569" fontSize={8} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}%`} width={36} />
+                            <Tooltip
+                                contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 10 }}
+                                formatter={(value: number | string | undefined) => [`${typeof value === "number" ? value.toFixed(2) : "0"}%`, "PnL"]}
+                                labelFormatter={(l) => `Trade #${l}`}
+                            />
+                            <ReferenceLine y={0} stroke="#475569" strokeOpacity={0.5} />
+                            <Bar dataKey="pnl" radius={[1, 1, 0, 0]}>
+                                {data.map((d, i) => (
+                                    <Cell key={i} fill={d.pnl >= 0 ? "#34d399" : "#f87171"} fillOpacity={0.7} />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+
+            {/* Cumulative trade PnL */}
+            <div>
+                <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
+                    Cumulative Trade PnL (%)
+                </h5>
+                <div className="h-28 bg-white/[0.02] rounded-lg border border-white/5 p-1">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={cumData}>
+                            <defs>
+                                <linearGradient id="cumPnlGrad" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#818cf8" stopOpacity={0.3} />
+                                    <stop offset="95%" stopColor="#818cf8" stopOpacity={0} />
+                                </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.2} />
+                            <XAxis dataKey="idx" stroke="#475569" fontSize={8} tickLine={false} axisLine={false} interval={Math.max(0, Math.floor(cumData.length / 10) - 1)} />
+                            <YAxis stroke="#475569" fontSize={8} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}%`} width={36} />
+                            <Tooltip
+                                contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 10 }}
+                                formatter={(value: number | string | undefined) => [`${typeof value === "number" ? value.toFixed(2) : "0"}%`, "Cumulative"]}
+                                labelFormatter={(l) => `After Trade #${l}`}
+                            />
+                            <ReferenceLine y={0} stroke="#475569" strokeOpacity={0.5} />
+                            <Area type="monotone" dataKey="cum" stroke="#818cf8" strokeWidth={1.5} fill="url(#cumPnlGrad)" />
+                        </AreaChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function LatestBacktestPanel({
+    detail,
+    symbol,
+}: {
+    detail: { gen: Generation; bt: BacktestData };
+    symbol: string;
+}) {
+    const { gen, bt } = detail;
+    const m = bt.metrics;
+    const trades = bt.trades || [];
+    const wins = trades.filter((t) => t.pnl > 0);
+    const losses = trades.filter((t) => t.pnl <= 0);
+
+    return (
+        <div className="px-5 py-3">
+            <div className="bg-slate-900/30 border border-white/5 rounded-xl backdrop-blur-sm overflow-hidden">
+                <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/5">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        Latest Backtest — {symbol} (Gen #{gen.generation})
+                    </h4>
+                    <span className="text-[10px] text-slate-600">
+                        {trades.length} trades
+                    </span>
+                </div>
+
+                <div className="p-4 space-y-4">
+                    {/* Key metrics row */}
+                    <div className="grid grid-cols-8 gap-1.5">
+                        <MetricCell label="PnL" value={fmtPct(bt.pnl_percent)} positive={bt.pnl_percent >= 0} />
+                        <MetricCell label="Sharpe" value={fmtNum(bt.sharpe_ratio, 2)} positive={bt.sharpe_ratio >= 0} />
+                        <MetricCell label="Sortino" value={fmtNum(m?.sortino_ratio, 2)} positive={(m?.sortino_ratio ?? 0) >= 0} />
+                        <MetricCell label="Profit Factor" value={fmtNum(m?.profit_factor, 2)} positive={(m?.profit_factor ?? 0) >= 1} />
+                        <MetricCell label="Max DD" value={fmtPct(bt.max_drawdown)} positive={false} />
+                        <MetricCell label="Win Rate" value={fmtPct(bt.win_rate)} positive={bt.win_rate > 0.5} />
+                        <MetricCell label="Avg Win" value={fmtPct(m?.avg_win)} positive />
+                        <MetricCell label="Avg Loss" value={fmtPct(m?.avg_loss)} positive={false} />
+                    </div>
+
+                    {/* Charts row: Equity curve + Trade PnL */}
+                    <div className="grid grid-cols-2 gap-4">
+                        {/* Equity curve */}
+                        <div>
+                            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
+                                Equity Curve
+                            </h5>
+                            {bt.equity_curve && bt.equity_curve.length > 0 ? (
+                                <div className="h-44 bg-white/[0.02] rounded-lg border border-white/5 p-1">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <AreaChart data={bt.equity_curve}>
+                                            <defs>
+                                                <linearGradient id="eqLatest" x1="0" y1="0" x2="0" y2="1">
+                                                    <stop offset="5%" stopColor="#818cf8" stopOpacity={0.2} />
+                                                    <stop offset="95%" stopColor="#818cf8" stopOpacity={0} />
+                                                </linearGradient>
+                                            </defs>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.2} />
+                                            <XAxis dataKey="timestamp" stroke="#475569" fontSize={8} tickLine={false} axisLine={false} hide />
+                                            <YAxis stroke="#475569" fontSize={8} tickLine={false} axisLine={false} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} width={36} />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 10 }}
+                                                formatter={(value: number | string | undefined) => [`${typeof value === "number" ? (value * 100).toFixed(2) : "0"}%`, "Equity"]}
+                                            />
+                                            <Area type="monotone" dataKey="value" stroke="#818cf8" strokeWidth={1.5} fill="url(#eqLatest)" />
+                                        </AreaChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            ) : (
+                                <div className="h-44 flex items-center justify-center text-xs text-slate-600 bg-white/[0.02] rounded-lg border border-white/5">
+                                    No equity curve data
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Trade PnL distribution */}
+                        <div>
+                            {trades.length > 0 ? (
+                                <TradePnlChart trades={trades} />
+                            ) : (
+                                <div className="h-44 flex items-center justify-center text-xs text-slate-600 bg-white/[0.02] rounded-lg border border-white/5">
+                                    No trade data
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Trade Log */}
+                    {trades.length > 0 && (
+                        <div>
+                            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
+                                Trade Log
+                                <span className="ml-2 text-emerald-500/70">{wins.length}W</span>
+                                <span className="ml-1 text-red-500/70">{losses.length}L</span>
+                            </h5>
+                            <div className="max-h-52 overflow-y-auto custom-scrollbar bg-white/[0.02] rounded-lg border border-white/5">
+                                <table className="w-full text-[10px]">
+                                    <thead className="sticky top-0 bg-slate-950/90 z-10">
+                                        <tr className="text-slate-600 uppercase tracking-wider">
+                                            <th className="text-left px-2 py-1.5 font-bold">#</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">Entry Bar</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">Exit Bar</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">Duration</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">PnL</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">Cum PnL</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {(() => {
+                                            let cumPnl = 0;
+                                            return trades.map((trade, i) => {
+                                                cumPnl += trade.pnl;
+                                                return (
+                                                    <tr key={i} className={`border-t border-white/5 ${i % 2 === 1 ? "bg-white/[0.02]" : ""}`}>
+                                                        <td className="px-2 py-1 text-slate-500 font-mono">{i + 1}</td>
+                                                        <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.entry}</td>
+                                                        <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.exit}</td>
+                                                        <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.bars}b</td>
+                                                        <td className={`px-2 py-1 text-right font-mono font-bold ${trade.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                                                            {fmtPct(trade.pnl)}
+                                                        </td>
+                                                        <td className={`px-2 py-1 text-right font-mono ${cumPnl >= 0 ? "text-indigo-400/70" : "text-red-400/70"}`}>
+                                                            {fmtPct(cumPnl)}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            });
+                                        })()}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }
