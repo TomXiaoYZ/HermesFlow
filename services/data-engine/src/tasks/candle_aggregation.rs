@@ -45,8 +45,9 @@ impl CandleAggregator {
 
         let mut candles: HashMap<(String, String, DateTime<Utc>), CandleBuilder> = HashMap::new();
 
-        let map_err =
-            |e: sqlx::Error| DataEngineError::DatabaseError(format!("Failed to fetch snapshots: {}", e));
+        let map_err = |e: sqlx::Error| {
+            DataEngineError::DatabaseError(format!("Failed to fetch snapshots: {}", e))
+        };
 
         if let Some(exchange) = exchange_filter {
             let mut stream = sqlx::query(

@@ -47,10 +47,13 @@ async fn connect_tcp(
                 let n = stream.read(&mut buf).await?;
                 let response = String::from_utf8_lossy(&buf[..n]);
                 if !response.contains("200") {
-                    return Err(
-                        format!("Proxy CONNECT to {}:{} failed: {}", host, port, response.trim())
-                            .into(),
-                    );
+                    return Err(format!(
+                        "Proxy CONNECT to {}:{} failed: {}",
+                        host,
+                        port,
+                        response.trim()
+                    )
+                    .into());
                 }
 
                 return Ok(stream);
@@ -87,7 +90,11 @@ impl BinanceStreamer {
                 let ws_result = match Url::parse(&url_str) {
                     Ok(parsed) => {
                         let host = parsed.host_str().unwrap_or("stream.binance.com");
-                        let port = parsed.port().unwrap_or(if parsed.scheme() == "wss" { 443 } else { 80 });
+                        let port = parsed.port().unwrap_or(if parsed.scheme() == "wss" {
+                            443
+                        } else {
+                            80
+                        });
 
                         match connect_tcp(host, port).await {
                             Ok(tcp_stream) => {
@@ -96,7 +103,10 @@ impl BinanceStreamer {
                             Err(e) => {
                                 error!("Failed to establish TCP connection: {}", e);
                                 Err(tokio_tungstenite::tungstenite::Error::Io(
-                                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e.to_string()),
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::ConnectionRefused,
+                                        e.to_string(),
+                                    ),
                                 ))
                             }
                         }

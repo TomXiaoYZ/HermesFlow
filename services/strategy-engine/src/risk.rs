@@ -356,7 +356,7 @@ mod tests {
         assert!(!is_stock_symbol(""));
         assert!(!is_stock_symbol("TOOLONGSYMBOL"));
         assert!(!is_stock_symbol("A.BCD")); // suffix too long
-        assert!(!is_stock_symbol(".A"));    // empty base
+        assert!(!is_stock_symbol(".A")); // empty base
     }
 
     #[tokio::test]
