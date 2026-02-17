@@ -170,6 +170,26 @@ impl GeneticAlgorithm {
         self.stagnation_count
     }
 
+    /// Force restart: keep top 10% of population, replace rest with random genomes.
+    /// Used when IS-OOS divergence is detected. Resets stagnation counter.
+    pub fn force_restart(&mut self) {
+        let pop_size = self.population.len();
+        let keep = (pop_size as f64 * 0.1).max(2.0) as usize;
+
+        self.population.sort_by(|a, b| {
+            b.fitness
+                .partial_cmp(&a.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut new_pop: Vec<Genome> = self.population[..keep].to_vec();
+        while new_pop.len() < pop_size {
+            new_pop.push(Genome::new_random(self.feat_offset));
+        }
+        self.population = new_pop;
+        self.stagnation_count = 0;
+    }
+
     /// Remove duplicate genomes by replacing them with fresh random ones.
     fn deduplicate_population(&mut self) {
         use std::collections::HashSet;

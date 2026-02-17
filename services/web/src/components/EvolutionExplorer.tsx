@@ -32,11 +32,38 @@ interface SymbolOverview {
     latest_gen: number;
     best_fitness: number | null;
     best_oos_ic: number | null;
+    best_oos_pnl: number | null;
     best_pnl: number | null;
     sharpe_ratio: number | null;
     max_drawdown: number | null;
     win_rate: number | null;
+    stagnation: number | null;
+    fold_pnls: number[] | null;
     last_updated: string | null;
+}
+
+interface Trade {
+    entry: number;
+    exit: number;
+    bars: number;
+    pnl: number;
+}
+
+interface BacktestMetrics {
+    total_return?: number;
+    final_equity?: number;
+    sortino_ratio?: number;
+    calmar_ratio?: number;
+    profit_factor?: number;
+    avg_win?: number;
+    avg_loss?: number;
+    max_win?: number;
+    max_loss?: number;
+    max_consecutive_wins?: number;
+    max_consecutive_losses?: number;
+    avg_holding_bars?: number;
+    avg_trade_return?: number;
+    trade_return_std?: number;
 }
 
 interface BacktestData {
@@ -46,6 +73,8 @@ interface BacktestData {
     win_rate: number;
     total_trades: number;
     equity_curve?: { timestamp: number; value: number }[];
+    trades?: Trade[];
+    metrics?: BacktestMetrics;
 }
 
 interface Generation {
@@ -55,6 +84,8 @@ interface Generation {
     strategy_id: string | null;
     timestamp: string | null;
     oos_ic: number | null;
+    stagnation?: number;
+    fold_pnls?: number[];
     backtest: BacktestData | null;
 }
 
@@ -311,7 +342,7 @@ export default function EvolutionExplorer() {
                                         </div>
                                         <div className="flex items-center gap-3 mt-1.5">
                                             <div className="flex items-center gap-1">
-                                                <span className="text-[8px] text-slate-600 uppercase">IC</span>
+                                                <span className="text-[8px] text-slate-600 uppercase">IS</span>
                                                 <span className={`text-[10px] font-mono font-bold ${
                                                     (sym.best_fitness ?? 0) > 0.05 ? "text-emerald-400" : (sym.best_fitness ?? 0) > 0 ? "text-emerald-400/60" : "text-slate-500"
                                                 }`}>
@@ -321,17 +352,17 @@ export default function EvolutionExplorer() {
                                             <div className="flex items-center gap-1">
                                                 <span className="text-[8px] text-slate-600 uppercase">OOS</span>
                                                 <span className={`text-[10px] font-mono ${
-                                                    (sym.best_oos_ic ?? 0) > 0.03 ? "text-cyan-400/80" : (sym.best_oos_ic ?? 0) > 0 ? "text-cyan-400/40" : "text-slate-600"
+                                                    (sym.best_oos_ic ?? 0) > 0 ? "text-cyan-400/80" : "text-slate-600"
                                                 }`}>
                                                     {fmtNum(sym.best_oos_ic)}
                                                 </span>
                                             </div>
                                             <div className="flex items-center gap-1 ml-auto">
-                                                <span className="text-[8px] text-slate-600 uppercase">PnL</span>
-                                                <span className={`text-[10px] font-mono font-bold ${
-                                                    sym.best_pnl != null && sym.best_pnl >= 0 ? "text-emerald-400" : sym.best_pnl != null ? "text-red-400/70" : "text-slate-700"
+                                                <span className="text-[8px] text-slate-600 uppercase">Stag</span>
+                                                <span className={`text-[10px] font-mono ${
+                                                    (sym.stagnation ?? 0) > 200 ? "text-red-400/70" : (sym.stagnation ?? 0) > 50 ? "text-amber-400/70" : "text-slate-500"
                                                 }`}>
-                                                    {sym.best_pnl != null ? fmtPct(sym.best_pnl) : "—"}
+                                                    {sym.stagnation ?? "—"}
                                                 </span>
                                             </div>
                                         </div>
@@ -371,12 +402,12 @@ export default function EvolutionExplorer() {
 
                                 {/* Metric summary */}
                                 <div className="grid grid-cols-6 gap-2 px-5 py-3 border-b border-white/5 bg-slate-950/30">
-                                    <MetricCell label="IS IC" value={fmtNum(selectedOverview.best_fitness)} positive={(selectedOverview.best_fitness ?? 0) > 0} />
-                                    <MetricCell label="OOS IC" value={fmtNum(selectedOverview.best_oos_ic)} positive={(selectedOverview.best_oos_ic ?? 0) > 0} />
-                                    <MetricCell label="PnL" value={selectedOverview.best_pnl != null ? fmtPct(selectedOverview.best_pnl) : "—"} positive={(selectedOverview.best_pnl ?? 0) >= 0} />
+                                    <MetricCell label="IS PnL" value={fmtNum(selectedOverview.best_fitness)} positive={(selectedOverview.best_fitness ?? 0) > 0} />
+                                    <MetricCell label="OOS PnL" value={fmtNum(selectedOverview.best_oos_ic)} positive={(selectedOverview.best_oos_ic ?? 0) > 0} />
+                                    <MetricCell label="Backtest PnL" value={selectedOverview.best_pnl != null ? fmtPct(selectedOverview.best_pnl) : "—"} positive={(selectedOverview.best_pnl ?? 0) >= 0} />
                                     <MetricCell label="Sharpe" value={fmtNum(selectedOverview.sharpe_ratio, 2)} positive={(selectedOverview.sharpe_ratio ?? 0) >= 0} />
                                     <MetricCell label="Max DD" value={selectedOverview.max_drawdown != null ? fmtPct(selectedOverview.max_drawdown) : "—"} positive={false} />
-                                    <MetricCell label="Win Rate" value={selectedOverview.win_rate != null ? fmtPct(selectedOverview.win_rate) : "—"} positive={(selectedOverview.win_rate ?? 0) > 0.5} />
+                                    <MetricCell label="Stagnation" value={selectedOverview.stagnation != null ? String(selectedOverview.stagnation) : "—"} positive={(selectedOverview.stagnation ?? 0) < 50} />
                                 </div>
 
                                 {/* Fitness Chart */}
@@ -390,11 +421,11 @@ export default function EvolutionExplorer() {
                                                 <div className="flex items-center gap-4 text-[10px] text-slate-600">
                                                     <span className="flex items-center gap-1.5">
                                                         <span className="w-4 h-[2px] bg-indigo-400 rounded-full inline-block" />
-                                                        In-Sample
+                                                        IS PnL
                                                     </span>
                                                     <span className="flex items-center gap-1.5">
                                                         <span className="w-4 h-[2px] bg-cyan-400 rounded-full inline-block opacity-60" style={{ borderBottom: '1px dashed' }} />
-                                                        Out-of-Sample
+                                                        OOS PnL
                                                     </span>
                                                     <span className="flex items-center gap-1.5">
                                                         <span className="w-2 h-2 bg-indigo-400 rounded-full inline-block" />
@@ -411,7 +442,7 @@ export default function EvolutionExplorer() {
                                                         <Tooltip
                                                             contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 11 }}
                                                             labelStyle={{ color: "#94a3b8", fontWeight: "bold" }}
-                                                            formatter={(value: number | string | undefined, name: string | undefined) => [typeof value === "number" ? value.toFixed(6) : "—", name === "fitness" ? "IS IC" : "OOS IC"]}
+                                                            formatter={(value: number | string | undefined, name: string | undefined) => [typeof value === "number" ? value.toFixed(6) : "—", name === "fitness" ? "IS PnL" : "OOS PnL"]}
                                                             labelFormatter={(l) => `Generation #${l}`}
                                                         />
                                                         <Line type="monotone" dataKey="fitness" stroke="#818cf8" strokeWidth={1.5} dot={false} name="fitness" />
@@ -452,9 +483,9 @@ export default function EvolutionExplorer() {
 
                                         <div className="grid grid-cols-[60px_80px_80px_90px_80px_80px_60px_60px] gap-1 px-4 py-2 bg-black/20 border-b border-white/5 text-[9px] text-slate-600 uppercase tracking-wider font-bold sticky top-0 z-10">
                                             <span>Gen</span>
-                                            <span className="text-right">IS IC</span>
-                                            <span className="text-right">OOS IC</span>
-                                            <span className="text-right">PnL</span>
+                                            <span className="text-right">IS PnL</span>
+                                            <span className="text-right">OOS PnL</span>
+                                            <span className="text-right">BT PnL</span>
                                             <span className="text-right">Sharpe</span>
                                             <span className="text-right">Max DD</span>
                                             <span className="text-right">WR</span>
@@ -547,20 +578,21 @@ export default function EvolutionExplorer() {
 type EvolutionStatus = "improving" | "plateau" | "stagnant";
 
 function getStatus(sym: SymbolOverview, _all: SymbolOverview[]): EvolutionStatus {
-    const ic = sym.best_fitness ?? 0;
+    const fitness = sym.best_fitness ?? 0;
     const oos = sym.best_oos_ic ?? 0;
+    const stag = sym.stagnation ?? 0;
 
     // Early generations — still exploring
     if (sym.latest_gen < 30) return "improving";
 
-    // Strong OOS IC indicates genuine signal
-    if (oos > 0.03 && ic > 0.03) return "improving";
+    // Overfitting or deep stagnation
+    if (stag > 200 || (fitness > 0.3 && oos < -0.1)) return "stagnant";
 
-    // Decent IS IC but weak OOS — overfitting plateau
-    if (ic > 0.05 && oos <= 0.03) return "plateau";
+    // Moderate stagnation or negative OOS
+    if (stag > 50 || oos <= 0) return "plateau";
 
-    // Weak IC overall
-    if (ic <= 0.01) return "stagnant";
+    // Active improvement: low stagnation, positive fitness and OOS
+    if (stag < 30 && fitness > 0 && oos > 0) return "improving";
 
     return "plateau";
 }
@@ -613,6 +645,7 @@ function BacktestDetail({
     const bt = detail || generation.backtest;
     if (!bt) return null;
 
+    const m = bt.metrics;
     const featureImportance = generation.best_genome
         ? getFeatureImportance(generation.best_genome)
         : {};
@@ -638,7 +671,7 @@ function BacktestDetail({
         <div className="bg-black/30 border-b border-white/5 px-6 py-5 backdrop-blur-sm">
             <div className="grid grid-cols-12 gap-5">
                 {/* Left: Formula + Metrics + Features */}
-                <div className="col-span-3 space-y-4">
+                <div className="col-span-4 space-y-4">
                     {generation.best_genome && (
                         <div>
                             <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
@@ -650,6 +683,7 @@ function BacktestDetail({
                         </div>
                     )}
 
+                    {/* Extended 8-metric grid */}
                     <div>
                         <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
                             Backtest Metrics
@@ -657,11 +691,78 @@ function BacktestDetail({
                         <div className="grid grid-cols-2 gap-1.5">
                             <MetricCell label="PnL" value={fmtPct(bt.pnl_percent)} positive={bt.pnl_percent >= 0} />
                             <MetricCell label="Sharpe" value={fmtNum(bt.sharpe_ratio, 2)} positive={bt.sharpe_ratio >= 0} />
+                            <MetricCell label="Sortino" value={fmtNum(m?.sortino_ratio, 2)} positive={(m?.sortino_ratio ?? 0) >= 0} />
+                            <MetricCell label="Calmar" value={fmtNum(m?.calmar_ratio, 2)} positive={(m?.calmar_ratio ?? 0) >= 0} />
+                            <MetricCell label="Profit Factor" value={fmtNum(m?.profit_factor, 2)} positive={(m?.profit_factor ?? 0) >= 1} />
                             <MetricCell label="Max DD" value={fmtPct(bt.max_drawdown)} positive={false} />
                             <MetricCell label="Win Rate" value={fmtPct(bt.win_rate)} positive={bt.win_rate != null && bt.win_rate > 0.5} />
                             <MetricCell label="Trades" value={bt.total_trades?.toLocaleString() ?? "—"} />
                         </div>
                     </div>
+
+                    {/* Trade Statistics */}
+                    {m && (
+                        <div>
+                            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
+                                Trade Statistics
+                            </h5>
+                            <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                                <div className="bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                                    <span className="text-[8px] text-slate-600 block">Avg Win</span>
+                                    <span className="font-mono text-emerald-400">{fmtPct(m.avg_win)}</span>
+                                </div>
+                                <div className="bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                                    <span className="text-[8px] text-slate-600 block">Avg Loss</span>
+                                    <span className="font-mono text-red-400">{fmtPct(m.avg_loss)}</span>
+                                </div>
+                                <div className="bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                                    <span className="text-[8px] text-slate-600 block">Max Win</span>
+                                    <span className="font-mono text-emerald-400/70">{fmtPct(m.max_win)}</span>
+                                </div>
+                                <div className="bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                                    <span className="text-[8px] text-slate-600 block">Max Loss</span>
+                                    <span className="font-mono text-red-400/70">{fmtPct(m.max_loss)}</span>
+                                </div>
+                                <div className="bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                                    <span className="text-[8px] text-slate-600 block">Consec Wins</span>
+                                    <span className="font-mono text-slate-300">{m.max_consecutive_wins ?? "—"}</span>
+                                </div>
+                                <div className="bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                                    <span className="text-[8px] text-slate-600 block">Consec Losses</span>
+                                    <span className="font-mono text-slate-300">{m.max_consecutive_losses ?? "—"}</span>
+                                </div>
+                                <div className="col-span-2 bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                                    <span className="text-[8px] text-slate-600 block">Avg Holding Bars</span>
+                                    <span className="font-mono text-slate-300">{m.avg_holding_bars != null ? m.avg_holding_bars.toFixed(1) : "—"}</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Fold Performance */}
+                    {generation.fold_pnls && generation.fold_pnls.length > 0 && (
+                        <div>
+                            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
+                                Fold Performance (K={generation.fold_pnls.length})
+                            </h5>
+                            <div className="flex items-end gap-1 h-12">
+                                {generation.fold_pnls.map((pnl, i) => {
+                                    const maxAbs = Math.max(...generation.fold_pnls!.map(Math.abs), 0.01);
+                                    const height = Math.abs(pnl) / maxAbs * 100;
+                                    return (
+                                        <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
+                                            <div
+                                                className={`w-full rounded-sm ${pnl >= 0 ? "bg-emerald-500/60" : "bg-red-500/60"}`}
+                                                style={{ height: `${Math.max(height, 4)}%` }}
+                                                title={`Fold ${i + 1}: ${pnl.toFixed(4)}`}
+                                            />
+                                            <span className="text-[7px] text-slate-600 mt-0.5 font-mono">{pnl.toFixed(2)}</span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
 
                     {totalFeatureCount > 0 && (
                         <div>
@@ -695,41 +796,78 @@ function BacktestDetail({
                     </button>
                 </div>
 
-                {/* Right: Equity curve */}
-                <div className="col-span-9">
-                    <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
-                        Equity Curve
-                    </h5>
-                    {detail?.equity_curve && detail.equity_curve.length > 0 ? (
-                        <div className="h-56 bg-white/[0.02] rounded-lg border border-white/5 p-2">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={detail.equity_curve}>
-                                    <defs>
-                                        <linearGradient id={`eq-${generation.generation}`} x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#818cf8" stopOpacity={0.2} />
-                                            <stop offset="95%" stopColor="#818cf8" stopOpacity={0} />
-                                        </linearGradient>
-                                    </defs>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.2} />
-                                    <XAxis dataKey="timestamp" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} tickFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric" })} />
-                                    <YAxis stroke="#475569" fontSize={9} tickLine={false} axisLine={false} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
-                                    <Tooltip
-                                        contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 11 }}
-                                        labelStyle={{ color: "#94a3b8" }}
-                                        formatter={(value: number | string | undefined) => [`${typeof value === "number" ? (value * 100).toFixed(2) : "0.00"}%`, "Equity"]}
-                                        labelFormatter={(v) => new Date(v).toLocaleString()}
-                                    />
-                                    <Area type="monotone" dataKey="value" stroke="#818cf8" strokeWidth={1.5} fill={`url(#eq-${generation.generation})`} />
-                                </AreaChart>
-                            </ResponsiveContainer>
-                        </div>
-                    ) : (
-                        <div className="h-56 flex items-center justify-center text-xs text-slate-600 bg-white/[0.02] rounded-lg border border-white/5">
-                            {detail === null ? (
-                                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-500" />
-                            ) : (
-                                "No equity curve data"
-                            )}
+                {/* Right: Equity curve + Trade log */}
+                <div className="col-span-8 space-y-4">
+                    <div>
+                        <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
+                            Equity Curve
+                        </h5>
+                        {detail?.equity_curve && detail.equity_curve.length > 0 ? (
+                            <div className="h-56 bg-white/[0.02] rounded-lg border border-white/5 p-2">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <AreaChart data={detail.equity_curve}>
+                                        <defs>
+                                            <linearGradient id={`eq-${generation.generation}`} x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#818cf8" stopOpacity={0.2} />
+                                                <stop offset="95%" stopColor="#818cf8" stopOpacity={0} />
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.2} />
+                                        <XAxis dataKey="timestamp" stroke="#475569" fontSize={9} tickLine={false} axisLine={false} tickFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric" })} />
+                                        <YAxis stroke="#475569" fontSize={9} tickLine={false} axisLine={false} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
+                                        <Tooltip
+                                            contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 11 }}
+                                            labelStyle={{ color: "#94a3b8" }}
+                                            formatter={(value: number | string | undefined) => [`${typeof value === "number" ? (value * 100).toFixed(2) : "0.00"}%`, "Equity"]}
+                                            labelFormatter={(v) => new Date(v).toLocaleString()}
+                                        />
+                                        <Area type="monotone" dataKey="value" stroke="#818cf8" strokeWidth={1.5} fill={`url(#eq-${generation.generation})`} />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            </div>
+                        ) : (
+                            <div className="h-56 flex items-center justify-center text-xs text-slate-600 bg-white/[0.02] rounded-lg border border-white/5">
+                                {detail === null ? (
+                                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-500" />
+                                ) : (
+                                    "No equity curve data"
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Trade Log */}
+                    {detail?.trades && detail.trades.length > 0 && (
+                        <div>
+                            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
+                                Trade Log ({detail.trades.length} trades)
+                            </h5>
+                            <div className="max-h-40 overflow-y-auto custom-scrollbar bg-white/[0.02] rounded-lg border border-white/5">
+                                <table className="w-full text-[10px]">
+                                    <thead className="sticky top-0 bg-slate-950/90">
+                                        <tr className="text-slate-600 uppercase tracking-wider">
+                                            <th className="text-left px-2 py-1.5 font-bold">#</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">Entry</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">Exit</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">Bars</th>
+                                            <th className="text-right px-2 py-1.5 font-bold">PnL</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {detail.trades.map((trade, i) => (
+                                            <tr key={i} className={`border-t border-white/5 ${i % 2 === 1 ? "bg-white/[0.02]" : ""}`}>
+                                                <td className="px-2 py-1 text-slate-500 font-mono">{i + 1}</td>
+                                                <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.entry}</td>
+                                                <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.exit}</td>
+                                                <td className="px-2 py-1 text-right text-slate-400 font-mono">{trade.bars}</td>
+                                                <td className={`px-2 py-1 text-right font-mono font-bold ${trade.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                                                    {fmtPct(trade.pnl)}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     )}
                 </div>

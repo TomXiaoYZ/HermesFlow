@@ -244,6 +244,7 @@ impl Backtester {
     ///   3. net_pnl = position * open-to-open return - turnover * fee
     ///   4. fitness = cumulative_pnl - drawdown_penalty - complexity_penalty
     ///   5. Require minimum trading activity
+    #[allow(dead_code)]
     pub fn evaluate_symbol(&self, genome: &mut Genome, symbol: &str) {
         let data = match self.cache.get(symbol) {
             Some(d) => d,
@@ -308,6 +309,119 @@ impl Backtester {
         }
     }
 
+    /// K-fold temporal cross-validation fitness for a single symbol.
+    ///
+    /// Runs VM once, then evaluates PnL on K equal-sized temporal folds.
+    /// Fitness = mean(fold_pnls) - std_penalty * std(fold_pnls) - complexity_penalty.
+    /// Strategies must perform consistently across all time regimes.
+    pub fn evaluate_symbol_kfold(&self, genome: &mut Genome, symbol: &str, k: usize) {
+        let data = match self.cache.get(symbol) {
+            Some(d) => d,
+            None => {
+                genome.fitness = -1000.0;
+                return;
+            }
+        };
+
+        let signal = match self.vm.execute(&genome.tokens, &data.features) {
+            Some(s) => s,
+            None => {
+                genome.fitness = -1000.0;
+                return;
+            }
+        };
+
+        let sig_slice = signal.as_slice().unwrap();
+        let ret_slice = data.returns.as_slice().unwrap();
+        let len = sig_slice.len().min(ret_slice.len());
+        if len < 20 {
+            genome.fitness = -1000.0;
+            return;
+        }
+
+        // Split into K equal folds
+        let fold_size = len / k;
+        if fold_size < 10 {
+            genome.fitness = -1000.0;
+            return;
+        }
+
+        let mut fold_pnls = Vec::with_capacity(k);
+        for i in 0..k {
+            let start = i * fold_size;
+            let end = if i == k - 1 { len } else { (i + 1) * fold_size };
+            let pnl = self.pnl_fitness(sig_slice, ret_slice, start, end);
+            if pnl > -9.0 {
+                // Valid fold (not rejected by minimum activity check)
+                fold_pnls.push(pnl);
+            }
+        }
+
+        // Require valid performance in at least 3 of K folds
+        let min_valid = 3_usize.min(k);
+        if fold_pnls.len() < min_valid {
+            genome.fitness = -10.0;
+            return;
+        }
+
+        let n_folds = fold_pnls.len() as f64;
+        let mean_pnl = fold_pnls.iter().sum::<f64>() / n_folds;
+        let std_pnl = if n_folds > 1.0 {
+            let var = fold_pnls
+                .iter()
+                .map(|&p| (p - mean_pnl).powi(2))
+                .sum::<f64>()
+                / (n_folds - 1.0);
+            var.sqrt()
+        } else {
+            0.0
+        };
+
+        // Parsimony: penalize formulas longer than 8 tokens (stricter than single-window)
+        let token_len = genome.tokens.len();
+        let complexity_penalty = if token_len > 8 {
+            (token_len - 8) as f64 * 0.02
+        } else {
+            0.0
+        };
+
+        let fitness = mean_pnl - 1.0 * std_pnl - complexity_penalty;
+        genome.fitness = if fitness.is_nan() { -10.0 } else { fitness };
+    }
+
+    /// Diagnostic: return per-fold PnL for monitoring/frontend display.
+    pub fn evaluate_symbol_fold_detail(&self, genome: &Genome, symbol: &str, k: usize) -> Vec<f64> {
+        let data = match self.cache.get(symbol) {
+            Some(d) => d,
+            None => return vec![],
+        };
+
+        let signal = match self.vm.execute(&genome.tokens, &data.features) {
+            Some(s) => s,
+            None => return vec![],
+        };
+
+        let sig_slice = signal.as_slice().unwrap();
+        let ret_slice = data.returns.as_slice().unwrap();
+        let len = sig_slice.len().min(ret_slice.len());
+        if len < 20 {
+            return vec![];
+        }
+
+        let fold_size = len / k;
+        if fold_size < 10 {
+            return vec![];
+        }
+
+        let mut fold_pnls = Vec::with_capacity(k);
+        for i in 0..k {
+            let start = i * fold_size;
+            let end = if i == k - 1 { len } else { (i + 1) * fold_size };
+            fold_pnls.push(self.pnl_fitness(sig_slice, ret_slice, start, end));
+        }
+        fold_pnls
+    }
+
     /// Core PnL fitness computation used by both IS and OOS evaluation.
     ///
     /// Signal processing: sigmoid → threshold → binary long position
@@ -357,8 +471,9 @@ impl Backtester {
             prev_pos = pos;
         }
 
-        // Minimum activity: must trade at least 5 times and be active 5% of bars
-        if trade_count < 5 || (active_bars as f64) < (n as f64 * 0.05) {
+        // Minimum activity: proportional to window size (min 3), active 5% of bars
+        let min_trades = 5_u32.max((n as u32) / 25);
+        if trade_count < min_trades || (active_bars as f64) < (n as f64 * 0.05) {
             return -10.0;
         }
 
@@ -614,12 +729,8 @@ impl Backtester {
                 }));
             }
 
-            let metrics = self.compute_trade_stats(
-                current_equity,
-                &trades,
-                &period_returns,
-                &equity_curve,
-            );
+            let metrics =
+                self.compute_trade_stats(current_equity, &trades, &period_returns, &equity_curve);
 
             return Ok(serde_json::json!({
                 "symbol": symbol,
@@ -645,10 +756,7 @@ impl Backtester {
         let total_trades = trades.len();
 
         // Per-trade P&L
-        let trade_pnls: Vec<f64> = trades
-            .iter()
-            .filter_map(|t| t["pnl"].as_f64())
-            .collect();
+        let trade_pnls: Vec<f64> = trades.iter().filter_map(|t| t["pnl"].as_f64()).collect();
 
         let wins: Vec<f64> = trade_pnls.iter().filter(|&&p| p > 0.0).copied().collect();
         let losses: Vec<f64> = trade_pnls.iter().filter(|&&p| p <= 0.0).copied().collect();
@@ -730,11 +838,7 @@ impl Backtester {
         let ann = self.annualization_factor();
         let (mean_r, std_r) = if n > 1.0 {
             let m = period_returns.iter().sum::<f64>() / n;
-            let v = period_returns
-                .iter()
-                .map(|&x| (x - m).powi(2))
-                .sum::<f64>()
-                / (n - 1.0);
+            let v = period_returns.iter().map(|&x| (x - m).powi(2)).sum::<f64>() / (n - 1.0);
             (m, v.sqrt())
         } else {
             (0.0, 0.0)

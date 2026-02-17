@@ -348,9 +348,9 @@ async fn run_symbol_evolution(
     loop {
         let gen = ga.generation;
 
-        // Evaluate each genome on this single symbol
+        // Evaluate each genome via K-fold temporal cross-validation
         for genome in ga.population.iter_mut() {
-            backtester.evaluate_symbol(genome, &symbol);
+            backtester.evaluate_symbol_kfold(genome, &symbol, 5);
         }
         ga.evolve();
 
@@ -371,18 +371,30 @@ async fn run_symbol_evolution(
             );
         }
 
-        if let Some(best) = &ga.best_genome {
-            let oos_pnl = backtester.evaluate_symbol_oos(best, &symbol);
+        if let Some(best) = ga.best_genome.clone() {
+            let oos_pnl = backtester.evaluate_symbol_oos(&best, &symbol);
+            let fold_pnls = backtester.evaluate_symbol_fold_detail(&best, &symbol, 5);
+            let stag = ga.stagnation();
             info!(
-                "[{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4} tokens: {} stag: {}",
+                "[{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4} tokens: {} stag: {} folds: {:?}",
                 exchange,
                 symbol,
                 gen,
                 best.fitness,
                 oos_pnl,
                 best.tokens.len(),
-                ga.stagnation()
+                stag,
+                fold_pnls
             );
+
+            // IS-OOS gap detection: if strong IS but negative OOS after burn-in, force restart
+            if best.fitness > 0.3 && oos_pnl < -0.1 && stag > 30 {
+                warn!(
+                    "[{}:{}] Gen {} — IS-OOS divergence detected (IS={:.3}, OOS={:.3}, stag={}), forcing restart",
+                    exchange, symbol, gen, best.fitness, oos_pnl, stag
+                );
+                ga.force_restart();
+            }
 
             let payload = serde_json::json!({
                 "strategy_id": format!("{}_{}_gen_{}", exchange_lower, symbol, gen),
@@ -391,6 +403,8 @@ async fn run_symbol_evolution(
                 "generation": gen,
                 "fitness": best.fitness,
                 "oos_ic": oos_pnl,
+                "stagnation": stag,
+                "fold_pnls": fold_pnls,
                 "best_tokens": best.tokens,
                 "exchange": exchange,
                 "symbol": symbol,

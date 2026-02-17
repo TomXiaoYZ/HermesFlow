@@ -342,16 +342,24 @@ async fn get_overview(State(state): State<ApiState>, Path(exchange): Path<String
                         .as_ref()
                         .and_then(|m| m.get("oos_ic"))
                         .and_then(|v| v.as_f64());
+                    let stagnation = metadata
+                        .as_ref()
+                        .and_then(|m| m.get("stagnation"))
+                        .and_then(|v| v.as_u64());
+                    let fold_pnls = metadata.as_ref().and_then(|m| m.get("fold_pnls")).cloned();
 
                     json!({
                         "symbol": symbol,
                         "latest_gen": latest_gen,
                         "best_fitness": best_fitness,
                         "best_oos_ic": oos_ic,
+                        "best_oos_pnl": oos_ic,
                         "best_pnl": pnl_percent,
                         "sharpe_ratio": sharpe_ratio,
                         "max_drawdown": max_drawdown,
                         "win_rate": win_rate,
+                        "stagnation": stagnation,
+                        "fold_pnls": fold_pnls,
                         "last_updated": last_updated.map(|t| t.to_rfc3339()),
                     })
                 })
@@ -491,6 +499,11 @@ fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> 
         .as_ref()
         .and_then(|m| m.get("oos_ic"))
         .and_then(|v| v.as_f64());
+    let stagnation = metadata
+        .as_ref()
+        .and_then(|m| m.get("stagnation"))
+        .and_then(|v| v.as_u64());
+    let fold_pnls = metadata.as_ref().and_then(|m| m.get("fold_pnls")).cloned();
 
     let backtest = if pnl_percent.is_some() {
         let mut bt = json!({
@@ -524,6 +537,8 @@ fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> 
         "strategy_id": strategy_id,
         "timestamp": timestamp.map(|t| t.to_rfc3339()),
         "oos_ic": oos_ic,
+        "stagnation": stagnation,
+        "fold_pnls": fold_pnls,
         "backtest": backtest,
     })
 }
