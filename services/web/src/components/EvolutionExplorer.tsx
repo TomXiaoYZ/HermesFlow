@@ -137,7 +137,7 @@ function fmtNum(value: number | null | undefined, decimals = 4): string {
 export default function EvolutionExplorer() {
     const [exchanges, setExchanges] = useState<Exchange[]>([]);
     const [activeExchange, setActiveExchange] = useState<string>("");
-    const activeMode: StrategyMode = "long_short";
+    const [activeMode, setActiveMode] = useState<StrategyMode>("long_only");
     const [overview, setOverview] = useState<SymbolOverview[]>([]);
     const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
     const [generations, setGenerations] = useState<Generation[]>([]);
@@ -176,7 +176,7 @@ export default function EvolutionExplorer() {
         } finally {
             setLoading(false);
         }
-    }, [activeExchange, selectedSymbol]);
+    }, [activeExchange, activeMode, selectedSymbol]);
 
     useEffect(() => {
         fetchOverview();
@@ -200,7 +200,7 @@ export default function EvolutionExplorer() {
         } finally {
             setDetailLoading(false);
         }
-    }, [activeExchange, selectedSymbol]);
+    }, [activeExchange, selectedSymbol, activeMode]);
 
     useEffect(() => {
         fetchSymbolGenerations();
@@ -241,7 +241,7 @@ export default function EvolutionExplorer() {
                 /* latest detail fetch failed */
             }
         })();
-    }, [activeExchange, selectedSymbol, generations]);
+    }, [activeExchange, selectedSymbol, activeMode, generations]);
 
     const handleExpandRow = async (gen: number) => {
         if (expandedGen === gen) {
@@ -314,7 +314,25 @@ export default function EvolutionExplorer() {
                             {ex.exchange}
                         </button>
                     ))}
-                    <span className="text-[10px] text-slate-600 font-mono ml-2">
+                    <span className="w-px h-4 bg-white/10 mx-1" />
+                    {(["long_only", "long_short"] as StrategyMode[]).map((m) => (
+                        <button
+                            key={m}
+                            onClick={() => {
+                                setActiveMode(m);
+                                setGenerations([]);
+                                setLatestDetail(null);
+                            }}
+                            className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-all cursor-pointer ${
+                                activeMode === m
+                                    ? "bg-violet-500/15 border border-violet-500/40 text-violet-300"
+                                    : "bg-white/5 border border-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                            }`}
+                        >
+                            {m === "long_only" ? "Long Only" : "Long/Short"}
+                        </button>
+                    ))}
+                    <span className="text-[10px] text-slate-600 font-mono ml-1">
                         {latestGen ? `Gen #${latestGen.generation}` : "—"}
                     </span>
                 </div>
