@@ -339,17 +339,17 @@ async fn run_symbol_evolution(
 
     // Resume from last generation for this (exchange, symbol, mode)
     use sqlx::Row;
-    let last_gen_row = sqlx::query(
-        "SELECT generation, best_genome FROM strategy_generations \
-         WHERE exchange = $1 AND symbol = $2 AND mode = $3 ORDER BY generation DESC LIMIT 1",
-    )
-    .bind(exchange)
-    .bind(&symbol)
-    .bind(mode_str)
-    .fetch_optional(&pool)
-    .await;
+    let resume_query = || {
+        sqlx::query(
+            "SELECT generation, best_genome FROM strategy_generations \
+             WHERE exchange = $1 AND symbol = $2 AND mode = $3 ORDER BY generation DESC LIMIT 1",
+        )
+        .bind(exchange)
+        .bind(&symbol)
+        .bind(mode_str)
+    };
 
-    if let Ok(Some(row)) = last_gen_row {
+    let apply_resume = |row: &sqlx::postgres::PgRow, ga: &mut GeneticAlgorithm| {
         if let Ok(max_gen) = row.try_get::<i32, _>("generation") {
             info!(
                 "[{}:{}:{}] Resuming from generation {}",
@@ -359,8 +359,105 @@ async fn run_symbol_evolution(
         }
         if let Ok(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome") {
             if !ga.population.is_empty() {
-                ga.population[0].tokens = best_tokens.into_iter().map(|x| x as usize).collect();
+                ga.population[0].tokens =
+                    best_tokens.into_iter().map(|x| x as usize).collect();
             }
+        }
+    };
+
+    match resume_query().fetch_optional(&pool).await {
+        Ok(Some(row)) => apply_resume(&row, &mut ga),
+        Ok(None) => {
+            info!(
+                "[{}:{}:{}] No previous generations found, starting fresh",
+                exchange, symbol, mode_str
+            );
+        }
+        Err(e) => {
+            error!(
+                "[{}:{}:{}] Resume query failed: {}, retrying in 2s...",
+                exchange, symbol, mode_str, e
+            );
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            match resume_query().fetch_optional(&pool).await {
+                Ok(Some(row)) => apply_resume(&row, &mut ga),
+                Ok(None) => {
+                    info!(
+                        "[{}:{}:{}] No previous generations on retry, starting fresh",
+                        exchange, symbol, mode_str
+                    );
+                }
+                Err(e2) => {
+                    error!(
+                        "[{}:{}:{}] Resume retry failed: {}, starting from gen 0",
+                        exchange, symbol, mode_str, e2
+                    );
+                }
+            }
+        }
+    }
+
+    // Cleanup orphaned generations from previous runs
+    let start_gen = ga.generation;
+    if start_gen > 0 {
+        // Successful resume: delete orphaned generations beyond our starting point
+        match sqlx::query(
+            "DELETE FROM strategy_generations \
+             WHERE exchange = $1 AND symbol = $2 AND mode = $3 AND generation >= $4",
+        )
+        .bind(exchange)
+        .bind(&symbol)
+        .bind(mode_str)
+        .bind(start_gen as i32)
+        .execute(&pool)
+        .await
+        {
+            Ok(r) if r.rows_affected() > 0 => {
+                warn!(
+                    "[{}:{}:{}] Cleaned {} orphaned generations (>= gen {})",
+                    exchange,
+                    symbol,
+                    mode_str,
+                    r.rows_affected(),
+                    start_gen
+                );
+            }
+            Err(e) => {
+                error!(
+                    "[{}:{}:{}] Failed to clean orphaned generations: {}",
+                    exchange, symbol, mode_str, e
+                );
+            }
+            _ => {}
+        }
+    } else {
+        // gen 0 = fresh start or resume failure — check for stale data
+        let old_max: Option<i32> = sqlx::query_scalar(
+            "SELECT MAX(generation) FROM strategy_generations \
+             WHERE exchange = $1 AND symbol = $2 AND mode = $3",
+        )
+        .bind(exchange)
+        .bind(&symbol)
+        .bind(mode_str)
+        .fetch_one(&pool)
+        .await
+        .ok()
+        .flatten();
+
+        if let Some(max_gen) = old_max {
+            warn!(
+                "[{}:{}:{}] Starting from gen 0 but found data up to gen {}. Cleaning stale data.",
+                exchange, symbol, mode_str, max_gen
+            );
+            let _ = sqlx::query(
+                "DELETE FROM strategy_generations \
+                 WHERE exchange = $1 AND symbol = $2 AND mode = $3",
+            )
+            .bind(exchange)
+            .bind(&symbol)
+            .bind(mode_str)
+            .execute(&pool)
+            .await;
         }
     }
 
@@ -538,15 +635,18 @@ async fn run_symbol_evolution(
                 }
             }
 
-            // Cleanup old generations for this (symbol, mode)
-            if gen.is_multiple_of(10) && gen > 1000 {
+            // Cleanup old + orphaned generations for this (symbol, mode)
+            if gen.is_multiple_of(10) && gen > 100 {
                 let _ = sqlx::query(
-                    "DELETE FROM strategy_generations WHERE exchange = $1 AND symbol = $2 AND mode = $3 AND generation < $4",
+                    "DELETE FROM strategy_generations \
+                     WHERE exchange = $1 AND symbol = $2 AND mode = $3 \
+                     AND (generation < $4 OR generation > $5)",
                 )
                 .bind(exchange)
                 .bind(&symbol)
                 .bind(mode_str)
                 .bind(gen as i32 - 1000)
+                .bind(gen as i32 + 100)
                 .execute(&pool)
                 .await;
             }

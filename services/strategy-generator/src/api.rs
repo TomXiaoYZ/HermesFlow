@@ -197,7 +197,7 @@ async fn list_generations(
             FROM strategy_generations sg
             LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
             WHERE sg.exchange = $1 AND sg.mode = $2
-            ORDER BY sg.generation DESC
+            ORDER BY sg.timestamp DESC
             LIMIT $3"#,
         )
         .bind(&exchange_name)
@@ -223,7 +223,7 @@ async fn list_generations(
             FROM strategy_generations sg
             LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
             WHERE sg.exchange = $1
-            ORDER BY sg.generation DESC
+            ORDER BY sg.timestamp DESC
             LIMIT $2"#,
         )
         .bind(&exchange_name)
@@ -393,8 +393,10 @@ async fn get_overview(
             ) best_bt ON true
             WHERE sg.exchange = $1 AND sg.mode = $2
             AND sg.generation = (
-                SELECT MAX(sg2.generation) FROM strategy_generations sg2
+                SELECT sg2.generation FROM strategy_generations sg2
                 WHERE sg2.exchange = sg.exchange AND sg2.symbol = sg.symbol AND sg2.mode = sg.mode
+                ORDER BY sg2.timestamp DESC
+                LIMIT 1
             )
             ORDER BY sg.symbol"#,
         )
@@ -425,8 +427,10 @@ async fn get_overview(
             ) best_bt ON true
             WHERE sg.exchange = $1
             AND sg.generation = (
-                SELECT MAX(sg2.generation) FROM strategy_generations sg2
+                SELECT sg2.generation FROM strategy_generations sg2
                 WHERE sg2.exchange = sg.exchange AND sg2.symbol = sg.symbol AND sg2.mode = sg.mode
+                ORDER BY sg2.timestamp DESC
+                LIMIT 1
             )
             ORDER BY sg.symbol"#,
         )
@@ -522,7 +526,7 @@ async fn list_symbol_generations(
             FROM strategy_generations sg
             LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
             WHERE sg.exchange = $1 AND sg.symbol = $2 AND sg.mode = $3
-            ORDER BY sg.generation DESC
+            ORDER BY sg.timestamp DESC
             LIMIT $4"#,
         )
         .bind(&exchange_name)
@@ -549,7 +553,7 @@ async fn list_symbol_generations(
             FROM strategy_generations sg
             LEFT JOIN backtest_results br ON br.strategy_id = sg.strategy_id
             WHERE sg.exchange = $1 AND sg.symbol = $2
-            ORDER BY sg.generation DESC
+            ORDER BY sg.timestamp DESC
             LIMIT $3"#,
         )
         .bind(&exchange_name)
