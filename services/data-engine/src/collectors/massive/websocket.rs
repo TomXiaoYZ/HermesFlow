@@ -15,22 +15,30 @@ use crate::traits::ConnectorStats;
 pub struct MassiveStreamer {
     api_key: String,
     url: String,
+    symbols: Vec<String>,
     stats: Arc<RwLock<ConnectorStats>>,
 }
 
 impl MassiveStreamer {
-    pub fn new(api_key: String, url: String) -> Self {
+    pub fn new(api_key: String, url: String, symbols: Vec<String>) -> Self {
         Self {
             api_key,
             url,
+            symbols,
             stats: Arc::new(RwLock::new(ConnectorStats::default())),
         }
     }
 
-    pub fn with_stats(api_key: String, url: String, stats: Arc<RwLock<ConnectorStats>>) -> Self {
+    pub fn with_stats(
+        api_key: String,
+        url: String,
+        symbols: Vec<String>,
+        stats: Arc<RwLock<ConnectorStats>>,
+    ) -> Self {
         Self {
             api_key,
             url,
+            symbols,
             stats,
         }
     }
@@ -40,6 +48,7 @@ impl MassiveStreamer {
         let api_key = self.api_key.clone();
         let url_str = self.url.clone();
         let stats = self.stats.clone();
+        let symbols = self.symbols.clone();
 
         tokio::spawn(async move {
             let mut backoff = 1;
@@ -63,17 +72,24 @@ impl MassiveStreamer {
                             continue;
                         }
 
-                        // 2. Subscribe (Wait for auth success ideally, but Polygon allows pipelining sometimes,
-                        // strictly we should wait for status.auth_success)
-                        // For simplicity, we assume auth works or we catch error in loop
+                        // 2. Subscribe to watchlist symbols (or all if none configured)
+                        let params = if symbols.is_empty() {
+                            "A.*".to_string()
+                        } else {
+                            symbols
+                                .iter()
+                                .map(|s| format!("A.{}", s))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        };
                         let sub_msg = serde_json::json!({
                             "action": "subscribe",
-                            "params": "A.*" // Subscribe to all Second Aggregates
+                            "params": params
                         });
                         if let Err(e) = write.send(Message::Text(sub_msg.to_string())).await {
                             error!("Failed to send subscription: {}", e);
                         } else {
-                            info!("Sent subscription request for A.*");
+                            info!("Sent subscription request for {}", params);
                         }
 
                         backoff = 1; // Reset backoff on successful connection logic entry

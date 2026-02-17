@@ -435,8 +435,27 @@ async fn spawn_massive_collector(deps: &CollectorDeps) {
         return;
     }
 
+    let symbols = match deps
+        .postgres_repos
+        .market_data
+        .get_watchlist_symbols()
+        .await
+    {
+        Ok(s) => {
+            tracing::info!("Polygon WS: subscribing to {} watchlist symbols", s.len());
+            s
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to load watchlist for Polygon WS, falling back to A.*: {}",
+                e
+            );
+            vec![]
+        }
+    };
+
     tracing::info!("Starting Massive (Polygon) collector");
-    let mut massive_collector = MassiveConnector::new(massive_config);
+    let mut massive_collector = MassiveConnector::new(massive_config, symbols);
     let mut shutdown_rx = deps.shutdown_tx.subscribe();
     let repos = Arc::clone(&deps.postgres_repos);
 

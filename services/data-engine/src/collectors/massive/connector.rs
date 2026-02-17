@@ -18,12 +18,13 @@ pub struct MassiveConnector {
     stats: Arc<RwLock<ConnectorStats>>,
     source_type: DataSourceType,
     config: MassiveConfig,
+    symbols: Vec<String>,
     last_success: Arc<AtomicU64>,
     consecutive_errors: Arc<AtomicU32>,
 }
 
 impl MassiveConnector {
-    pub fn new(config: MassiveConfig) -> Self {
+    pub fn new(config: MassiveConfig, symbols: Vec<String>) -> Self {
         let now_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -38,6 +39,7 @@ impl MassiveConnector {
             stats: Arc::new(RwLock::new(ConnectorStats::default())),
             source_type: DataSourceType::PolygonStock,
             config,
+            symbols,
             last_success: Arc::new(AtomicU64::new(now_millis)),
             consecutive_errors: Arc::new(AtomicU32::new(0)),
         }
@@ -164,6 +166,7 @@ impl DataSourceConnector for MassiveConnector {
         let streamer = super::websocket::MassiveStreamer::with_stats(
             api_key,
             self.config.ws_url.clone(),
+            self.symbols.clone(),
             self.stats.clone(),
         );
         streamer.connect().await

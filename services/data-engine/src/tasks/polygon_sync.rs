@@ -46,7 +46,7 @@ pub struct PolygonSyncTask {
 
 impl PolygonSyncTask {
     pub fn new(config: MassiveConfig, repos: Arc<PostgresRepositories>) -> Self {
-        let connector = MassiveConnector::new(config);
+        let connector = MassiveConnector::new(config, vec![]);
         Self { connector, repos }
     }
 

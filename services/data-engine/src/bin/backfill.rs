@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rate_limit_per_min: 5,
             ws_url: "wss://socket.polygon.io/stocks".to_string(),
         };
-        let connector = MassiveConnector::new(config);
+        let connector = MassiveConnector::new(config, vec![]);
 
         info!("Fetching history from {} to {}...", args.from, args.to);
         let candles = connector

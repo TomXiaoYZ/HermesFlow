@@ -126,7 +126,7 @@ impl TaskManager {
                             symbols.len()
                         );
                         if let Some(massive_cfg) = config.massive {
-                            let connector = MassiveConnector::new(massive_cfg);
+                            let connector = MassiveConnector::new(massive_cfg, vec![]);
 
                             for symbol in symbols {
                                 let fetch_result = connector
@@ -266,7 +266,7 @@ impl TaskManager {
                 }
             };
 
-            let connector = MassiveConnector::new(massive_cfg);
+            let connector = MassiveConnector::new(massive_cfg, vec![]);
             let now = Utc::now();
             let mut total_inserted = 0u64;
 
@@ -410,7 +410,7 @@ impl TaskManager {
                     error!("Birdeye not configured for contract address {}", symbol);
                 }
             } else if let Some(massive_cfg) = config.massive {
-                let connector = MassiveConnector::new(massive_cfg);
+                let connector = MassiveConnector::new(massive_cfg, vec![]);
                 info!("Backfill (Massive) task running for {}...", symbol);
 
                 // Default to 5 years if 'to' is not specified
@@ -721,11 +721,9 @@ impl TaskManager {
                         crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
 
                     let exchanges = ["Polygon", "Jupiter", "Birdeye", "Binance", "OKX", "Bybit"];
-                    for (lookback, res, bucket) in [
-                        (300, "4h", 240),
-                        (1500, "1d", 1440),
-                        (11520, "1w", 10080),
-                    ] {
+                    for (lookback, res, bucket) in
+                        [(300, "4h", 240), (1500, "1d", 1440), (11520, "1w", 10080)]
+                    {
                         for exchange in &exchanges {
                             if let Err(e) = aggregator
                                 .aggregate_candles(lookback, res, bucket, Some(exchange))
