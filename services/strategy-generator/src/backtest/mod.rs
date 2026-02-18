@@ -95,10 +95,14 @@ impl Backtester {
         exchange: String,
         resolution: String,
     ) -> Self {
-        tracing::info!("Initializing Backtester with PnL-based fitness");
+        let ts_window = StackVM::ts_window_for_resolution(&resolution);
+        tracing::info!(
+            "Initializing Backtester with PSR fitness, ts_window={}",
+            ts_window
+        );
         Self {
             pool,
-            vm: StackVM::from_config(&factor_config),
+            vm: StackVM::with_window(&factor_config, ts_window),
             cache: HashMap::new(),
             factor_config,
             exchange,
@@ -358,10 +362,22 @@ impl Backtester {
         }
     }
 
+    /// Resolution-aware embargo size (bars to skip at fold boundaries).
+    /// Prevents information leakage from TS operators carrying state across folds.
+    fn embargo_size(&self) -> usize {
+        match self.resolution.as_str() {
+            "1d" => 20, // 20 trading days (~1 month)
+            "1h" => 10, // 10 hours (matches TS window)
+            "15m" => 8, // 2 hours
+            _ => 10,
+        }
+    }
+
     /// K-fold temporal cross-validation fitness for a single symbol.
     ///
-    /// Runs VM once, then evaluates PnL on K equal-sized temporal folds.
-    /// Fitness = mean(fold_pnls) - std_penalty * std(fold_pnls) - complexity_penalty.
+    /// Runs VM once, then evaluates PSR (Probabilistic Sharpe Ratio) on K
+    /// equal-sized temporal folds with embargo gaps at fold boundaries.
+    /// Fitness = mean(fold_psr) - 0.5 * std(fold_psr) - complexity_penalty.
     /// Strategies must perform consistently across all time regimes.
     pub fn evaluate_symbol_kfold(
         &self,
@@ -394,37 +410,49 @@ impl Backtester {
             return;
         }
 
-        // Split into K equal folds
+        // Split into K equal folds with embargo gaps
         let fold_size = len / k;
-        if fold_size < 10 {
+        if fold_size < 30 {
+            // PSR needs 30+ samples per fold for statistical significance
             genome.fitness = -1000.0;
             return;
         }
 
-        let mut fold_pnls = Vec::with_capacity(k);
+        let embargo = self.embargo_size();
+        let mut fold_scores = Vec::with_capacity(k);
         for i in 0..k {
-            let start = i * fold_size;
+            // Apply embargo: skip bars at fold start that overlap with previous fold's lookback
+            let raw_start = i * fold_size;
+            let start = if i > 0 {
+                (raw_start + embargo).min(len)
+            } else {
+                raw_start
+            };
             let end = if i == k - 1 { len } else { (i + 1) * fold_size };
-            let pnl = self.pnl_fitness(sig_slice, ret_slice, start, end, mode);
-            if pnl > -9.0 {
-                // Valid fold (not rejected by minimum activity check)
-                fold_pnls.push(pnl);
+
+            if end <= start || end - start < 30 {
+                continue;
+            }
+
+            let psr = self.psr_fitness(sig_slice, ret_slice, start, end, mode);
+            if psr > -9.0 {
+                fold_scores.push(psr);
             }
         }
 
         // Require valid performance in at least 3 of K folds
         let min_valid = 3_usize.min(k);
-        if fold_pnls.len() < min_valid {
+        if fold_scores.len() < min_valid {
             genome.fitness = -10.0;
             return;
         }
 
-        let n_folds = fold_pnls.len() as f64;
-        let mean_pnl = fold_pnls.iter().sum::<f64>() / n_folds;
-        let std_pnl = if n_folds > 1.0 {
-            let var = fold_pnls
+        let n_folds = fold_scores.len() as f64;
+        let mean_psr = fold_scores.iter().sum::<f64>() / n_folds;
+        let std_psr = if n_folds > 1.0 {
+            let var = fold_scores
                 .iter()
-                .map(|&p| (p - mean_pnl).powi(2))
+                .map(|&p| (p - mean_psr).powi(2))
                 .sum::<f64>()
                 / (n_folds - 1.0);
             var.sqrt()
@@ -441,11 +469,12 @@ impl Backtester {
             0.0
         };
 
-        let fitness = mean_pnl - 1.0 * std_pnl - complexity_penalty;
+        let fitness = mean_psr - 0.5 * std_psr - complexity_penalty;
         genome.fitness = if fitness.is_nan() { -10.0 } else { fitness };
     }
 
     /// Diagnostic: return per-fold PnL for monitoring/frontend display.
+    /// Uses the same embargo gaps as evaluate_symbol_kfold for consistency.
     pub fn evaluate_symbol_fold_detail(
         &self,
         genome: &Genome,
@@ -471,17 +500,171 @@ impl Backtester {
         }
 
         let fold_size = len / k;
-        if fold_size < 10 {
+        if fold_size < 30 {
             return vec![];
         }
 
+        let embargo = self.embargo_size();
         let mut fold_pnls = Vec::with_capacity(k);
         for i in 0..k {
-            let start = i * fold_size;
+            let raw_start = i * fold_size;
+            let start = if i > 0 {
+                (raw_start + embargo).min(len)
+            } else {
+                raw_start
+            };
             let end = if i == k - 1 { len } else { (i + 1) * fold_size };
-            fold_pnls.push(self.pnl_fitness(sig_slice, ret_slice, start, end, mode));
+            if end > start {
+                fold_pnls.push(self.pnl_fitness(sig_slice, ret_slice, start, end, mode));
+            }
         }
         fold_pnls
+    }
+
+    /// Probabilistic Sharpe Ratio (PSR) fitness for a fold.
+    ///
+    /// Computes the probability that the true Sharpe ratio exceeds a benchmark
+    /// (default: 0), accounting for skewness and kurtosis of the return distribution.
+    /// Returns a z-score: higher = more likely the Sharpe is real, not noise.
+    ///
+    /// Reference: Bailey & Lopez de Prado (2012), "The Sharpe Ratio Efficient Frontier"
+    fn psr_fitness(
+        &self,
+        sig: &[f64],
+        ret: &[f64],
+        start: usize,
+        end: usize,
+        mode: StrategyMode,
+    ) -> f64 {
+        let n = end - start;
+        if n < 30 {
+            return -10.0;
+        }
+
+        // Collect per-bar returns using the same position logic as pnl_fitness
+        let upper = adaptive_threshold(sig, start, end);
+        let lower = match mode {
+            StrategyMode::LongShort => adaptive_lower_threshold(sig, start, end),
+            StrategyMode::LongOnly => 0.0,
+        };
+        let fee = self.base_fee();
+        let mut prev_pos = 0.0_f64;
+        let mut bar_returns = Vec::with_capacity(n);
+        let mut trade_count = 0_u32;
+        let mut active_bars = 0_u32;
+
+        for i in start..end {
+            let raw = sig[i];
+            let sig_val = sigmoid(raw);
+            let pos = match mode {
+                StrategyMode::LongOnly => {
+                    if sig_val > upper {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                StrategyMode::LongShort => {
+                    if sig_val > upper {
+                        1.0
+                    } else if sig_val < lower {
+                        -1.0
+                    } else {
+                        0.0
+                    }
+                }
+            };
+
+            let turnover = (pos - prev_pos).abs();
+            let entering_short = pos < -0.5 && prev_pos > -0.5;
+            let cost = if entering_short {
+                turnover * fee * 1.5
+            } else {
+                turnover * fee
+            };
+
+            let bar_pnl = pos * ret[i] - cost;
+            bar_returns.push(bar_pnl);
+
+            if turnover > 0.5 {
+                trade_count += 1;
+            }
+            if pos.abs() > 0.5 {
+                active_bars += 1;
+            }
+
+            prev_pos = pos;
+        }
+
+        // Minimum activity check (same as pnl_fitness)
+        let bars_per_day = match self.resolution.as_str() {
+            "1d" => 1.0,
+            "1h" => {
+                if self.exchange == "Polygon" {
+                    6.5
+                } else {
+                    24.0
+                }
+            }
+            "15m" => {
+                if self.exchange == "Polygon" {
+                    26.0
+                } else {
+                    96.0
+                }
+            }
+            _ => 24.0,
+        };
+        let trading_days = n as f64 / bars_per_day;
+        let min_trades = 3_u32.max((trading_days / 10.0) as u32);
+        if trade_count < min_trades || (active_bars as f64) < (n as f64 * 0.05) {
+            return -10.0;
+        }
+
+        // Compute PSR
+        let nf = bar_returns.len() as f64;
+        let mean = bar_returns.iter().sum::<f64>() / nf;
+        let var = bar_returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (nf - 1.0);
+        let std = var.sqrt();
+        if std < 1e-10 {
+            return -10.0;
+        }
+
+        let sharpe = mean / std;
+
+        // Higher moments: skewness and excess kurtosis
+        let skew = bar_returns
+            .iter()
+            .map(|r| ((r - mean) / std).powi(3))
+            .sum::<f64>()
+            / nf;
+        let kurt = bar_returns
+            .iter()
+            .map(|r| ((r - mean) / std).powi(4))
+            .sum::<f64>()
+            / nf
+            - 3.0;
+
+        // PSR formula: standard error of Sharpe ratio adjusted for non-normality
+        // (Bailey & Lopez de Prado 2012, eq. 4)
+        let benchmark_sharpe = 0.0; // Test if Sharpe > 0
+        let se_inner = (1.0 - skew * sharpe + (kurt - 1.0) / 4.0 * sharpe.powi(2)) / nf;
+        if se_inner <= 0.0 {
+            return -10.0;
+        }
+        let se_sharpe = se_inner.sqrt();
+        if se_sharpe < 1e-10 {
+            return -10.0;
+        }
+
+        let z = (sharpe - benchmark_sharpe) / se_sharpe;
+
+        // Clamp to reasonable range to avoid extreme outliers dominating
+        if z.is_nan() {
+            -10.0
+        } else {
+            z.clamp(-5.0, 5.0)
+        }
     }
 
     /// Core PnL fitness computation used by both IS and OOS evaluation.

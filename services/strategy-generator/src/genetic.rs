@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 pub struct Genome {
     pub tokens: Vec<usize>,
     pub fitness: f64,
+    /// Number of generations this genome has survived (used by ALPS).
+    #[serde(default)]
+    pub age: usize,
 }
 
 impl Genome {
@@ -12,24 +15,26 @@ impl Genome {
         Self {
             tokens: generate_random_rpn(5, feat_offset),
             fitness: 0.0,
+            age: 0,
         }
     }
 }
 
 /// Build operator token vectors dynamically from feat_offset.
-/// Op indices match the StackVM dispatch (vm.rs):
-///   Unary:   4(NEG), 5(ABS), 6(SIGN), 8(SIGNED_POWER), 9(DECAY_LINEAR),
-///            10(DELAY1), 11(DELAY5), 12(TS_MEAN), 13(TS_STD), 14(TS_RANK),
-///            15(TS_SUM), 17(TS_MIN), 18(TS_MAX), 19(LOG), 20(SQRT),
-///            21(TS_ARGMAX), 22(TS_DELTA)
-///   Binary:  0(ADD), 1(SUB), 2(MUL), 3(DIV), 16(TS_CORR)
-///   Ternary: 7(GATE)
-fn build_ops(feat_offset: usize) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
-    let unary_op_indices: Vec<usize> = vec![
-        4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22,
-    ];
+/// Op indices match the StackVM dispatch (vm.rs).
+///
+/// Pruned to 14 operators for daily stock alpha formulas:
+///   Unary (9):  5(ABS), 6(SIGN), 10(DELAY1), 11(DELAY5), 12(TS_MEAN),
+///               13(TS_STD), 14(TS_RANK), 17(TS_MIN), 18(TS_MAX)
+///   Binary (5): 0(ADD), 1(SUB), 2(MUL), 3(DIV), 16(TS_CORR)
+///
+/// Removed (9): NEG(4), GATE(7), SIGNED_POWER(8), DECAY_LINEAR(9),
+///   TS_SUM(15), LOG(19), SQRT(20), TS_ARGMAX(21), TS_DELTA(22)
+///   — redundant, domain-error-prone, or disruptive to stack arithmetic.
+/// VM still executes all 23 opcodes for backward compatibility with stored genomes.
+fn build_ops(feat_offset: usize) -> (Vec<usize>, Vec<usize>) {
+    let unary_op_indices: Vec<usize> = vec![5, 6, 10, 11, 12, 13, 14, 17, 18];
     let binary_op_indices: Vec<usize> = vec![0, 1, 2, 3, 16];
-    let ternary_op_indices: Vec<usize> = vec![7];
 
     let ops_1: Vec<usize> = unary_op_indices
         .into_iter()
@@ -39,15 +44,13 @@ fn build_ops(feat_offset: usize) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
         .into_iter()
         .map(|idx| idx + feat_offset)
         .collect();
-    let ops_3: Vec<usize> = ternary_op_indices
-        .into_iter()
-        .map(|idx| idx + feat_offset)
-        .collect();
 
-    (ops_1, ops_2, ops_3)
+    (ops_1, ops_2)
 }
 
-/// Classify a token as feature, unary, binary, or ternary operator.
+/// Classify a token as feature, unary, or binary operator.
+/// Ternary ops (GATE) are no longer generated but still recognized for
+/// backward compatibility when evaluating stored genomes.
 fn token_arity(token: usize, feat_offset: usize) -> usize {
     if token < feat_offset {
         return 0; // feature (pushes to stack)
@@ -55,7 +58,7 @@ fn token_arity(token: usize, feat_offset: usize) -> usize {
     let op_idx = token - feat_offset;
     match op_idx {
         0..=3 | 16 => 2, // binary: ADD, SUB, MUL, DIV, TS_CORR
-        7 => 3,          // ternary: GATE
+        7 => 3,          // ternary: GATE (legacy only, no longer generated)
         _ => 1,          // unary: everything else
     }
 }
@@ -64,7 +67,7 @@ fn generate_random_rpn(max_depth: usize, feat_offset: usize) -> Vec<usize> {
     let mut rng = rand::thread_rng();
 
     let features: Vec<usize> = (0..feat_offset).collect();
-    let (ops_1, ops_2, ops_3) = build_ops(feat_offset);
+    let (ops_1, ops_2) = build_ops(feat_offset);
 
     let mut tokens = Vec::new();
 
@@ -87,17 +90,11 @@ fn generate_random_rpn(max_depth: usize, feat_offset: usize) -> Vec<usize> {
         if stack_depth >= 2 {
             choices.push("OP2");
         }
-        if stack_depth >= 3 {
-            choices.push("OP3");
-        }
 
         // Forced collapse if length exceeded
         if steps >= target_len {
             choices.clear();
-            if stack_depth >= 3 {
-                choices.push("OP3");
-                choices.push("OP2");
-            } else if stack_depth >= 2 {
+            if stack_depth >= 2 {
                 choices.push("OP2");
             } else {
                 choices.push("OP1");
@@ -126,10 +123,6 @@ fn generate_random_rpn(max_depth: usize, feat_offset: usize) -> Vec<usize> {
                 tokens.push(ops_2[rng.gen_range(0..ops_2.len())]);
                 stack_depth -= 1;
             }
-            "OP3" => {
-                tokens.push(ops_3[rng.gen_range(0..ops_3.len())]);
-                stack_depth -= 2;
-            }
             _ => {}
         }
 
@@ -139,167 +132,42 @@ fn generate_random_rpn(max_depth: usize, feat_offset: usize) -> Vec<usize> {
     tokens
 }
 
-pub struct GeneticAlgorithm {
-    pub population: Vec<Genome>,
-    pub generation: usize,
-    pub best_genome: Option<Genome>,
-    pub feat_offset: usize,
-    stagnation_count: usize,
-    prev_best_fitness: f64,
+/// ALPS layer configuration: max_age uses Fibonacci-like gaps.
+const ALPS_LAYER_MAX_AGES: [usize; 5] = [5, 13, 34, 89, usize::MAX];
+const ALPS_LAYER_POP_SIZE: usize = 100;
+const ALPS_NUM_LAYERS: usize = 5;
+
+/// A single ALPS age layer with its own population.
+struct AlpsLayer {
+    population: Vec<Genome>,
+    max_age: usize,
 }
 
-impl GeneticAlgorithm {
-    pub fn new(pop_size: usize, feat_offset: usize) -> Self {
+impl AlpsLayer {
+    fn new(max_age: usize, feat_offset: usize, pop_size: usize) -> Self {
         let mut population = Vec::with_capacity(pop_size);
         for _ in 0..pop_size {
             population.push(Genome::new_random(feat_offset));
         }
-
         Self {
             population,
-            generation: 0,
-            best_genome: None,
-            feat_offset,
-            stagnation_count: 0,
-            prev_best_fitness: f64::NEG_INFINITY,
+            max_age,
         }
     }
 
-    /// Current number of generations without fitness improvement.
-    pub fn stagnation(&self) -> usize {
-        self.stagnation_count
-    }
-
-    /// Force restart: keep top 10% of population, replace rest with random genomes.
-    /// Used when IS-OOS divergence is detected. Resets stagnation counter.
-    pub fn force_restart(&mut self) {
-        let pop_size = self.population.len();
-        let keep = (pop_size as f64 * 0.1).max(2.0) as usize;
-
+    fn sort_by_fitness(&mut self) {
         self.population.sort_by(|a, b| {
             b.fitness
                 .partial_cmp(&a.fitness)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-
-        let mut new_pop: Vec<Genome> = self.population[..keep].to_vec();
-        while new_pop.len() < pop_size {
-            new_pop.push(Genome::new_random(self.feat_offset));
-        }
-        self.population = new_pop;
-        self.stagnation_count = 0;
     }
 
-    /// Remove duplicate genomes by replacing them with fresh random ones.
-    fn deduplicate_population(&mut self) {
-        use std::collections::HashSet;
-        let mut seen = HashSet::new();
-        for genome in self.population.iter_mut() {
-            if !seen.insert(genome.tokens.clone()) {
-                genome.tokens = generate_random_rpn(5, self.feat_offset);
-                genome.fitness = 0.0;
-            }
-        }
-    }
-
-    pub fn evolve(&mut self) {
-        let mut rng = rand::thread_rng();
-        let pop_size = self.population.len();
-
-        // Sort by fitness DESC
-        self.population.sort_by(|a, b| {
-            b.fitness
-                .partial_cmp(&a.fitness)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        // Track stagnation: did the best fitness improve?
-        let current_best_fitness = self
-            .population
-            .first()
-            .map(|g| g.fitness)
-            .unwrap_or(f64::NEG_INFINITY);
-
-        if current_best_fitness > self.prev_best_fitness + 1e-6 {
-            self.stagnation_count = 0;
-        } else {
-            self.stagnation_count += 1;
-        }
-        self.prev_best_fitness = current_best_fitness;
-
-        // Update all-time best
-        if let Some(best) = self.population.first() {
-            if let Some(current_best) = &self.best_genome {
-                if best.fitness > current_best.fitness {
-                    self.best_genome = Some(best.clone());
-                }
-            } else {
-                self.best_genome = Some(best.clone());
-            }
-        }
-
-        // Stagnation restart: nuke 90% of population every 100 stagnant gens
-        if self.stagnation_count > 0 && self.stagnation_count.is_multiple_of(100) {
-            let keep = (pop_size as f64 * 0.1).max(2.0) as usize;
-            let mut new_pop: Vec<Genome> = self.population[..keep].to_vec();
-            while new_pop.len() < pop_size {
-                new_pop.push(Genome::new_random(self.feat_offset));
-            }
-            self.population = new_pop;
-            self.generation += 1;
-            return;
-        }
-
-        // Remove duplicate genomes to maintain diversity
-        self.deduplicate_population();
-
-        // Adaptive rates based on stagnation level
-        let (crossover_rate, mutation_rate) = if self.stagnation_count >= 50 {
-            (0.20, 0.30) // 50% immigration — heavy exploration
-        } else if self.stagnation_count >= 20 {
-            (0.25, 0.35) // 40% immigration — moderate exploration
-        } else {
-            (0.35, 0.40) // 25% immigration — normal
-        };
-
-        // Elitism: Keep top 5% (min 2)
-        let elitism_count = (pop_size as f64 * 0.05).max(2.0) as usize;
-        let mut new_pop = Vec::with_capacity(pop_size);
-
-        for i in 0..elitism_count {
-            new_pop.push(self.population[i].clone());
-        }
-
-        // Fill rest with offspring
-        while new_pop.len() < pop_size {
-            let parent1 = self.tournament_select();
-            let parent2 = self.tournament_select();
-
-            let r: f64 = rng.gen();
-            if r < crossover_rate {
-                let mut child = Self::crossover(parent1, parent2, self.feat_offset);
-                Self::mutate(&mut child, self.feat_offset, self.stagnation_count);
-                new_pop.push(child);
-            } else if r < crossover_rate + mutation_rate {
-                let mut child = parent1.clone();
-                Self::mutate(&mut child, self.feat_offset, self.stagnation_count);
-                new_pop.push(child);
-            } else {
-                new_pop.push(Genome::new_random(self.feat_offset));
-            }
-        }
-
-        self.population = new_pop;
-        self.generation += 1;
-    }
-
+    /// Within-layer tournament selection (k=3).
     fn tournament_select(&self) -> &Genome {
         let mut rng = rand::thread_rng();
-        // Softer selection when stagnating to maintain diversity
-        let k = if self.stagnation_count >= 50 { 2 } else { 3 };
         let mut best: Option<&Genome> = None;
-
-        for _ in 0..k {
+        for _ in 0..3 {
             let idx = rng.gen_range(0..self.population.len());
             let candidate = &self.population[idx];
             if best.is_none() || candidate.fitness > best.unwrap().fitness {
@@ -309,28 +177,216 @@ impl GeneticAlgorithm {
         best.unwrap()
     }
 
+    /// Remove duplicate genomes within this layer.
+    fn deduplicate(&mut self, feat_offset: usize) {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for genome in self.population.iter_mut() {
+            if !seen.insert(genome.tokens.clone()) {
+                genome.tokens = generate_random_rpn(5, feat_offset);
+                genome.fitness = 0.0;
+                genome.age = 0;
+            }
+        }
+    }
+}
+
+/// Age-Layered Population Structure (ALPS) genetic algorithm.
+///
+/// Maintains diversity by stratifying the population into age layers:
+/// - Layer 0 (max_age=5): Fresh random exploration, continuously replenished
+/// - Layer 1 (max_age=13): Young promising genomes
+/// - Layer 2 (max_age=34): Maturing genomes
+/// - Layer 3 (max_age=89): Experienced genomes
+/// - Layer 4 (max_age=∞): Elite archive
+///
+/// Genomes that exceed their layer's max_age are promoted to the next layer
+/// (if fitter than the worst genome there) or discarded. This prevents old
+/// elite genomes from dominating young exploration layers.
+pub struct AlpsGA {
+    layers: Vec<AlpsLayer>,
+    pub generation: usize,
+    pub best_genome: Option<Genome>,
+    pub feat_offset: usize,
+}
+
+impl AlpsGA {
+    pub fn new(feat_offset: usize) -> Self {
+        let layers: Vec<AlpsLayer> = ALPS_LAYER_MAX_AGES
+            .iter()
+            .map(|&max_age| AlpsLayer::new(max_age, feat_offset, ALPS_LAYER_POP_SIZE))
+            .collect();
+
+        Self {
+            layers,
+            generation: 0,
+            best_genome: None,
+            feat_offset,
+        }
+    }
+
+    /// Get a flat view of all genomes across all layers (for evaluation).
+    pub fn all_genomes_mut(&mut self) -> Vec<&mut Genome> {
+        self.layers
+            .iter_mut()
+            .flat_map(|layer| layer.population.iter_mut())
+            .collect()
+    }
+
+    /// Total population size across all layers.
+    pub fn total_population(&self) -> usize {
+        self.layers.iter().map(|l| l.population.len()).sum()
+    }
+
+    /// Summary of layer sizes and best fitness per layer (for logging).
+    pub fn layer_summary(&self) -> Vec<(usize, usize, f64)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .map(|(i, layer)| {
+                let best_fit = layer
+                    .population
+                    .iter()
+                    .map(|g| g.fitness)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                (i, layer.population.len(), best_fit)
+            })
+            .collect()
+    }
+
+    /// Number of promotions that occurred in the last evolve() call.
+    /// (Stored for logging; reset each generation.)
+    pub fn evolve(&mut self) -> usize {
+        let mut rng = rand::thread_rng();
+        let mut total_promotions = 0_usize;
+
+        // Phase 1: Age all surviving genomes
+        for layer in &mut self.layers {
+            for genome in &mut layer.population {
+                genome.age += 1;
+            }
+        }
+
+        // Phase 2: Promote over-aged genomes upward (bottom-up)
+        for layer_idx in 0..ALPS_NUM_LAYERS - 1 {
+            let max_age = self.layers[layer_idx].max_age;
+
+            // Collect genomes that exceeded this layer's max_age
+            let mut promoted = Vec::new();
+            self.layers[layer_idx].population.retain(|g| {
+                if g.age > max_age {
+                    promoted.push(g.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+
+            // Try to insert promoted genomes into the next layer
+            let next_layer = &mut self.layers[layer_idx + 1];
+            for genome in promoted {
+                if next_layer.population.len() < ALPS_LAYER_POP_SIZE {
+                    // Room available — just insert
+                    next_layer.population.push(genome);
+                    total_promotions += 1;
+                } else {
+                    // Replace worst genome if promoted genome is fitter
+                    next_layer.sort_by_fitness();
+                    if let Some(worst) = next_layer.population.last() {
+                        if genome.fitness > worst.fitness {
+                            next_layer.population.pop();
+                            next_layer.population.push(genome);
+                            total_promotions += 1;
+                        }
+                        // else: discard (not fit enough for next layer)
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Replenish layer 0 with fresh random genomes
+        let layer0 = &mut self.layers[0];
+        while layer0.population.len() < ALPS_LAYER_POP_SIZE {
+            layer0.population.push(Genome::new_random(self.feat_offset));
+        }
+
+        // Phase 4: Evolve each layer independently
+        for layer in &mut self.layers {
+            if layer.population.is_empty() {
+                continue;
+            }
+
+            layer.sort_by_fitness();
+            layer.deduplicate(self.feat_offset);
+
+            let pop_size = layer.population.len();
+            let elitism_count = (pop_size as f64 * 0.05).max(2.0).min(pop_size as f64) as usize;
+
+            let mut new_pop = Vec::with_capacity(pop_size);
+
+            // Elitism: keep top genomes
+            for i in 0..elitism_count.min(pop_size) {
+                new_pop.push(layer.population[i].clone());
+            }
+
+            // Fill with crossover (40%), mutation (35%), immigration (25%)
+            while new_pop.len() < pop_size {
+                let parent1 = layer.tournament_select();
+                let parent2 = layer.tournament_select();
+
+                let r: f64 = rng.gen();
+                if r < 0.40 {
+                    let mut child = Self::crossover(parent1, parent2, self.feat_offset);
+                    // Child inherits max parent age (ALPS convention)
+                    child.age = parent1.age.max(parent2.age);
+                    Self::mutate(&mut child, self.feat_offset);
+                    new_pop.push(child);
+                } else if r < 0.75 {
+                    let mut child = parent1.clone();
+                    Self::mutate(&mut child, self.feat_offset);
+                    new_pop.push(child);
+                } else {
+                    new_pop.push(Genome::new_random(self.feat_offset));
+                }
+            }
+
+            layer.population = new_pop;
+        }
+
+        // Phase 5: Update global best genome across all layers
+        for layer in &self.layers {
+            for genome in &layer.population {
+                let dominated = match &self.best_genome {
+                    Some(current) => genome.fitness > current.fitness,
+                    None => true,
+                };
+                if dominated {
+                    self.best_genome = Some(genome.clone());
+                }
+            }
+        }
+
+        self.generation += 1;
+        total_promotions
+    }
+
     /// Single-point crossover: take prefix of parent1, suffix of parent2.
-    /// Finds valid cut points where both parents have stack_depth == 1.
     fn crossover(parent1: &Genome, parent2: &Genome, feat_offset: usize) -> Genome {
         let mut rng = rand::thread_rng();
 
-        // Find positions where stack depth == 1 (valid split points)
         let cuts1 = valid_cut_points(&parent1.tokens, feat_offset);
         let cuts2 = valid_cut_points(&parent2.tokens, feat_offset);
 
         if cuts1.is_empty() || cuts2.is_empty() {
-            // Can't find valid cuts; return mutated clone of parent1
             return parent1.clone();
         }
 
         let cut1 = cuts1[rng.gen_range(0..cuts1.len())];
         let cut2 = cuts2[rng.gen_range(0..cuts2.len())];
 
-        // Take parent1[..cut1] + parent2[cut2..]
         let mut tokens = parent1.tokens[..cut1].to_vec();
         tokens.extend_from_slice(&parent2.tokens[cut2..]);
 
-        // Cap length to avoid bloat — shorter formulas generalize better
         if tokens.len() > 20 {
             tokens.truncate(20);
         }
@@ -338,20 +394,17 @@ impl GeneticAlgorithm {
         Genome {
             tokens,
             fitness: 0.0,
+            age: 0,
         }
     }
 
-    fn mutate(genome: &mut Genome, feat_offset: usize, stagnation: usize) {
+    /// Mutation operators (no stagnation-dependent rates — ALPS handles diversity).
+    fn mutate(genome: &mut Genome, feat_offset: usize) {
         let mut rng = rand::thread_rng();
-        let (ops_1, ops_2, ops_3) = build_ops(feat_offset);
+        let (ops_1, ops_2) = build_ops(feat_offset);
 
-        // Adaptive mutation strength: higher when stagnating
-        let point_rate = if stagnation >= 50 { 0.6 } else { 0.4 };
-        let op_rate = if stagnation >= 50 { 0.3 } else { 0.2 };
-        let subtree_rate = if stagnation >= 50 { 0.15 } else { 0.10 };
-
-        // 1. Point mutation: change any token to same-arity token
-        if rng.gen_bool(point_rate) && !genome.tokens.is_empty() {
+        // 1. Point mutation (40%): change any token to same-arity token
+        if rng.gen_bool(0.4) && !genome.tokens.is_empty() {
             let idx = rng.gen_range(0..genome.tokens.len());
             let old = genome.tokens[idx];
 
@@ -362,15 +415,14 @@ impl GeneticAlgorithm {
                 let pool = match arity {
                     1 => &ops_1,
                     2 => &ops_2,
-                    3 => &ops_3,
                     _ => &ops_1,
                 };
                 genome.tokens[idx] = pool[rng.gen_range(0..pool.len())];
             }
         }
 
-        // 2. Operator mutation: swap a random operator for same-arity
-        if rng.gen_bool(op_rate) && !genome.tokens.is_empty() {
+        // 2. Operator mutation (20%): swap a random operator for same-arity
+        if rng.gen_bool(0.2) && !genome.tokens.is_empty() {
             let op_indices: Vec<usize> = genome
                 .tokens
                 .iter()
@@ -385,7 +437,6 @@ impl GeneticAlgorithm {
                 let pool = match arity {
                     1 => &ops_1,
                     2 => &ops_2,
-                    3 => &ops_3,
                     _ => &ops_1,
                 };
                 genome.tokens[idx] = pool[rng.gen_range(0..pool.len())];
@@ -401,7 +452,6 @@ impl GeneticAlgorithm {
         }
 
         // 4. Shrink mutation (20%): remove a unary op (stack-neutral)
-        //    Doubled from 10% to favor shorter, more generalizable formulas.
         if rng.gen_bool(0.20) && genome.tokens.len() > 3 {
             let unary_indices: Vec<usize> = genome
                 .tokens
@@ -416,10 +466,11 @@ impl GeneticAlgorithm {
             }
         }
 
-        // 5. Subtree replacement: replace genome with new random subtree
-        if rng.gen_bool(subtree_rate) {
+        // 5. Subtree replacement (10%): replace genome with new random subtree
+        if rng.gen_bool(0.10) {
             let new_subtree = generate_random_rpn(5, feat_offset);
             genome.tokens = new_subtree;
+            genome.age = 0; // Reset age on full replacement
         }
     }
 }

@@ -14,7 +14,7 @@ mod genetic;
 use backtest::Backtester;
 use backtest::StrategyMode;
 use backtest_engine::config::FactorConfig;
-use genetic::GeneticAlgorithm;
+use genetic::AlpsGA;
 
 /// Per-exchange evolution config, loaded from config/generator.yaml.
 #[derive(Debug, Deserialize, Clone)]
@@ -319,8 +319,7 @@ async fn run_symbol_evolution(
         exchange.clone(),
         resolution.clone(),
     );
-    let pop_size = if exchange == "Polygon" { 300 } else { 150 };
-    let mut ga = GeneticAlgorithm::new(pop_size, feat_offset);
+    let mut ga = AlpsGA::new(feat_offset);
 
     // Load data for this single symbol
     info!(
@@ -349,7 +348,7 @@ async fn run_symbol_evolution(
         .bind(mode_str)
     };
 
-    let apply_resume = |row: &sqlx::postgres::PgRow, ga: &mut GeneticAlgorithm| {
+    let apply_resume = |row: &sqlx::postgres::PgRow, ga: &mut AlpsGA| {
         if let Ok(max_gen) = row.try_get::<i32, _>("generation") {
             info!(
                 "[{}:{}:{}] Resuming from generation {}",
@@ -358,9 +357,13 @@ async fn run_symbol_evolution(
             ga.generation = max_gen as usize + 1;
         }
         if let Ok(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome") {
-            if !ga.population.is_empty() {
-                ga.population[0].tokens = best_tokens.into_iter().map(|x| x as usize).collect();
-            }
+            // Seed the best genome from DB into the elite layer (layer 4)
+            let tokens: Vec<usize> = best_tokens.into_iter().map(|x| x as usize).collect();
+            ga.best_genome = Some(genetic::Genome {
+                tokens,
+                fitness: 0.0,
+                age: 0,
+            });
         }
     };
 
@@ -469,35 +472,31 @@ async fn run_symbol_evolution(
         let k = ((data_len as f64 / 300.0).round() as usize).clamp(3, 8);
 
         // Evaluate each genome via K-fold temporal cross-validation
-        for genome in ga.population.iter_mut() {
+        for genome in ga.all_genomes_mut() {
             backtester.evaluate_symbol_kfold(genome, &symbol, k, mode);
         }
-        ga.evolve();
+        let promotions = ga.evolve();
 
-        // Log stagnation events
-        if ga.stagnation() == 50 {
-            warn!(
-                "[{}:{}:{}] Gen {} — stagnation detected (50 gens without improvement), increasing exploration",
-                exchange, symbol, mode_str, gen
-            );
-        }
-        if ga.stagnation() > 0 && ga.stagnation().is_multiple_of(100) {
-            warn!(
-                "[{}:{}:{}] Gen {} — population restart triggered after {} stagnant gens",
+        // Log ALPS layer summary periodically
+        if gen.is_multiple_of(10) {
+            let summary = ga.layer_summary();
+            info!(
+                "[{}:{}:{}] Gen {} ALPS layers: {:?} promotions: {} total_pop: {}",
                 exchange,
                 symbol,
                 mode_str,
                 gen,
-                ga.stagnation()
+                summary,
+                promotions,
+                ga.total_population()
             );
         }
 
         if let Some(best) = ga.best_genome.clone() {
             let oos_pnl = backtester.evaluate_symbol_oos(&best, &symbol, mode);
             let fold_pnls = backtester.evaluate_symbol_fold_detail(&best, &symbol, k, mode);
-            let stag = ga.stagnation();
             info!(
-                "[{}:{}:{}] Gen {} IS PnL: {:.4} OOS PnL: {:.4} tokens: {} stag: {} K: {} folds: {:?}",
+                "[{}:{}:{}] Gen {} IS fitness: {:.4} OOS PnL: {:.4} tokens: {} age: {} K: {} folds: {:?}",
                 exchange,
                 symbol,
                 mode_str,
@@ -505,20 +504,21 @@ async fn run_symbol_evolution(
                 best.fitness,
                 oos_pnl,
                 best.tokens.len(),
-                stag,
+                best.age,
                 k,
                 fold_pnls
             );
 
-            // IS-OOS gap detection: relative threshold based on actual fitness values
+            // IS-OOS gap monitoring (log only, ALPS handles diversity naturally)
             let is_oos_gap = best.fitness - oos_pnl;
-            let gap_threshold = best.fitness.abs().max(0.1) * 0.5;
-            if best.fitness > 0.05 && is_oos_gap > gap_threshold && oos_pnl < 0.0 && stag > 20 {
+            if best.fitness > 0.05
+                && is_oos_gap > best.fitness.abs().max(0.1) * 0.5
+                && oos_pnl < 0.0
+            {
                 warn!(
-                    "[{}:{}:{}] Gen {} — IS-OOS divergence detected (IS={:.3}, OOS={:.3}, gap={:.3}, thresh={:.3}, stag={}), forcing restart",
-                    exchange, symbol, mode_str, gen, best.fitness, oos_pnl, is_oos_gap, gap_threshold, stag
+                    "[{}:{}:{}] Gen {} — IS-OOS divergence detected (IS={:.3}, OOS={:.3}, gap={:.3})",
+                    exchange, symbol, mode_str, gen, best.fitness, oos_pnl, is_oos_gap
                 );
-                ga.force_restart();
             }
 
             let strategy_id = format!("{}_{}_{}_gen_{}", exchange_lower, symbol, mode_str, gen);
@@ -529,7 +529,7 @@ async fn run_symbol_evolution(
                 "generation": gen,
                 "fitness": best.fitness,
                 "oos_ic": oos_pnl,
-                "stagnation": stag,
+                "age": best.age,
                 "fold_pnls": fold_pnls,
                 "best_tokens": best.tokens,
                 "exchange": exchange,

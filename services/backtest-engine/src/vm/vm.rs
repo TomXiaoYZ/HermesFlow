@@ -6,6 +6,9 @@ use std::env;
 #[derive(Debug, Clone)]
 pub struct StackVM {
     pub feat_offset: usize,
+    /// Rolling window size for time-series operators (TS_MEAN, TS_STD, etc.).
+    /// Default: 10 for 1h data, 20 for 1d data, 8 for 15m data.
+    pub ts_window: usize,
 }
 
 impl Default for StackVM {
@@ -17,7 +20,10 @@ impl Default for StackVM {
             .map(|c| c.feat_offset())
             .unwrap_or(6); // Fallback to 6 if config missing
 
-        Self { feat_offset }
+        Self {
+            feat_offset,
+            ts_window: 10,
+        }
     }
 }
 
@@ -29,6 +35,25 @@ impl StackVM {
     pub fn from_config(config: &FactorConfig) -> Self {
         Self {
             feat_offset: config.feat_offset(),
+            ts_window: 10,
+        }
+    }
+
+    /// Create a StackVM with a specific time-series window size.
+    pub fn with_window(config: &FactorConfig, ts_window: usize) -> Self {
+        Self {
+            feat_offset: config.feat_offset(),
+            ts_window,
+        }
+    }
+
+    /// Select appropriate TS window based on data resolution.
+    pub fn ts_window_for_resolution(resolution: &str) -> usize {
+        match resolution {
+            "1d" => 20, // ~1 trading month
+            "1h" => 10, // 10 hours
+            "15m" => 8, // 2 hours
+            _ => 10,
         }
     }
 
@@ -133,12 +158,12 @@ impl StackVM {
                         stack.push(op_signed_power(&x));
                     }
                     9 => {
-                        // DECAY_LINEAR: linearly-weighted MA (10 periods)
+                        // DECAY_LINEAR: linearly-weighted MA (legacy, no longer generated)
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_decay_linear(&x, 10));
+                        stack.push(op_decay_linear(&x, self.ts_window));
                     }
                     10 => {
                         // DELAY1
@@ -157,61 +182,61 @@ impl StackVM {
                         stack.push(ts_delay(&x, 5));
                     }
                     12 => {
-                        // TS_MEAN_10
+                        // TS_MEAN
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_mean(&x, 10));
+                        stack.push(ts_mean(&x, self.ts_window));
                     }
                     13 => {
-                        // TS_STD_10
+                        // TS_STD
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_std(&x, 10));
+                        stack.push(ts_std(&x, self.ts_window));
                     }
                     14 => {
-                        // TS_RANK_10
+                        // TS_RANK
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_rank(&x, 10));
+                        stack.push(ts_rank(&x, self.ts_window));
                     }
                     15 => {
-                        // TS_SUM_10
+                        // TS_SUM (legacy, no longer generated)
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_sum(&x, 10));
+                        stack.push(ts_sum(&x, self.ts_window));
                     }
                     16 => {
-                        // TS_CORR_10
+                        // TS_CORR
                         if stack.len() < 2 {
                             return None;
                         }
                         let y = stack.pop()?;
                         let x = stack.pop()?;
-                        stack.push(ts_corr(&x, &y, 10));
+                        stack.push(ts_corr(&x, &y, self.ts_window));
                     }
                     17 => {
-                        // TS_MIN_10: rolling 10-period minimum
+                        // TS_MIN: rolling minimum
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_min(&x, 10));
+                        stack.push(ts_min(&x, self.ts_window));
                     }
                     18 => {
-                        // TS_MAX_10: rolling 10-period maximum
+                        // TS_MAX: rolling maximum
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_max(&x, 10));
+                        stack.push(ts_max(&x, self.ts_window));
                     }
                     19 => {
                         // LOG
@@ -230,12 +255,12 @@ impl StackVM {
                         stack.push(op_sqrt(&x));
                     }
                     21 => {
-                        // TS_ARGMAX_10: position of max in 10-period window
+                        // TS_ARGMAX (legacy, no longer generated)
                         if stack.is_empty() {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_argmax(&x, 10));
+                        stack.push(ts_argmax(&x, self.ts_window));
                     }
                     22 => {
                         // TS_DELTA
