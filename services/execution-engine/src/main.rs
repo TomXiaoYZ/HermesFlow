@@ -3,6 +3,7 @@ use tracing::{error, info, warn};
 use chrono::Utc;
 use common::events::{PortfolioUpdate, PositionUpdate};
 use execution_engine::command_listener::CommandListener;
+use execution_engine::reconciliation;
 use execution_engine::traders::futu_trader::FutuTrader;
 use execution_engine::traders::ibkr_trader::IBKRTrader;
 use execution_engine::traders::solana_trader::SolanaTrader;
@@ -150,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     // ========================================
     // 4. Setup Command Listener
     // ========================================
-    let mut listener = CommandListener::new(&redis_url, db)?;
+    let mut listener = CommandListener::new(&redis_url, db.clone())?;
     listener.set_traders(solana.clone(), ibkr.clone(), futu.clone());
 
     // Record status before moves
@@ -303,6 +304,17 @@ async fn main() -> anyhow::Result<()> {
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
         });
+    }
+
+    // ========================================
+    // 6c. Background: IBKR Position Reconciliation
+    // ========================================
+    if let (Some(trader), Some(ref db_client)) = (ibkr.clone(), &db) {
+        reconciliation::spawn_reconciliation_task(
+            trader,
+            Arc::clone(db_client),
+            Duration::from_secs(60),
+        );
     }
 
     // ========================================
