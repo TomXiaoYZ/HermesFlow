@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { Save, Plus, Trash2, RefreshCw, Key, Activity, TrendingUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import TradingAccountConfig from "./TradingAccountConfig";
 
 interface ExchangeConfig {
   exchange: string;
@@ -268,6 +269,11 @@ export default function ExchangeConfig() {
                </tbody>
              </table>
           </div>
+        </div>
+
+        {/* Trading Accounts — full-width section */}
+        <div className="lg:col-span-2">
+          <TradingAccountConfig />
         </div>
 
       </div>

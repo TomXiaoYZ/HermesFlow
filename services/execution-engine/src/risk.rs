@@ -27,6 +27,13 @@ impl RiskResult {
     }
 }
 
+struct AccountRisk {
+    is_enabled: bool,
+    max_order_value: f64,
+    max_positions: usize,
+    max_daily_loss: f64,
+}
+
 pub struct StockRiskEngine {
     max_order_value_usd: f64,
     max_positions: usize,
@@ -62,12 +69,33 @@ impl StockRiskEngine {
         signal: &TradeSignal,
         db: &Option<Arc<PgClient>>,
     ) -> RiskResult {
+        let account_id = match signal.mode.as_deref() {
+            Some(m) => format!("ibkr_{}", m),
+            None => "default".to_string(),
+        };
+
+        // Load per-account risk limits from DB, falling back to env-var defaults
+        let risk = match db {
+            Some(client) => load_account_risk(client, &account_id, self).await,
+            None => AccountRisk {
+                is_enabled: true,
+                max_order_value: self.max_order_value_usd,
+                max_positions: self.max_positions,
+                max_daily_loss: self.max_daily_loss_usd,
+            },
+        };
+
+        // 0. Account enabled check
+        if !risk.is_enabled {
+            return RiskResult::reject(format!("Account '{}' is disabled", account_id));
+        }
+
         // 1. Order value check
         let order_value = signal.quantity * signal.price.unwrap_or(0.0);
-        if order_value > self.max_order_value_usd {
+        if order_value > risk.max_order_value {
             return RiskResult::reject(format!(
                 "Order value ${:.2} exceeds max ${:.2}",
-                order_value, self.max_order_value_usd
+                order_value, risk.max_order_value
             ));
         }
 
@@ -78,25 +106,21 @@ impl StockRiskEngine {
 
         if let Some(client) = db {
             // 3. Open position count (mode-aware)
-            let account_id = match signal.mode.as_deref() {
-                Some(m) => format!("ibkr_{}", m),
-                None => "default".to_string(),
-            };
             let open_count = count_open_positions(client, "IBKR", &account_id).await;
-            if open_count >= self.max_positions {
+            if open_count >= risk.max_positions {
                 return RiskResult::reject(format!(
                     "Already holding {} positions (max {})",
-                    open_count, self.max_positions
+                    open_count, risk.max_positions
                 ));
             }
 
             // 4. Daily realized P&L check
             let daily_pnl = calculate_daily_pnl(client).await;
-            if daily_pnl < -self.max_daily_loss_usd {
+            if daily_pnl < -risk.max_daily_loss {
                 return RiskResult::reject(format!(
                     "Daily loss ${:.2} exceeds max ${:.2}",
                     daily_pnl.abs(),
-                    self.max_daily_loss_usd
+                    risk.max_daily_loss
                 ));
             }
 
@@ -112,6 +136,56 @@ impl StockRiskEngine {
         }
 
         RiskResult::approve()
+    }
+}
+
+async fn load_account_risk(
+    client: &PgClient,
+    account_id: &str,
+    fallback: &StockRiskEngine,
+) -> AccountRisk {
+    let result = client
+        .query_opt(
+            "SELECT is_enabled, max_order_value::FLOAT8, max_positions, max_daily_loss::FLOAT8 \
+             FROM trading_accounts WHERE account_id = $1",
+            &[&account_id],
+        )
+        .await;
+
+    match result {
+        Ok(Some(row)) => AccountRisk {
+            is_enabled: row.get(0),
+            max_order_value: row.get(1),
+            max_positions: {
+                let v: i32 = row.get(2);
+                v as usize
+            },
+            max_daily_loss: row.get(3),
+        },
+        Ok(None) => {
+            warn!(
+                "No trading_accounts row for '{}', using env-var defaults",
+                account_id
+            );
+            AccountRisk {
+                is_enabled: true,
+                max_order_value: fallback.max_order_value_usd,
+                max_positions: fallback.max_positions,
+                max_daily_loss: fallback.max_daily_loss_usd,
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Failed to load account risk for '{}': {}, using env-var defaults",
+                account_id, e
+            );
+            AccountRisk {
+                is_enabled: true,
+                max_order_value: fallback.max_order_value_usd,
+                max_positions: fallback.max_positions,
+                max_daily_loss: fallback.max_daily_loss_usd,
+            }
+        }
     }
 }
 
@@ -239,11 +313,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sell_signal_basic_checks() {
-        // Sell signals (short entries) should still pass basic pre-trade checks
-        // (order value, zero quantity) without a DB — dedup requires DB
         let engine = StockRiskEngine::new();
 
-        // Valid sell signal — should approve without DB
         let signal = TradeSignal {
             id: Uuid::new_v4(),
             strategy_id: "test".to_string(),
@@ -261,7 +332,6 @@ mod tests {
         let result = engine.check_pre_trade(&signal, &None).await;
         assert!(result.approved);
 
-        // Over-limit sell signal — should reject
         let big_signal = TradeSignal {
             quantity: 100.0,
             ..signal

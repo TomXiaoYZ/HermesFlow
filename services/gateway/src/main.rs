@@ -209,6 +209,12 @@ async fn main() {
         .route("/api/v1/trades/history", get(get_trade_history))
         .route("/api/v1/trades/positions", get(get_trade_positions))
         .route("/api/v1/trades/strategy/:strategy_id", get(get_trade_strategy))
+        .route("/api/v1/trades/account-summary", get(get_account_summary))
+        .route("/api/v1/config/accounts", get(get_trading_accounts))
+        .route(
+            "/api/v1/config/accounts/:account_id",
+            axum::routing::put(update_trading_account),
+        )
         .route("/api/auth/login", axum::routing::any(auth_handler::proxy_handler))
         .layer(CorsLayer::permissive()) // Enable CORS for local dev
         .with_state(app_state);
@@ -918,4 +924,173 @@ async fn get_trade_strategy(
         "orders": orders,
         "generation": generation,
     }))
+}
+
+// --- Trading Account Endpoints ---
+
+async fn get_trading_accounts(State(state): State<Arc<AppState>>) -> Json<Value> {
+    use sqlx::Row;
+    let query = "SELECT account_id, label, broker, broker_account, mode, is_enabled, \
+                 max_order_value, max_positions, max_daily_loss, updated_at \
+                 FROM trading_accounts ORDER BY account_id";
+
+    match sqlx::query(query).fetch_all(&state.pg_pool).await {
+        Ok(rows) => {
+            let results: Vec<Value> = rows
+                .iter()
+                .map(|row| {
+                    json!({
+                        "account_id": row.get::<String, _>("account_id"),
+                        "label": row.get::<String, _>("label"),
+                        "broker": row.get::<String, _>("broker"),
+                        "broker_account": row.get::<Option<String>, _>("broker_account"),
+                        "mode": row.get::<String, _>("mode"),
+                        "is_enabled": row.get::<bool, _>("is_enabled"),
+                        "max_order_value": row.get::<sqlx::types::Decimal, _>("max_order_value").to_string(),
+                        "max_positions": row.get::<i32, _>("max_positions"),
+                        "max_daily_loss": row.get::<sqlx::types::Decimal, _>("max_daily_loss").to_string(),
+                        "updated_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("updated_at").map(|t| t.to_rfc3339()),
+                    })
+                })
+                .collect();
+            Json(json!(results))
+        }
+        Err(e) => {
+            error!("Failed to fetch trading accounts: {}", e);
+            Json(json!({"error": "Failed to fetch trading accounts"}))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateAccountBody {
+    label: Option<String>,
+    broker_account: Option<String>,
+    is_enabled: Option<bool>,
+    max_order_value: Option<f64>,
+    max_positions: Option<i32>,
+    max_daily_loss: Option<f64>,
+}
+
+async fn update_trading_account(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+    Json(body): Json<UpdateAccountBody>,
+) -> Json<Value> {
+    let mut set_clauses = Vec::new();
+    let mut bind_idx = 1u32;
+
+    if body.label.is_some() {
+        bind_idx += 1;
+        set_clauses.push(format!("label = ${}", bind_idx));
+    }
+    if body.broker_account.is_some() {
+        bind_idx += 1;
+        set_clauses.push(format!("broker_account = ${}", bind_idx));
+    }
+    if body.is_enabled.is_some() {
+        bind_idx += 1;
+        set_clauses.push(format!("is_enabled = ${}", bind_idx));
+    }
+    if body.max_order_value.is_some() {
+        bind_idx += 1;
+        set_clauses.push(format!("max_order_value = ${}", bind_idx));
+    }
+    if body.max_positions.is_some() {
+        bind_idx += 1;
+        set_clauses.push(format!("max_positions = ${}", bind_idx));
+    }
+    if body.max_daily_loss.is_some() {
+        bind_idx += 1;
+        set_clauses.push(format!("max_daily_loss = ${}", bind_idx));
+    }
+
+    if set_clauses.is_empty() {
+        return Json(json!({"error": "No fields to update"}));
+    }
+
+    set_clauses.push("updated_at = NOW()".to_string());
+    let query = format!(
+        "UPDATE trading_accounts SET {} WHERE account_id = $1",
+        set_clauses.join(", ")
+    );
+
+    // Build the query with dynamic binds
+    let mut q = sqlx::query(&query).bind(&account_id);
+
+    if let Some(ref label) = body.label {
+        q = q.bind(label);
+    }
+    if let Some(ref broker_account) = body.broker_account {
+        q = q.bind(broker_account);
+    }
+    if let Some(is_enabled) = body.is_enabled {
+        q = q.bind(is_enabled);
+    }
+    if let Some(max_order_value) = body.max_order_value {
+        q = q.bind(sqlx::types::Decimal::try_from(max_order_value).unwrap_or_default());
+    }
+    if let Some(max_positions) = body.max_positions {
+        q = q.bind(max_positions);
+    }
+    if let Some(max_daily_loss) = body.max_daily_loss {
+        q = q.bind(sqlx::types::Decimal::try_from(max_daily_loss).unwrap_or_default());
+    }
+
+    match q.execute(&state.pg_pool).await {
+        Ok(result) => {
+            if result.rows_affected() == 0 {
+                Json(json!({"error": "Account not found"}))
+            } else {
+                Json(json!({"status": "ok", "account_id": account_id}))
+            }
+        }
+        Err(e) => {
+            error!("Failed to update trading account {}: {}", account_id, e);
+            Json(json!({"error": "Failed to update trading account"}))
+        }
+    }
+}
+
+async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> {
+    use sqlx::Row;
+    let query = "SELECT ta.account_id, ta.label, ta.broker_account, ta.mode, ta.is_enabled, \
+                 ta.max_order_value, ta.max_positions, ta.max_daily_loss, \
+                 COALESCE(pos.position_count, 0) as position_count, \
+                 COALESCE(pos.total_value, 0) as total_value \
+                 FROM trading_accounts ta \
+                 LEFT JOIN ( \
+                     SELECT account_id, COUNT(*)::INTEGER as position_count, \
+                            SUM(ABS(quantity) * avg_price) as total_value \
+                     FROM trade_positions WHERE quantity != 0 \
+                     GROUP BY account_id \
+                 ) pos ON pos.account_id = ta.account_id \
+                 ORDER BY ta.account_id";
+
+    match sqlx::query(query).fetch_all(&state.pg_pool).await {
+        Ok(rows) => {
+            let results: Vec<Value> = rows
+                .iter()
+                .map(|row| {
+                    json!({
+                        "account_id": row.get::<String, _>("account_id"),
+                        "label": row.get::<String, _>("label"),
+                        "broker_account": row.get::<Option<String>, _>("broker_account"),
+                        "mode": row.get::<String, _>("mode"),
+                        "is_enabled": row.get::<bool, _>("is_enabled"),
+                        "max_order_value": row.get::<sqlx::types::Decimal, _>("max_order_value").to_string(),
+                        "max_positions": row.get::<i32, _>("max_positions"),
+                        "max_daily_loss": row.get::<sqlx::types::Decimal, _>("max_daily_loss").to_string(),
+                        "position_count": row.get::<i32, _>("position_count"),
+                        "total_value": row.get::<sqlx::types::Decimal, _>("total_value").to_string(),
+                    })
+                })
+                .collect();
+            Json(json!(results))
+        }
+        Err(e) => {
+            error!("Failed to fetch account summary: {}", e);
+            Json(json!({"error": "Failed to fetch account summary"}))
+        }
+    }
 }
