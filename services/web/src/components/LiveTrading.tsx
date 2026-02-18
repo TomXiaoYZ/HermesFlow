@@ -61,8 +61,11 @@ interface DBPosition {
     symbol: string;
     quantity: string;
     avg_price: string;
+    current_price: string | null;
+    market_value: string | null;
     unrealized_pnl: string | null;
     updated_at: string | null;
+    price_time: string | null;
 }
 
 interface AccountSummary {
@@ -76,6 +79,7 @@ interface AccountSummary {
     max_daily_loss: string;
     position_count: number;
     total_value: string;
+    total_unrealized_pnl: string;
 }
 
 interface LiveTradingProps {
@@ -312,16 +316,27 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                                     {account.is_enabled ? "Active" : "Disabled"}
                                 </span>
                             </div>
-                            <div className="grid grid-cols-3 gap-3">
+                            <div className="grid grid-cols-4 gap-3">
                                 <div>
                                     <p className="text-xs text-slate-500">Positions</p>
                                     <p className="text-sm font-semibold text-white">{account.position_count}</p>
                                 </div>
                                 <div>
-                                    <p className="text-xs text-slate-500">Total Value</p>
+                                    <p className="text-xs text-slate-500">Market Value</p>
                                     <p className="text-sm font-semibold text-white">
                                         ${parseFloat(account.total_value || "0").toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                     </p>
+                                </div>
+                                <div>
+                                    <p className="text-xs text-slate-500">Unrealized PnL</p>
+                                    {(() => {
+                                        const pnl = parseFloat(account.total_unrealized_pnl || "0");
+                                        return (
+                                            <p className={cn("text-sm font-semibold", pnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+                                                {pnl >= 0 ? "+" : ""}{pnl.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                            </p>
+                                        );
+                                    })()}
                                 </div>
                                 <div>
                                     <p className="text-xs text-slate-500">Mode</p>
@@ -348,6 +363,7 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                                 <th className="text-left px-6 py-3">Symbol</th>
                                 <th className="text-right px-6 py-3">Qty</th>
                                 <th className="text-right px-6 py-3">Avg Cost</th>
+                                <th className="text-right px-6 py-3">Last Price</th>
                                 <th className="text-right px-6 py-3">Mkt Value</th>
                                 <th className="text-right px-6 py-3">PnL</th>
                             </tr>
@@ -355,19 +371,20 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                         <tbody>
                             {livePositions.length > 0
                                 ? livePositions.map((pos) => {
-                                      const pnl = pos.market_value - pos.quantity * (pos.market_value / (pos.quantity || 1));
+                                      const unitCost = pos.market_value / (pos.quantity || 1);
+                                      const pnl = pos.market_value - pos.quantity * unitCost;
                                       return (
                                           <tr key={pos.symbol} className="border-t border-white/5 hover:bg-white/5 transition-colors">
                                               {selectedAccount === "all" && <td className="px-6 py-3 text-slate-400">—</td>}
                                               <td className="px-6 py-3 font-medium text-white">{pos.symbol}</td>
                                               <td className="px-6 py-3 text-right text-slate-300">{pos.quantity}</td>
+                                              <td className="px-6 py-3 text-right text-slate-300">${unitCost.toFixed(2)}</td>
                                               <td className="px-6 py-3 text-right text-slate-300">—</td>
                                               <td className="px-6 py-3 text-right text-slate-300">
                                                   ${pos.market_value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                               </td>
                                               <td className={cn("px-6 py-3 text-right font-medium", pnl >= 0 ? "text-emerald-400" : "text-red-400")}>
-                                                  {pnl >= 0 ? "+" : ""}
-                                                  {pnl.toFixed(2)}
+                                                  {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}
                                               </td>
                                           </tr>
                                       );
@@ -375,8 +392,11 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                                 : filteredPositions.map((pos) => {
                                       const qty = parseFloat(pos.quantity);
                                       const avgPrice = parseFloat(pos.avg_price);
+                                      const curPrice = pos.current_price ? parseFloat(pos.current_price) : null;
+                                      const mktValue = pos.market_value ? parseFloat(pos.market_value) : null;
                                       const pnl = pos.unrealized_pnl ? parseFloat(pos.unrealized_pnl) : 0;
-                                      const pnlPct = avgPrice > 0 && qty !== 0 ? (pnl / (Math.abs(qty) * avgPrice)) * 100 : 0;
+                                      const costBasis = Math.abs(qty) * avgPrice;
+                                      const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
                                       const accountLabel = accountSummary.find((a) => a.account_id === pos.account_id)?.label || pos.account_id;
                                       return (
                                           <tr key={`${pos.account_id}-${pos.symbol}`} className="border-t border-white/5 hover:bg-white/5 transition-colors">
@@ -386,17 +406,21 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                                               <td className="px-6 py-3 font-medium text-white">{pos.symbol}</td>
                                               <td className="px-6 py-3 text-right text-slate-300">{qty}</td>
                                               <td className="px-6 py-3 text-right text-slate-300">${avgPrice.toFixed(2)}</td>
-                                              <td className="px-6 py-3 text-right text-slate-300">—</td>
+                                              <td className="px-6 py-3 text-right text-slate-300">
+                                                  {curPrice != null ? `$${curPrice.toFixed(2)}` : "—"}
+                                              </td>
+                                              <td className="px-6 py-3 text-right text-slate-300">
+                                                  {mktValue != null ? `$${mktValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "—"}
+                                              </td>
                                               <td className={cn("px-6 py-3 text-right font-medium", pnl >= 0 ? "text-emerald-400" : "text-red-400")}>
-                                                  {pnl >= 0 ? "+" : ""}
-                                                  {pnl.toFixed(2)} ({pnlPct.toFixed(1)}%)
+                                                  {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
                                               </td>
                                           </tr>
                                       );
                                   })}
                             {livePositions.length === 0 && filteredPositions.length === 0 && (
                                 <tr>
-                                    <td colSpan={selectedAccount === "all" ? 6 : 5} className="px-6 py-8 text-center text-slate-500">
+                                    <td colSpan={selectedAccount === "all" ? 8 : 7} className="px-6 py-8 text-center text-slate-500">
                                         No positions found
                                     </td>
                                 </tr>

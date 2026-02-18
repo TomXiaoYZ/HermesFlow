@@ -826,21 +826,43 @@ async fn get_trade_history(
 
 async fn get_trade_positions(State(state): State<Arc<AppState>>) -> Json<Value> {
     use sqlx::Row;
-    let query = "SELECT account_id, exchange, symbol, quantity, avg_price, unrealized_pnl, updated_at FROM trade_positions ORDER BY account_id, symbol";
+    let query = "\
+        SELECT p.account_id, p.exchange, p.symbol, p.quantity, p.avg_price, \
+               p.current_price, p.unrealized_pnl, p.updated_at, \
+               latest.close AS last_price, latest.time AS price_time \
+        FROM trade_positions p \
+        LEFT JOIN LATERAL ( \
+            SELECT close, time FROM mkt_equity_candles \
+            WHERE symbol = p.symbol AND exchange = 'Polygon' \
+            ORDER BY time DESC LIMIT 1 \
+        ) latest ON true \
+        ORDER BY p.account_id, p.symbol";
 
     match sqlx::query(query).fetch_all(&state.pg_pool).await {
         Ok(rows) => {
             let results: Vec<Value> = rows
                 .iter()
                 .map(|row| {
+                    let current_price = row
+                        .get::<Option<sqlx::types::Decimal>, _>("current_price")
+                        .or_else(|| row.get::<Option<sqlx::types::Decimal>, _>("last_price"));
+                    let qty = row.get::<sqlx::types::Decimal, _>("quantity");
+                    let avg = row.get::<sqlx::types::Decimal, _>("avg_price");
+                    let market_value = current_price.map(|cp| qty * cp);
+                    let unrealized_pnl = row
+                        .get::<Option<sqlx::types::Decimal>, _>("unrealized_pnl")
+                        .or_else(|| market_value.map(|mv| mv - qty * avg));
                     json!({
                         "account_id": row.get::<String, _>("account_id"),
                         "exchange": row.get::<String, _>("exchange"),
                         "symbol": row.get::<String, _>("symbol"),
-                        "quantity": row.get::<sqlx::types::Decimal, _>("quantity").to_string(),
-                        "avg_price": row.get::<sqlx::types::Decimal, _>("avg_price").to_string(),
-                        "unrealized_pnl": row.get::<Option<sqlx::types::Decimal>, _>("unrealized_pnl").map(|v| v.to_string()),
+                        "quantity": qty.to_string(),
+                        "avg_price": avg.to_string(),
+                        "current_price": current_price.map(|v| v.to_string()),
+                        "market_value": market_value.map(|v| v.to_string()),
+                        "unrealized_pnl": unrealized_pnl.map(|v| v.to_string()),
                         "updated_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("updated_at").map(|t| t.to_rfc3339()),
+                        "price_time": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("price_time").map(|t| t.to_rfc3339()),
                     })
                 })
                 .collect();
@@ -1057,13 +1079,21 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
     let query = "SELECT ta.account_id, ta.label, ta.broker_account, ta.mode, ta.is_enabled, \
                  ta.max_order_value, ta.max_positions, ta.max_daily_loss, \
                  COALESCE(pos.position_count, 0) as position_count, \
-                 COALESCE(pos.total_value, 0) as total_value \
+                 COALESCE(pos.total_value, 0) as total_value, \
+                 COALESCE(pos.total_unrealized_pnl, 0) as total_unrealized_pnl \
                  FROM trading_accounts ta \
                  LEFT JOIN ( \
-                     SELECT account_id, COUNT(*)::INTEGER as position_count, \
-                            SUM(ABS(quantity) * avg_price) as total_value \
-                     FROM trade_positions WHERE quantity != 0 \
-                     GROUP BY account_id \
+                     SELECT p.account_id, COUNT(*)::INTEGER as position_count, \
+                            SUM(ABS(p.quantity) * COALESCE(c.close, p.current_price, p.avg_price)) as total_value, \
+                            SUM(p.quantity * (COALESCE(c.close, p.current_price, p.avg_price) - p.avg_price)) as total_unrealized_pnl \
+                     FROM trade_positions p \
+                     LEFT JOIN LATERAL ( \
+                         SELECT close FROM mkt_equity_candles \
+                         WHERE symbol = p.symbol AND exchange = 'Polygon' \
+                         ORDER BY time DESC LIMIT 1 \
+                     ) c ON true \
+                     WHERE p.quantity != 0 \
+                     GROUP BY p.account_id \
                  ) pos ON pos.account_id = ta.account_id \
                  ORDER BY ta.account_id";
 
@@ -1083,6 +1113,7 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
                         "max_daily_loss": row.get::<sqlx::types::Decimal, _>("max_daily_loss").to_string(),
                         "position_count": row.get::<i32, _>("position_count"),
                         "total_value": row.get::<sqlx::types::Decimal, _>("total_value").to_string(),
+                        "total_unrealized_pnl": row.get::<sqlx::types::Decimal, _>("total_unrealized_pnl").to_string(),
                     })
                 })
                 .collect();
