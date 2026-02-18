@@ -1,4 +1,5 @@
-use ibapi::Client;
+use ibapi::accounts::PositionUpdate;
+use ibapi::client::sync::Client;
 use std::env;
 
 fn main() {
@@ -8,21 +9,31 @@ fn main() {
 
     println!("Connecting to IBKR at {}...", addr);
     let client = Client::connect(&addr, 99).expect("Failed to connect to IBKR");
-    println!("Managed accounts: {}", client.managed_accounts());
 
-    // Collect positions into a Vec to avoid lifetime issues with the iterator
-    let positions: Vec<_> = match client.positions() {
-        Ok(iter) => iter.collect(),
+    match client.managed_accounts() {
+        Ok(accounts) => println!("Managed accounts: {:?}", accounts),
+        Err(e) => eprintln!("Failed to get managed accounts: {}", e),
+    }
+
+    match client.positions() {
+        Ok(subscription) => {
+            while let Some(update) = subscription.next() {
+                match update {
+                    PositionUpdate::Position(pos) => {
+                        println!(
+                            "  account={} symbol={} qty={} avg_cost={}",
+                            pos.account, pos.contract.symbol, pos.position, pos.average_cost
+                        );
+                    }
+                    PositionUpdate::PositionEnd => {
+                        subscription.cancel();
+                        break;
+                    }
+                }
+            }
+        }
         Err(e) => {
             eprintln!("Failed to fetch positions: {}", e);
-            vec![]
         }
-    };
-
-    for pos in &positions {
-        println!(
-            "  account={} symbol={} qty={} avg_cost={}",
-            pos.account, pos.contract.symbol, pos.position, pos.average_cost
-        );
     }
 }

@@ -1,9 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
+use ibapi::accounts::types::AccountGroup;
+use ibapi::accounts::{AccountSummaryResult, AccountSummaryTags, PositionUpdate};
+use ibapi::client::sync::Client;
 use ibapi::contracts::Contract;
-use ibapi::orders::{Action, Order as IbOrder, OrderNotification};
-use ibapi::Client;
+use ibapi::messages::Notice;
+use ibapi::orders::{Action, CancelOrder, Order as IbOrder, PlaceOrder};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
@@ -37,8 +40,8 @@ pub fn set_min_order_id(min_id: i32) {
     }
 }
 
-/// Wrapper to allow ibapi::Client across thread boundaries.
-/// ibapi::Client uses RefCell internally (not Send/Sync).
+/// Wrapper to allow ibapi::client::sync::Client across thread boundaries.
+/// ibapi sync Client may use RefCell internally (not Send/Sync).
 /// We guarantee exclusive access through Mutex and only use it in spawn_blocking.
 struct IbClient(Client);
 
@@ -68,17 +71,17 @@ impl FillAccumulator {
         }
     }
 
-    /// Process an OrderNotification and accumulate fill data
-    fn process(&mut self, notification: &OrderNotification) {
+    /// Process a PlaceOrder response and accumulate fill data
+    fn process(&mut self, notification: &PlaceOrder) {
         match notification {
-            OrderNotification::OrderStatus(os) => {
+            PlaceOrder::OrderStatus(os) => {
                 self.status = os.status.clone();
                 if os.filled > 0.0 {
                     self.filled_qty = os.filled;
                     self.avg_price = os.average_fill_price;
                 }
             }
-            OrderNotification::ExecutionData(exec_data) => {
+            PlaceOrder::ExecutionData(exec_data) => {
                 info!(
                     "IBKR execution: shares={}, price={}, exec_id={}",
                     exec_data.execution.shares,
@@ -86,19 +89,22 @@ impl FillAccumulator {
                     exec_data.execution.execution_id
                 );
             }
-            OrderNotification::CommissionReport(report) => {
+            PlaceOrder::CommissionReport(report) => {
                 info!(
                     "IBKR commission: ${:.4} (exec_id: {})",
                     report.commission, report.execution_id
                 );
             }
-            _ => {}
+            PlaceOrder::OpenOrder(_) => {}
+            PlaceOrder::Message(notice) => {
+                log_notice("place_order", notice);
+            }
         }
     }
 
     /// Whether the order has reached a terminal state (no more updates expected).
-    /// Breaking on terminal status avoids holding the Mutex for the full 10-second
-    /// iterator timeout, reducing lock contention from ~10s to <1s per order.
+    /// Breaking on terminal status avoids holding the Mutex for the full iterator
+    /// timeout, reducing lock contention from ~10s to <1s per order.
     fn is_terminal(&self) -> bool {
         matches!(
             self.status.as_str(),
@@ -107,9 +113,25 @@ impl FillAccumulator {
     }
 }
 
+/// Log a Notice at the appropriate level based on its code.
+fn log_notice(context: &str, notice: &Notice) {
+    // IBKR notice codes >= 2000 are typically warnings/errors
+    if notice.code >= 2000 {
+        warn!(
+            "IBKR {} notice [{}]: {}",
+            context, notice.code, notice.message
+        );
+    } else {
+        info!(
+            "IBKR {} notice [{}]: {}",
+            context, notice.code, notice.message
+        );
+    }
+}
+
 impl IBKRTrader {
     /// Connect to IBKR TWS/Gateway.
-    /// ibapi::Client::connect is blocking, so we run it on spawn_blocking.
+    /// ibapi::client::sync::Client::connect is blocking, so we run it on spawn_blocking.
     pub async fn new(host: &str, port: u32, client_id: u32) -> Result<Self> {
         let addr = format!("{}:{}", host, port);
         info!("Connecting to IBKR at {}", addr);
@@ -138,14 +160,14 @@ impl IBKRTrader {
 
     fn build_contract(symbol: &str) -> Contract {
         let clean_symbol = symbol.strip_prefix("US.").unwrap_or(symbol);
-        Contract::stock(clean_symbol)
+        Contract::stock(clean_symbol).build()
     }
 
-    /// Execute an order and collect fill data from the response iterator.
+    /// Execute an order and collect fill data from the response subscription.
     ///
-    /// **Key optimization**: breaks the iterator loop as soon as a terminal status
-    /// (Filled/Cancelled/Inactive) is received, instead of waiting for the 10-second
-    /// ibapi iterator timeout. This reduces Mutex hold time from ~10s to <1s per order,
+    /// **Key optimization**: breaks the subscription loop as soon as a terminal status
+    /// (Filled/Cancelled/Inactive) is received, instead of waiting for the iterator
+    /// timeout. This reduces Mutex hold time from ~10s to <1s per order,
     /// preventing cascading delays when multiple orders are placed concurrently.
     fn execute_order(
         client: &Arc<Mutex<IbClient>>,
@@ -161,19 +183,20 @@ impl IBKRTrader {
         let mut fill = FillAccumulator::new();
 
         match guard.0.place_order(order_id, contract, order) {
-            Ok(responses) => {
-                for resp in responses {
+            Ok(subscription) => {
+                while let Some(resp) = subscription.next() {
                     info!("IBKR order {} response: {:?}", order_id, resp);
                     fill.process(&resp);
 
                     // Break immediately on terminal status to release the Mutex.
-                    // Without this, we hold the lock for the full 10-second iterator
+                    // Without this, we hold the lock for the full iterator
                     // timeout after the last message, blocking all other orders.
                     if fill.is_terminal() {
                         info!(
                             "IBKR order {} reached terminal status: {} (filled={}, avg={})",
                             order_id, fill.status, fill.filled_qty, fill.avg_price
                         );
+                        subscription.cancel();
                         break;
                     }
                 }
@@ -311,9 +334,23 @@ impl Trader for IBKRTrader {
                 .lock()
                 .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
             match guard.0.cancel_order(oid, "") {
-                Ok(responses) => {
-                    for resp in responses {
-                        info!("IBKR cancel response: {:?}", resp);
+                Ok(subscription) => {
+                    while let Some(resp) = subscription.next() {
+                        match &resp {
+                            CancelOrder::OrderStatus(os) => {
+                                info!("IBKR cancel order {} status: {}", oid, os.status);
+                                if matches!(
+                                    os.status.as_str(),
+                                    "Cancelled" | "ApiCancelled" | "Inactive"
+                                ) {
+                                    subscription.cancel();
+                                    break;
+                                }
+                            }
+                            CancelOrder::Notice(notice) => {
+                                log_notice("cancel_order", notice);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -336,16 +373,24 @@ impl Trader for IBKRTrader {
                 .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
             let mut result = Vec::new();
             match guard.0.positions() {
-                Ok(pos_iter) => {
-                    for pos in pos_iter {
-                        result.push(BrokerPosition {
-                            symbol: pos.contract.symbol.clone(),
-                            quantity: pos.position,
-                            avg_cost: pos.average_cost,
-                            market_value: pos.position * pos.average_cost,
-                            unrealized_pnl: 0.0,
-                            account: pos.account.clone(),
-                        });
+                Ok(subscription) => {
+                    while let Some(update) = subscription.next() {
+                        match update {
+                            PositionUpdate::Position(pos) => {
+                                result.push(BrokerPosition {
+                                    symbol: pos.contract.symbol.to_string(),
+                                    quantity: pos.position,
+                                    avg_cost: pos.average_cost,
+                                    market_value: pos.position * pos.average_cost,
+                                    unrealized_pnl: 0.0,
+                                    account: pos.account.clone(),
+                                });
+                            }
+                            PositionUpdate::PositionEnd => {
+                                subscription.cancel();
+                                break;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -360,17 +405,55 @@ impl Trader for IBKRTrader {
     }
 
     async fn get_account_summary(&self) -> Result<AccountSummary> {
-        let positions = self.get_positions().await?;
-        let total_value: f64 = positions
-            .iter()
-            .map(|p| p.quantity.abs() * p.avg_cost)
-            .sum();
+        let client = self.client.clone();
 
-        Ok(AccountSummary {
-            net_liquidation: total_value,
-            cash: 0.0,
-            buying_power: 0.0,
-            currency: "USD".to_string(),
+        tokio::task::spawn_blocking(move || -> Result<AccountSummary> {
+            let guard = client
+                .lock()
+                .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
+
+            let tags = &[
+                AccountSummaryTags::NET_LIQUIDATION,
+                AccountSummaryTags::TOTAL_CASH_VALUE,
+                AccountSummaryTags::BUYING_POWER,
+            ];
+            let group = AccountGroup("All".to_string());
+            let subscription = guard
+                .0
+                .account_summary(&group, tags)
+                .map_err(|e| anyhow::anyhow!("IBKR account_summary: {}", e))?;
+
+            let mut summary = AccountSummary {
+                currency: "USD".to_string(),
+                ..Default::default()
+            };
+
+            while let Some(update) = subscription.next() {
+                match update {
+                    AccountSummaryResult::Summary(s) => match s.tag.as_str() {
+                        "NetLiquidation" => {
+                            summary.net_liquidation = s.value.parse().unwrap_or(0.0);
+                            if !s.currency.is_empty() {
+                                summary.currency = s.currency.clone();
+                            }
+                        }
+                        "TotalCashValue" => {
+                            summary.cash = s.value.parse().unwrap_or(0.0);
+                        }
+                        "BuyingPower" => {
+                            summary.buying_power = s.value.parse().unwrap_or(0.0);
+                        }
+                        _ => {}
+                    },
+                    AccountSummaryResult::End => {
+                        subscription.cancel();
+                        break;
+                    }
+                }
+            }
+
+            Ok(summary)
         })
+        .await?
     }
 }

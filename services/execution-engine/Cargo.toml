@@ -25,8 +25,8 @@ reqwest = { version = "0.11", features = ["json"] }
 # Database (trade persistence — using tokio-postgres directly to avoid sqlx/Solana SDK dep conflicts)
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1"] }
 
-# IBKR (0.1 — will upgrade to 2.5 in Phase 5)
-ibapi = "0.1"
+# IBKR (sync feature avoids tokio 1.41+ dep that conflicts with Solana SDK tokio ~1.14)
+ibapi = { version = "2.8", default-features = false, features = ["sync"] }
 
 # Solana
 solana-client = "1.18"

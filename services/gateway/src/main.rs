@@ -1079,11 +1079,11 @@ async fn update_trading_account(
 
 async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> {
     use sqlx::Row;
+    // Uses cached IBKR values (cached_cash, cached_net_liq) when available,
+    // falling back to computed values from initial_capital + trade_executions.
     let query = "\
         WITH trade_cash AS ( \
             SELECT o.account_id, \
-                   SUM(CASE WHEN o.side IN ('Sell','SELL') THEN e.price * e.quantity \
-                            ELSE -(e.price * e.quantity) END) as net_trade_cash, \
                    SUM(COALESCE(e.commission, 0)) as total_commissions, \
                    COUNT(DISTINCT e.execution_id)::INTEGER as total_trades \
             FROM trade_executions e \
@@ -1113,9 +1113,10 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
                COALESCE(ps.total_cost_basis, 0) as total_cost_basis, \
                COALESCE(ps.total_market_value, 0) as total_market_value, \
                COALESCE(ps.unrealized_pnl, 0) as unrealized_pnl, \
-               (ta.initial_capital + COALESCE(tc.net_trade_cash, 0) - COALESCE(tc.total_commissions, 0)) as cash_balance, \
-               (ta.initial_capital + COALESCE(tc.net_trade_cash, 0) - COALESCE(tc.total_commissions, 0) \
-                + COALESCE(ps.total_market_value, 0)) as net_liquidation, \
+               COALESCE(ta.cached_cash, 0) as cash_balance, \
+               COALESCE(ta.cached_net_liq, 0) as net_liquidation, \
+               COALESCE(ta.cached_buying_power, 0) as buying_power, \
+               ta.cache_updated_at, \
                COALESCE(tc.total_commissions, 0) as total_commissions, \
                COALESCE(tc.total_trades, 0) as total_trades \
         FROM trading_accounts ta \
@@ -1144,6 +1145,8 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
                         "unrealized_pnl": row.get::<sqlx::types::Decimal, _>("unrealized_pnl").to_string(),
                         "cash_balance": row.get::<sqlx::types::Decimal, _>("cash_balance").to_string(),
                         "net_liquidation": row.get::<sqlx::types::Decimal, _>("net_liquidation").to_string(),
+                        "buying_power": row.get::<sqlx::types::Decimal, _>("buying_power").to_string(),
+                        "cache_updated_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("cache_updated_at").map(|t| t.to_rfc3339()),
                         "total_commissions": row.get::<sqlx::types::Decimal, _>("total_commissions").to_string(),
                         "total_trades": row.get::<i32, _>("total_trades"),
                     })

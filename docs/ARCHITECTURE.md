@@ -104,7 +104,7 @@ graph TD
   - Routes signals by exchange/symbol format: Polygon → IBKR, US/HK/SH/SZ → Futu, SOL/base58 → Solana.
   - Executes trades across multiple venues:
     - **Raydium** (Solana DEX): On-chain swaps with ATA management, wSOL wrapping.
-    - **IBKR** (US equities): Via `ibapi` crate v0.1 (blocking, wrapped in `spawn_blocking`). Supports Market/Limit/MOC orders. Fill accumulation from `OrderNotification` stream.
+    - **IBKR** (US equities): Via `ibapi` crate v2.8+ (sync feature, wrapped in `spawn_blocking`). Supports Market/Limit/MOC orders. Fill accumulation from `PlaceOrder` subscription. Real account data via `account_summary()` cached to DB every 30s.
     - **Futu** (HK stocks): Via futu-bridge HTTP bridge.
   - **Risk Engine** (`StockRiskEngine`): Pre-trade checks for order value ($2000 max), position count (5 max), daily loss cap ($500), duplicate signal detection.
   - **Trade Recording**: Persists to 3 tables — `trade_orders`, `trade_executions`, `trade_positions` (UPSERT for cumulative position tracking).
@@ -446,7 +446,7 @@ Strategy Engine                    Execution Engine                       Databa
 | **Strategy Engine** | Production | 90% | VM execution, stock signal routing, risk checks, portfolio management |
 | **Strategy Generator** | Production | 90% | GA evolution, dual-mode (LO/LS), K-fold CV, OOS validation, resume logic |
 | **Backtest Engine** | Production | 95% | 10+ factors, stack VM, detailed simulation, equity curve |
-| **Execution Engine** | Functional | 70% | IBKR/Futu/Solana routing, risk engine, trade recording. Missing: account sync, modern API |
+| **Execution Engine** | Functional | 80% | IBKR/Futu/Solana routing, risk engine, trade recording, real-time IBKR account sync via ibapi v2.8+ |
 | **User Management** | Active | 80% | JWT auth, RBAC, multi-tenancy |
 | **Futu Bridge** | Active | 85% | HK stock bridge via OpenD |
 | **Web Frontend** | Active | 75% | Strategy Lab, Market Overview, Trade Panel (stub). Missing: IBKR account UI |
@@ -454,8 +454,8 @@ Strategy Engine                    Execution Engine                       Databa
 
 ### Known Gaps
 
-1. **IBKR ibapi v0.1**: Blocking API, no async support, limited error handling. Planned upgrade to v2.5+.
-2. **Account sync**: No real-time portfolio/balance sync from IBKR — only tracks from execution callbacks.
+1. ~~**IBKR ibapi v0.1**~~: Upgraded to ibapi v2.8+ (sync feature). Supports `account_summary()`, `positions()` subscriptions, and `PlaceOrder`/`CancelOrder` subscription-based responses.
+2. ~~**Account sync**~~: Resolved. Execution-engine queries real IBKR account data (net liquidation, cash, buying power) every 30s and caches in `trading_accounts`.
 3. **Paper trading toggle**: No runtime switch between paper/live; configured via port number only.
 4. **Frontend trading UI**: `TradeExecutionPanel.tsx` is a stub (display-only, no controls).
 5. **Gateway IBKR endpoints**: No `/api/v1/ibkr/account`, `/positions`, `/orders` REST endpoints.
@@ -530,4 +530,4 @@ Strategy Engine                    Execution Engine                       Databa
 1. Redis Pub/Sub decouples signal generation from execution — services can restart independently.
 2. Risk engine as a pre-trade gate prevents runaway order submission.
 3. Three-table recording (orders → executions → positions) provides full audit trail.
-4. `ibapi` v0.1's blocking API is wrapped in `spawn_blocking` to avoid blocking the Tokio runtime. Planned upgrade to async-native API.
+4. `ibapi` v2.8's sync API is wrapped in `spawn_blocking` to avoid blocking the Tokio runtime. The sync feature uses crossbeam instead of tokio, avoiding Solana SDK tokio version conflicts.

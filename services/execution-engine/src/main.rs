@@ -245,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
     // ========================================
     if let Some(trader) = ibkr_long_only.clone().or_else(|| ibkr_long_short.clone()) {
         let redis_url_clone = redis_url.clone();
+        let db_for_sync = db.clone();
 
         tokio::spawn(async move {
             info!("Starting IBKR Portfolio Sync Task...");
@@ -283,6 +284,29 @@ async fn main() -> anyhow::Result<()> {
 
                 if let Ok(json) = serde_json::to_string(&update) {
                     let _: std::result::Result<(), _> = con.publish("portfolio_updates", json);
+                }
+
+                // Write cached broker data to trading_accounts table.
+                // The account_summary "All" group returns data for all accounts;
+                // for now we write the aggregate to all IBKR accounts.
+                // When IBKR returns per-account breakdowns, refine this mapping.
+                if let Some(ref db_client) = db_for_sync {
+                    let res = db_client
+                        .execute(
+                            "UPDATE trading_accounts \
+                             SET cached_net_liq = $1, cached_cash = $2, cached_buying_power = $3, \
+                                 cache_updated_at = NOW() \
+                             WHERE broker = 'IBKR'",
+                            &[
+                                &account.net_liquidation,
+                                &account.cash,
+                                &account.buying_power,
+                            ],
+                        )
+                        .await;
+                    if let Err(e) = res {
+                        warn!("Failed to update cached broker data: {}", e);
+                    }
                 }
 
                 tokio::time::sleep(Duration::from_secs(30)).await;
