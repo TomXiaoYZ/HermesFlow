@@ -181,13 +181,22 @@ impl Trader for IBKRTrader {
                 BrokerOrderType::MarketOnClose => "MOC".to_string(),
             },
             limit_price: params.limit_price,
+            account: params.account.clone().unwrap_or_default(),
             order_id,
             ..Default::default()
         };
 
         info!(
-            "IBKR BUY: {} x{} ({}) order_id={}",
-            symbol, quantity, order.order_type, order_id
+            "IBKR BUY: {} x{} ({}) order_id={} account={}",
+            symbol,
+            quantity,
+            order.order_type,
+            order_id,
+            if order.account.is_empty() {
+                "default"
+            } else {
+                &order.account
+            }
         );
 
         let client = self.client.clone();
@@ -221,13 +230,22 @@ impl Trader for IBKRTrader {
                 BrokerOrderType::MarketOnClose => "MOC".to_string(),
             },
             limit_price: params.limit_price,
+            account: params.account.clone().unwrap_or_default(),
             order_id,
             ..Default::default()
         };
 
         info!(
-            "IBKR SELL: {} x{} ({}) order_id={}",
-            symbol, quantity, order.order_type, order_id
+            "IBKR SELL: {} x{} ({}) order_id={} account={}",
+            symbol,
+            quantity,
+            order.order_type,
+            order_id,
+            if order.account.is_empty() {
+                "default"
+            } else {
+                &order.account
+            }
         );
 
         let client = self.client.clone();
@@ -292,6 +310,7 @@ impl Trader for IBKRTrader {
                             avg_cost: pos.average_cost,
                             market_value: pos.position * pos.average_cost,
                             unrealized_pnl: 0.0,
+                            account: pos.account.clone(),
                         });
                     }
                 }

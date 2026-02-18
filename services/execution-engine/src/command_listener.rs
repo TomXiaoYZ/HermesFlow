@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use common::events::{OrderStatus, OrderUpdate, TradeSignal};
 use redis::Commands;
+use std::env;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -27,11 +28,28 @@ pub struct CommandListener {
     pub solana_trader: Option<Arc<SolanaTrader>>,
     pub ibkr_trader: Option<Arc<IBKRTrader>>,
     pub futu_trader: Option<Arc<FutuTrader>>,
+    /// IBKR sub-account ID for long_only mode (env: IBKR_ACCOUNT_LONG_ONLY)
+    ibkr_account_long_only: Option<String>,
+    /// IBKR sub-account ID for long_short mode (env: IBKR_ACCOUNT_LONG_SHORT)
+    ibkr_account_long_short: Option<String>,
 }
 
 impl CommandListener {
     pub fn new(redis_url: &str, db: Option<Arc<PgClient>>) -> Result<Self> {
         let client = redis::Client::open(redis_url)?;
+        let acct_lo = env::var("IBKR_ACCOUNT_LONG_ONLY")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let acct_ls = env::var("IBKR_ACCOUNT_LONG_SHORT")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        info!(
+            "IBKR account routing: long_only={}, long_short={}",
+            acct_lo.as_deref().unwrap_or("(default)"),
+            acct_ls.as_deref().unwrap_or("(default)")
+        );
+
         Ok(Self {
             client,
             db,
@@ -39,6 +57,8 @@ impl CommandListener {
             solana_trader: None,
             ibkr_trader: None,
             futu_trader: None,
+            ibkr_account_long_only: acct_lo,
+            ibkr_account_long_short: acct_ls,
         })
     }
 
@@ -82,16 +102,23 @@ impl CommandListener {
         BrokerRoute::Ibkr
     }
 
-    fn build_order_params(signal: &TradeSignal) -> OrderParams {
+    fn build_order_params(&self, signal: &TradeSignal) -> OrderParams {
         let order_type = match signal.order_type {
             common::events::OrderType::Market => BrokerOrderType::Market,
             common::events::OrderType::Limit => BrokerOrderType::Limit,
+        };
+
+        let account = match signal.mode.as_deref() {
+            Some("long_only") => self.ibkr_account_long_only.clone(),
+            Some("long_short") => self.ibkr_account_long_short.clone(),
+            _ => None,
         };
 
         OrderParams {
             order_type,
             limit_price: signal.price,
             time_in_force: TimeInForce::Day,
+            account,
         }
     }
 
@@ -290,7 +317,7 @@ impl CommandListener {
             );
 
             let route = Self::route_signal(&signal);
-            let params = Self::build_order_params(&signal);
+            let params = self.build_order_params(&signal);
 
             // Pre-trade risk check for IBKR orders
             if route == BrokerRoute::Ibkr {

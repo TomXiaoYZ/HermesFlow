@@ -14,6 +14,10 @@ pub struct OrderParams {
     pub order_type: BrokerOrderType,
     pub limit_price: Option<f64>,
     pub time_in_force: TimeInForce,
+    /// IBKR account ID to route the order to (for FA/sub-account setups).
+    /// When set, the order's `account` field is populated so IBKR routes it
+    /// to the correct sub-account. Ignored by non-IBKR brokers.
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +62,9 @@ pub struct BrokerPosition {
     pub avg_cost: f64,
     pub market_value: f64,
     pub unrealized_pnl: f64,
+    /// IBKR account that holds this position (empty for non-IBKR brokers).
+    #[serde(default)]
+    pub account: String,
 }
 
 /// Unified trader trait for all brokers (IBKR, Futu, Solana, etc.)
@@ -78,6 +85,7 @@ impl Default for OrderParams {
             order_type: BrokerOrderType::Market,
             limit_price: None,
             time_in_force: TimeInForce::Day,
+            account: None,
         }
     }
 }

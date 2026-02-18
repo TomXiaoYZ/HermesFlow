@@ -212,6 +212,7 @@ impl Trader for FutuTrader {
                 avg_cost: p.avg_cost,
                 market_value: p.market_value,
                 unrealized_pnl: p.unrealized_pnl,
+                account: String::new(),
             })
             .collect())
     }
