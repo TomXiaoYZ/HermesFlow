@@ -79,31 +79,59 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ========================================
-    // 2. Initialize IBKR Trader
+    // 2. Initialize IBKR Traders (one per mode)
     // ========================================
     let ibkr_host = env::var("IBKR_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let ibkr_port: u32 = env::var("IBKR_PORT")
         .unwrap_or_else(|_| "7497".to_string())
         .parse()
         .unwrap_or(7497);
-    let ibkr_client_id: u32 = env::var("IBKR_CLIENT_ID")
+    let ibkr_client_id_lo: u32 = env::var("IBKR_CLIENT_ID_LONG_ONLY")
         .unwrap_or_else(|_| "1".to_string())
         .parse()
         .unwrap_or(1);
+    let ibkr_client_id_ls: u32 = env::var("IBKR_CLIENT_ID_LONG_SHORT")
+        .unwrap_or_else(|_| "2".to_string())
+        .parse()
+        .unwrap_or(2);
 
     info!(
-        "Initializing IBKR Trader ({}:{}, client_id={})...",
-        ibkr_host, ibkr_port, ibkr_client_id
+        "Initializing IBKR Trader long_only ({}:{}, client_id={})...",
+        ibkr_host, ibkr_port, ibkr_client_id_lo
     );
-    let ibkr = match IBKRTrader::new(&ibkr_host, ibkr_port, ibkr_client_id).await {
+    let ibkr_long_only = match IBKRTrader::new(&ibkr_host, ibkr_port, ibkr_client_id_lo).await {
         Ok(t) => {
-            info!("IBKR Trader connected");
+            info!(
+                "IBKR Trader long_only connected (client_id={})",
+                ibkr_client_id_lo
+            );
             Some(Arc::new(t))
         }
         Err(e) => {
             warn!(
-                "IBKR Trader not available (TWS/Gateway not running?): {}",
-                e
+                "IBKR Trader long_only not available (client_id={}): {}",
+                ibkr_client_id_lo, e
+            );
+            None
+        }
+    };
+
+    info!(
+        "Initializing IBKR Trader long_short ({}:{}, client_id={})...",
+        ibkr_host, ibkr_port, ibkr_client_id_ls
+    );
+    let ibkr_long_short = match IBKRTrader::new(&ibkr_host, ibkr_port, ibkr_client_id_ls).await {
+        Ok(t) => {
+            info!(
+                "IBKR Trader long_short connected (client_id={})",
+                ibkr_client_id_ls
+            );
+            Some(Arc::new(t))
+        }
+        Err(e) => {
+            warn!(
+                "IBKR Trader long_short not available (client_id={}): {}",
+                ibkr_client_id_ls, e
             );
             None
         }
@@ -152,11 +180,17 @@ async fn main() -> anyhow::Result<()> {
     // 4. Setup Command Listener
     // ========================================
     let mut listener = CommandListener::new(&redis_url, db.clone())?;
-    listener.set_traders(solana.clone(), ibkr.clone(), futu.clone());
+    listener.set_traders(
+        solana.clone(),
+        ibkr_long_only.clone(),
+        ibkr_long_short.clone(),
+        futu.clone(),
+    );
 
     // Record status before moves
     let solana_on = solana.is_some();
-    let ibkr_on = ibkr.is_some();
+    let ibkr_lo_on = ibkr_long_only.is_some();
+    let ibkr_ls_on = ibkr_long_short.is_some();
     let futu_on = futu.is_some();
 
     // ========================================
@@ -207,9 +241,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ========================================
-    // 6. Background: IBKR Portfolio Sync
+    // 6. Background: IBKR Portfolio Sync (uses long_only trader; both see all accounts)
     // ========================================
-    if let Some(trader) = ibkr.clone() {
+    if let Some(trader) = ibkr_long_only.clone().or_else(|| ibkr_long_short.clone()) {
         let redis_url_clone = redis_url.clone();
 
         tokio::spawn(async move {
@@ -307,9 +341,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ========================================
-    // 6c. Background: IBKR Position Reconciliation
+    // 6c. Background: IBKR Position Reconciliation (either trader sees all positions)
     // ========================================
-    if let (Some(trader), Some(ref db_client)) = (ibkr.clone(), &db) {
+    let ibkr_for_recon = ibkr_long_only.clone().or_else(|| ibkr_long_short.clone());
+    if let (Some(trader), Some(ref db_client)) = (ibkr_for_recon, &db) {
         reconciliation::spawn_reconciliation_task(
             trader,
             Arc::clone(db_client),
@@ -324,9 +359,10 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Execution Engine Ready. Listening for signals...");
     info!(
-        "  Solana: {}  |  IBKR: {}  |  Futu: {}",
+        "  Solana: {}  |  IBKR long_only: {}  |  IBKR long_short: {}  |  Futu: {}",
         if solana_on { "ON" } else { "OFF" },
-        if ibkr_on { "ON" } else { "OFF" },
+        if ibkr_lo_on { "ON" } else { "OFF" },
+        if ibkr_ls_on { "ON" } else { "OFF" },
         if futu_on { "ON" } else { "OFF" },
     );
 

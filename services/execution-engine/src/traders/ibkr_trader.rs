@@ -95,6 +95,16 @@ impl FillAccumulator {
             _ => {}
         }
     }
+
+    /// Whether the order has reached a terminal state (no more updates expected).
+    /// Breaking on terminal status avoids holding the Mutex for the full 10-second
+    /// iterator timeout, reducing lock contention from ~10s to <1s per order.
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self.status.as_str(),
+            "Filled" | "Cancelled" | "Inactive" | "ApiCancelled"
+        )
+    }
 }
 
 impl IBKRTrader {
@@ -131,7 +141,12 @@ impl IBKRTrader {
         Contract::stock(clean_symbol)
     }
 
-    /// Execute an order and collect fill data from the response iterator
+    /// Execute an order and collect fill data from the response iterator.
+    ///
+    /// **Key optimization**: breaks the iterator loop as soon as a terminal status
+    /// (Filled/Cancelled/Inactive) is received, instead of waiting for the 10-second
+    /// ibapi iterator timeout. This reduces Mutex hold time from ~10s to <1s per order,
+    /// preventing cascading delays when multiple orders are placed concurrently.
     fn execute_order(
         client: &Arc<Mutex<IbClient>>,
         order_id: i32,
@@ -148,14 +163,33 @@ impl IBKRTrader {
         match guard.0.place_order(order_id, contract, order) {
             Ok(responses) => {
                 for resp in responses {
-                    info!("IBKR order response: {:?}", resp);
+                    info!("IBKR order {} response: {:?}", order_id, resp);
                     fill.process(&resp);
+
+                    // Break immediately on terminal status to release the Mutex.
+                    // Without this, we hold the lock for the full 10-second iterator
+                    // timeout after the last message, blocking all other orders.
+                    if fill.is_terminal() {
+                        info!(
+                            "IBKR order {} reached terminal status: {} (filled={}, avg={})",
+                            order_id, fill.status, fill.filled_qty, fill.avg_price
+                        );
+                        break;
+                    }
                 }
             }
             Err(e) => {
                 error!("IBKR place_order failed for {}: {}", symbol, e);
                 return Err(anyhow::anyhow!("IBKR place_order error: {}", e));
             }
+        }
+
+        if !fill.is_terminal() {
+            warn!(
+                "IBKR order {} for {} ended with non-terminal status: {} \
+                 (fill will be captured by reconciliation)",
+                order_id, symbol, fill.status
+            );
         }
 
         Ok(fill)

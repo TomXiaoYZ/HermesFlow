@@ -26,7 +26,10 @@ pub struct CommandListener {
     db: Option<Arc<PgClient>>,
     risk: StockRiskEngine,
     pub solana_trader: Option<Arc<SolanaTrader>>,
-    pub ibkr_trader: Option<Arc<IBKRTrader>>,
+    /// IBKRTrader for long_only mode (client_id from IBKR_CLIENT_ID_LONG_ONLY)
+    pub ibkr_long_only_trader: Option<Arc<IBKRTrader>>,
+    /// IBKRTrader for long_short mode (client_id from IBKR_CLIENT_ID_LONG_SHORT)
+    pub ibkr_long_short_trader: Option<Arc<IBKRTrader>>,
     pub futu_trader: Option<Arc<FutuTrader>>,
     /// IBKR sub-account ID for long_only mode (env: IBKR_ACCOUNT_LONG_ONLY)
     ibkr_account_long_only: Option<String>,
@@ -55,7 +58,8 @@ impl CommandListener {
             db,
             risk: StockRiskEngine::new(),
             solana_trader: None,
-            ibkr_trader: None,
+            ibkr_long_only_trader: None,
+            ibkr_long_short_trader: None,
             futu_trader: None,
             ibkr_account_long_only: acct_lo,
             ibkr_account_long_short: acct_ls,
@@ -65,11 +69,13 @@ impl CommandListener {
     pub fn set_traders(
         &mut self,
         solana: Option<Arc<SolanaTrader>>,
-        ibkr: Option<Arc<IBKRTrader>>,
+        ibkr_long_only: Option<Arc<IBKRTrader>>,
+        ibkr_long_short: Option<Arc<IBKRTrader>>,
         futu: Option<Arc<FutuTrader>>,
     ) {
         self.solana_trader = solana;
-        self.ibkr_trader = ibkr;
+        self.ibkr_long_only_trader = ibkr_long_only;
+        self.ibkr_long_short_trader = ibkr_long_short;
         self.futu_trader = futu;
     }
 
@@ -394,7 +400,11 @@ impl CommandListener {
                 }
 
                 BrokerRoute::Ibkr => {
-                    if let Some(trader) = &self.ibkr_trader {
+                    let ibkr_trader = match signal.mode.as_deref() {
+                        Some("long_short") => self.ibkr_long_short_trader.as_ref(),
+                        _ => self.ibkr_long_only_trader.as_ref(),
+                    };
+                    if let Some(trader) = ibkr_trader {
                         let trader = trader.clone();
                         let sig = signal.clone();
                         let redis_client = self.client.clone();
@@ -458,11 +468,13 @@ impl CommandListener {
                             }
                         });
                     } else {
+                        let mode = signal.mode.as_deref().unwrap_or("long_only");
                         warn!(
-                            "No IBKR trader configured, rejecting signal for {}",
-                            signal.symbol
+                            "No IBKR trader configured for mode '{}', rejecting signal for {}",
+                            mode, signal.symbol
                         );
-                        let update = Self::make_failed_update(&signal, "No IBKR trader configured");
+                        let msg = format!("No IBKR trader configured for mode '{}'", mode);
+                        let update = Self::make_failed_update(&signal, &msg);
                         if let Err(e) = self.publish_update(&update) {
                             error!("Failed to publish no-trader rejection: {}", e);
                         }
