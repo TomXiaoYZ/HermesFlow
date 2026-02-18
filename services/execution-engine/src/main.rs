@@ -241,79 +241,123 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ========================================
-    // 6. Background: IBKR Portfolio Sync (uses long_only trader; both see all accounts)
+    // 6. Background: IBKR Portfolio Sync (queries both traders for per-account data)
     // ========================================
-    if let Some(trader) = ibkr_long_only.clone().or_else(|| ibkr_long_short.clone()) {
-        let redis_url_clone = redis_url.clone();
-        let db_for_sync = db.clone();
+    {
+        // Collect all available IBKR traders for account summary queries.
+        // Each client connection only sees its own sub-account.
+        let traders: Vec<Arc<IBKRTrader>> = [ibkr_long_only.clone(), ibkr_long_short.clone()]
+            .into_iter()
+            .flatten()
+            .collect();
 
-        tokio::spawn(async move {
-            info!("Starting IBKR Portfolio Sync Task...");
-            let client = match redis::Client::open(redis_url_clone.as_str()) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Failed to create Redis client for IBKR sync: {}", e);
-                    return;
-                }
-            };
-            let mut con = match client.get_connection() {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Failed to connect to Redis for IBKR sync: {}", e);
-                    return;
-                }
-            };
+        if !traders.is_empty() {
+            let redis_url_clone = redis_url.clone();
+            let db_for_sync = db.clone();
 
-            loop {
-                let account = trader.get_account_summary().await.unwrap_or_default();
-                let positions = trader.get_positions().await.unwrap_or_default();
-
-                let update = PortfolioUpdate {
-                    timestamp: Utc::now(),
-                    cash: account.cash,
-                    positions: positions
-                        .iter()
-                        .map(|p| PositionUpdate {
-                            symbol: p.symbol.clone(),
-                            quantity: p.quantity,
-                            market_value: p.market_value,
-                        })
-                        .collect(),
-                    total_equity: account.net_liquidation,
+            tokio::spawn(async move {
+                info!(
+                    "Starting IBKR Portfolio Sync Task ({} traders)...",
+                    traders.len()
+                );
+                let client = match redis::Client::open(redis_url_clone.as_str()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to create Redis client for IBKR sync: {}", e);
+                        return;
+                    }
+                };
+                let mut con = match client.get_connection() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to connect to Redis for IBKR sync: {}", e);
+                        return;
+                    }
                 };
 
-                if let Ok(json) = serde_json::to_string(&update) {
-                    let _: std::result::Result<(), _> = con.publish("portfolio_updates", json);
-                }
-
-                // Write cached broker data to trading_accounts table.
-                // The account_summary "All" group returns data for all accounts;
-                // for now we write the aggregate to all IBKR accounts.
-                // When IBKR returns per-account breakdowns, refine this mapping.
-                if let Some(ref db_client) = db_for_sync {
-                    let res = db_client
-                        .execute(
-                            "UPDATE trading_accounts \
-                             SET cached_net_liq = $1::float8, \
-                                 cached_cash = $2::float8, \
-                                 cached_buying_power = $3::float8, \
-                                 cache_updated_at = NOW() \
-                             WHERE broker = 'IBKR'",
-                            &[
-                                &account.net_liquidation,
-                                &account.cash,
-                                &account.buying_power,
-                            ],
-                        )
-                        .await;
-                    if let Err(e) = res {
-                        warn!("Failed to update cached broker data: {}", e);
+                loop {
+                    // Query each trader for its account summary (each sees its own sub-account)
+                    let mut all_summaries = std::collections::HashMap::new();
+                    for trader in &traders {
+                        match trader.get_account_summaries().await {
+                            Ok(sums) => {
+                                for (acct, summary) in sums {
+                                    all_summaries.insert(acct, summary);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("IBKR account_summaries failed: {}", e);
+                            }
+                        }
                     }
-                }
 
-                tokio::time::sleep(Duration::from_secs(30)).await;
-            }
-        });
+                    // Positions from any one trader (all see the same positions across accounts)
+                    let positions = traders[0].get_positions().await.unwrap_or_default();
+
+                    // Aggregate for Redis portfolio update
+                    let (total_cash, total_equity) = all_summaries
+                        .values()
+                        .fold((0.0, 0.0), |(c, e), s| (c + s.cash, e + s.net_liquidation));
+
+                    let update = PortfolioUpdate {
+                        timestamp: Utc::now(),
+                        cash: total_cash,
+                        positions: positions
+                            .iter()
+                            .map(|p| PositionUpdate {
+                                symbol: p.symbol.clone(),
+                                quantity: p.quantity,
+                                market_value: p.market_value,
+                            })
+                            .collect(),
+                        total_equity,
+                    };
+
+                    if let Ok(json) = serde_json::to_string(&update) {
+                        let _: std::result::Result<(), _> = con.publish("portfolio_updates", json);
+                    }
+
+                    // Write per-account cached broker data to trading_accounts table
+                    if let Some(ref db_client) = db_for_sync {
+                        info!(
+                            "IBKR sync: {} accounts: {:?}",
+                            all_summaries.len(),
+                            all_summaries.keys().collect::<Vec<_>>()
+                        );
+                        for (acct_id, summary) in &all_summaries {
+                            info!(
+                                "  {} => net_liq={:.2}, cash={:.2}, buying_power={:.2}",
+                                acct_id,
+                                summary.net_liquidation,
+                                summary.cash,
+                                summary.buying_power
+                            );
+                            let res = db_client
+                                .execute(
+                                    "UPDATE trading_accounts \
+                                     SET cached_net_liq = $1::float8, \
+                                         cached_cash = $2::float8, \
+                                         cached_buying_power = $3::float8, \
+                                         cache_updated_at = NOW() \
+                                     WHERE broker_account = $4",
+                                    &[
+                                        &summary.net_liquidation,
+                                        &summary.cash,
+                                        &summary.buying_power,
+                                        acct_id,
+                                    ],
+                                )
+                                .await;
+                            if let Err(e) = res {
+                                warn!("Failed to update cached broker data for {}: {}", acct_id, e);
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+            });
+        }
     }
 
     // ========================================

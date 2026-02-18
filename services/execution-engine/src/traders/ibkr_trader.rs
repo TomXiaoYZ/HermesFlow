@@ -7,6 +7,7 @@ use ibapi::client::sync::Client;
 use ibapi::contracts::Contract;
 use ibapi::messages::Notice;
 use ibapi::orders::{Action, CancelOrder, Order as IbOrder, PlaceOrder};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
@@ -453,6 +454,66 @@ impl Trader for IBKRTrader {
             }
 
             Ok(summary)
+        })
+        .await?
+    }
+
+    async fn get_account_summaries(&self) -> Result<HashMap<String, AccountSummary>> {
+        let client = self.client.clone();
+
+        tokio::task::spawn_blocking(move || -> Result<HashMap<String, AccountSummary>> {
+            let guard = client
+                .lock()
+                .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
+
+            let tags = &[
+                AccountSummaryTags::NET_LIQUIDATION,
+                AccountSummaryTags::TOTAL_CASH_VALUE,
+                AccountSummaryTags::BUYING_POWER,
+            ];
+            let group = AccountGroup("All".to_string());
+            let subscription = guard
+                .0
+                .account_summary(&group, tags)
+                .map_err(|e| anyhow::anyhow!("IBKR account_summaries: {}", e))?;
+
+            let mut summaries: HashMap<String, AccountSummary> = HashMap::new();
+
+            while let Some(update) = subscription.next() {
+                match update {
+                    AccountSummaryResult::Summary(s) => {
+                        let entry =
+                            summaries
+                                .entry(s.account.clone())
+                                .or_insert_with(|| AccountSummary {
+                                    currency: if s.currency.is_empty() {
+                                        "USD".to_string()
+                                    } else {
+                                        s.currency.clone()
+                                    },
+                                    ..Default::default()
+                                });
+                        match s.tag.as_str() {
+                            "NetLiquidation" => {
+                                entry.net_liquidation = s.value.parse().unwrap_or(0.0);
+                            }
+                            "TotalCashValue" => {
+                                entry.cash = s.value.parse().unwrap_or(0.0);
+                            }
+                            "BuyingPower" => {
+                                entry.buying_power = s.value.parse().unwrap_or(0.0);
+                            }
+                            _ => {}
+                        }
+                    }
+                    AccountSummaryResult::End => {
+                        subscription.cancel();
+                        break;
+                    }
+                }
+            }
+
+            Ok(summaries)
         })
         .await?
     }
