@@ -294,7 +294,9 @@ async fn main() -> anyhow::Result<()> {
                     let res = db_client
                         .execute(
                             "UPDATE trading_accounts \
-                             SET cached_net_liq = $1, cached_cash = $2, cached_buying_power = $3, \
+                             SET cached_net_liq = $1::float8, \
+                                 cached_cash = $2::float8, \
+                                 cached_buying_power = $3::float8, \
                                  cache_updated_at = NOW() \
                              WHERE broker = 'IBKR'",
                             &[
