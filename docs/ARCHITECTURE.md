@@ -78,11 +78,14 @@ graph TD
 - **Port**: 8082 (health endpoint only, no public port).
 
 ### 2.4 Strategy Generator (Rust)
-- **Tech**: Actix-web, SQLx, genetic algorithm engine
+- **Tech**: Axum, SQLx, ALPS genetic algorithm engine
 - **Role**:
-  - Evolves trading strategies using genetic algorithms (GA) with K-fold cross-validation.
+  - Evolves trading strategies using **ALPS** (Age-Layered Population Structure) with K-fold cross-validation and **PSR** (Probabilistic Sharpe Ratio) fitness.
   - Runs dual-mode parallel evolution per symbol: **Long Only** (positions 0/1) and **Long Short** (positions -1/0/1).
-  - Evaluates fitness via the backtest engine (stack-based VM executing strategy bytecode on historical candle data).
+  - **ALPS architecture**: 5 Fibonacci-aged layers (max_age: 5/13/34/89/∞), 100 genomes per layer (500 total). Young layers explore, older layers exploit. Genomes exceeding their layer's max_age are promoted upward or discarded. Layer 0 continuously replenished with random genomes. Replaces destructive stagnation-restart with continuous diversity maintenance.
+  - **Operator set**: 14 pruned operators (9 unary + 5 binary). Removed 9 problematic ops (NEG, GATE, SIGNED_POWER, DECAY_LINEAR, TS_SUM, LOG, SQRT, TS_ARGMAX, TS_DELTA) that introduced noise, domain errors, or redundancy. VM retains all 23 opcodes for backward compatibility with stored genomes.
+  - **PSR fitness**: Probabilistic Sharpe Ratio (Bailey & Lopez de Prado, 2012) replaces raw PnL as fitness function. Accounts for skewness and kurtosis of returns, reducing false positives from multiple testing. Fitness = mean(fold_PSR) - 0.5·std(fold_PSR) - complexity_penalty.
+  - **Embargo**: Resolution-aware gaps at K-fold boundaries (20 bars for 1d, 10 for 1h, 8 for 15m) prevent information leakage from TS operator lookback windows.
   - Performs out-of-sample (OOS) validation and detailed simulation with equity curve + trade-level tracking.
   - Persists generation results (`strategy_generations`) and backtest results (`backtest_results`) to TimescaleDB.
   - Periodic cleanup of old generations (retains last 1000 + guards against orphaned forward generations).
@@ -94,7 +97,7 @@ graph TD
 - **Tech**: ndarray, custom VM
 - **Role**:
   - Computes technical factors: ATR, Bollinger Bands, CCI, MACD, MFI, OBV, Stochastic, VWAP, Williams %R, moving averages.
-  - Executes strategy bytecode via a stack-based virtual machine.
+  - Executes strategy bytecode via a stack-based virtual machine with **configurable TS window** (20 for daily, 10 for hourly, 8 for 15m data).
   - Used as a dependency by strategy-engine and strategy-generator.
 
 ### 2.6 Execution Engine (Rust)
@@ -437,15 +440,15 @@ Strategy Engine                    Execution Engine                       Databa
 
 ## 10. Development Progress
 
-### Module Completion Status (as of 2026-02-17)
+### Module Completion Status (as of 2026-02-18)
 
 | Module | Status | Completion | Notes |
 |--------|--------|------------|-------|
 | **Data Engine** | Production | 95% | 12+ collectors, 7-stage DQ, circuit breaker, dead letter |
 | **Gateway** | Production | 90% | REST proxy, WebSocket broadcast, metrics. Missing: IBKR-specific endpoints |
 | **Strategy Engine** | Production | 90% | VM execution, stock signal routing, risk checks, portfolio management |
-| **Strategy Generator** | Production | 90% | GA evolution, dual-mode (LO/LS), K-fold CV, OOS validation, resume logic |
-| **Backtest Engine** | Production | 95% | 10+ factors, stack VM, detailed simulation, equity curve |
+| **Strategy Generator** | Production | 95% | ALPS evolution (5-layer), PSR fitness, 14-op pruned set, embargo CV, dual-mode (LO/LS), OOS validation, resume logic |
+| **Backtest Engine** | Production | 95% | 10+ factors, stack VM with configurable TS window, detailed simulation, equity curve |
 | **Execution Engine** | Functional | 80% | IBKR/Futu/Solana routing, risk engine, trade recording, real-time IBKR account sync via ibapi v2.8+ |
 | **User Management** | Active | 80% | JWT auth, RBAC, multi-tenancy |
 | **Futu Bridge** | Active | 85% | HK stock bridge via OpenD |
@@ -531,3 +534,23 @@ Strategy Engine                    Execution Engine                       Databa
 2. Risk engine as a pre-trade gate prevents runaway order submission.
 3. Three-table recording (orders → executions → positions) provides full audit trail.
 4. `ibapi` v2.8's sync API is wrapped in `spawn_blocking` to avoid blocking the Tokio runtime. The sync feature uses crossbeam instead of tokio, avoiding Solana SDK tokio version conflicts.
+
+### ADR-009: ALPS + PSR Strategy Evolution Overhaul (2026-02)
+
+**Context**: The flat GA suffered from 5 structural weaknesses: (1) destructive stagnation restarts nuked 90% of population every 100 stagnant generations, losing building blocks; (2) PnL-based fitness didn't account for multiple testing across 500 genomes × 1000+ generations; (3) no purging/embargo at K-fold boundaries leaked information via TS operator lookback windows; (4) 9 of 23 operators introduced noise, domain errors, or redundancy; (5) hardcoded 10-bar TS window was inappropriate for daily data.
+
+**Decision**: Replace the flat GA with ALPS (Age-Layered Population Structure), PSR (Probabilistic Sharpe Ratio) fitness, operator pruning, embargo-based CV, and configurable TS windows.
+
+**Key changes:**
+1. **ALPS (5 layers)**: Fibonacci-aged layers (5/13/34/89/∞), 100 genomes each. Within-layer tournament selection prevents old elites from dominating young exploration. Layer 0 continuously replenished. No stagnation restarts needed.
+2. **PSR fitness**: Bailey & Lopez de Prado (2012) formula adjusts Sharpe ratio for skewness/kurtosis, returning a z-score that measures statistical significance. Benchmark Sharpe = 0 (tests if strategy beats zero). Minimum 30 samples per fold.
+3. **Operator pruning (23→14)**: Removed NEG, GATE, SIGNED_POWER, DECAY_LINEAR, TS_SUM, LOG, SQRT, TS_ARGMAX, TS_DELTA. VM retains all 23 opcodes for backward compatibility.
+4. **Embargo**: Resolution-aware gaps at fold boundaries (20 bars for 1d, 10 for 1h, 8 for 15m) match TS operator lookback windows.
+5. **Configurable TS window**: `StackVM.ts_window` auto-selects by resolution (20 for daily, 10 for hourly, 8 for 15m).
+
+**Rationale**:
+1. ALPS maintains diversity continuously rather than through destructive restarts, preserving evolutionary building blocks.
+2. PSR reduces false positives from the multiple-testing problem inherent in large-population evolutionary search.
+3. Pruning reduces the search space from ~23^N to ~14^N per token position, improving convergence speed.
+4. Embargo prevents the well-documented look-ahead bias in temporal cross-validation of time-series models.
+5. All changes are backward-compatible: existing genomes in DB execute correctly with the unchanged VM.
