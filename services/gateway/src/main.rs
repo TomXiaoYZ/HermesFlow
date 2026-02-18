@@ -848,7 +848,9 @@ async fn get_trade_positions(State(state): State<Arc<AppState>>) -> Json<Value> 
                         .or_else(|| row.get::<Option<sqlx::types::Decimal>, _>("last_price"));
                     let qty = row.get::<sqlx::types::Decimal, _>("quantity");
                     let avg = row.get::<sqlx::types::Decimal, _>("avg_price");
-                    let market_value = current_price.map(|cp| qty * cp);
+                    let abs_qty = if qty < sqlx::types::Decimal::ZERO { -qty } else { qty };
+                    let cost_basis = abs_qty * avg;
+                    let market_value = current_price.map(|cp| abs_qty * cp);
                     let unrealized_pnl = row
                         .get::<Option<sqlx::types::Decimal>, _>("unrealized_pnl")
                         .or_else(|| market_value.map(|mv| mv - qty * avg));
@@ -859,6 +861,7 @@ async fn get_trade_positions(State(state): State<Arc<AppState>>) -> Json<Value> 
                         "quantity": qty.to_string(),
                         "avg_price": avg.to_string(),
                         "current_price": current_price.map(|v| v.to_string()),
+                        "cost_basis": cost_basis.to_string(),
                         "market_value": market_value.map(|v| v.to_string()),
                         "unrealized_pnl": unrealized_pnl.map(|v| v.to_string()),
                         "updated_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("updated_at").map(|t| t.to_rfc3339()),
@@ -1076,26 +1079,49 @@ async fn update_trading_account(
 
 async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> {
     use sqlx::Row;
-    let query = "SELECT ta.account_id, ta.label, ta.broker_account, ta.mode, ta.is_enabled, \
-                 ta.max_order_value, ta.max_positions, ta.max_daily_loss, \
-                 COALESCE(pos.position_count, 0) as position_count, \
-                 COALESCE(pos.total_value, 0) as total_value, \
-                 COALESCE(pos.total_unrealized_pnl, 0) as total_unrealized_pnl \
-                 FROM trading_accounts ta \
-                 LEFT JOIN ( \
-                     SELECT p.account_id, COUNT(*)::INTEGER as position_count, \
-                            SUM(ABS(p.quantity) * COALESCE(c.close, p.current_price, p.avg_price)) as total_value, \
-                            SUM(p.quantity * (COALESCE(c.close, p.current_price, p.avg_price) - p.avg_price)) as total_unrealized_pnl \
-                     FROM trade_positions p \
-                     LEFT JOIN LATERAL ( \
-                         SELECT close FROM mkt_equity_candles \
-                         WHERE symbol = p.symbol AND exchange = 'Polygon' \
-                         ORDER BY time DESC LIMIT 1 \
-                     ) c ON true \
-                     WHERE p.quantity != 0 \
-                     GROUP BY p.account_id \
-                 ) pos ON pos.account_id = ta.account_id \
-                 ORDER BY ta.account_id";
+    let query = "\
+        WITH trade_cash AS ( \
+            SELECT o.account_id, \
+                   SUM(CASE WHEN o.side IN ('Sell','SELL') THEN e.price * e.quantity \
+                            ELSE -(e.price * e.quantity) END) as net_trade_cash, \
+                   SUM(COALESCE(e.commission, 0)) as total_commissions, \
+                   COUNT(DISTINCT e.execution_id)::INTEGER as total_trades \
+            FROM trade_executions e \
+            JOIN trade_orders o ON e.order_id = o.order_id \
+            WHERE o.account_id IS NOT NULL \
+            GROUP BY o.account_id \
+        ), \
+        position_stats AS ( \
+            SELECT p.account_id, \
+                   COUNT(*)::INTEGER as position_count, \
+                   SUM(ABS(p.quantity) * p.avg_price) as total_cost_basis, \
+                   SUM(ABS(p.quantity) * COALESCE(c.close, p.current_price, p.avg_price)) as total_market_value, \
+                   SUM(p.quantity * (COALESCE(c.close, p.current_price, p.avg_price) - p.avg_price)) as unrealized_pnl \
+            FROM trade_positions p \
+            LEFT JOIN LATERAL ( \
+                SELECT close FROM mkt_equity_candles \
+                WHERE symbol = p.symbol AND exchange = 'Polygon' \
+                ORDER BY time DESC LIMIT 1 \
+            ) c ON true \
+            WHERE p.quantity != 0 \
+            GROUP BY p.account_id \
+        ) \
+        SELECT ta.account_id, ta.label, ta.broker_account, ta.mode, ta.is_enabled, \
+               ta.max_order_value, ta.max_positions, ta.max_daily_loss, \
+               ta.initial_capital, \
+               COALESCE(ps.position_count, 0) as position_count, \
+               COALESCE(ps.total_cost_basis, 0) as total_cost_basis, \
+               COALESCE(ps.total_market_value, 0) as total_market_value, \
+               COALESCE(ps.unrealized_pnl, 0) as unrealized_pnl, \
+               (ta.initial_capital + COALESCE(tc.net_trade_cash, 0) - COALESCE(tc.total_commissions, 0)) as cash_balance, \
+               (ta.initial_capital + COALESCE(tc.net_trade_cash, 0) - COALESCE(tc.total_commissions, 0) \
+                + COALESCE(ps.total_market_value, 0)) as net_liquidation, \
+               COALESCE(tc.total_commissions, 0) as total_commissions, \
+               COALESCE(tc.total_trades, 0) as total_trades \
+        FROM trading_accounts ta \
+        LEFT JOIN trade_cash tc ON tc.account_id = ta.account_id \
+        LEFT JOIN position_stats ps ON ps.account_id = ta.account_id \
+        ORDER BY ta.account_id";
 
     match sqlx::query(query).fetch_all(&state.pg_pool).await {
         Ok(rows) => {
@@ -1111,9 +1137,15 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
                         "max_order_value": row.get::<sqlx::types::Decimal, _>("max_order_value").to_string(),
                         "max_positions": row.get::<i32, _>("max_positions"),
                         "max_daily_loss": row.get::<sqlx::types::Decimal, _>("max_daily_loss").to_string(),
+                        "initial_capital": row.get::<sqlx::types::Decimal, _>("initial_capital").to_string(),
                         "position_count": row.get::<i32, _>("position_count"),
-                        "total_value": row.get::<sqlx::types::Decimal, _>("total_value").to_string(),
-                        "total_unrealized_pnl": row.get::<sqlx::types::Decimal, _>("total_unrealized_pnl").to_string(),
+                        "total_cost_basis": row.get::<sqlx::types::Decimal, _>("total_cost_basis").to_string(),
+                        "total_market_value": row.get::<sqlx::types::Decimal, _>("total_market_value").to_string(),
+                        "unrealized_pnl": row.get::<sqlx::types::Decimal, _>("unrealized_pnl").to_string(),
+                        "cash_balance": row.get::<sqlx::types::Decimal, _>("cash_balance").to_string(),
+                        "net_liquidation": row.get::<sqlx::types::Decimal, _>("net_liquidation").to_string(),
+                        "total_commissions": row.get::<sqlx::types::Decimal, _>("total_commissions").to_string(),
+                        "total_trades": row.get::<i32, _>("total_trades"),
                     })
                 })
                 .collect();

@@ -62,6 +62,7 @@ interface DBPosition {
     quantity: string;
     avg_price: string;
     current_price: string | null;
+    cost_basis: string;
     market_value: string | null;
     unrealized_pnl: string | null;
     updated_at: string | null;
@@ -77,9 +78,15 @@ interface AccountSummary {
     max_order_value: string;
     max_positions: number;
     max_daily_loss: string;
+    initial_capital: string;
     position_count: number;
-    total_value: string;
-    total_unrealized_pnl: string;
+    total_cost_basis: string;
+    total_market_value: string;
+    unrealized_pnl: string;
+    cash_balance: string;
+    net_liquidation: string;
+    total_commissions: string;
+    total_trades: number;
 }
 
 interface LiveTradingProps {
@@ -180,73 +187,13 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
     // Filter DB positions by selected account
     const filteredPositions = dbPositions.filter((p) => p.account_id === selectedAccount);
 
-    // Filter live positions from WebSocket
-    const livePositions = portfolioData.positions;
-
     // Selected account detail
     const selectedAccountDetail = accountSummary.find((a) => a.account_id === selectedAccount);
 
     return (
         <div className="space-y-6">
-            {/* Account Header */}
-            {selectedAccountDetail && (
-                <div className="bg-slate-900/50 border border-white/10 rounded-xl p-6">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <div className="flex items-center gap-2">
-                                <span className="text-lg font-semibold text-white">
-                                    {selectedAccountDetail.label}
-                                </span>
-                                <span className="text-sm text-slate-400">
-                                    {selectedAccountDetail.broker_account}
-                                </span>
-                                <span
-                                    className={cn(
-                                        "text-xs font-bold px-2 py-0.5 rounded-full",
-                                        selectedAccountDetail.is_enabled
-                                            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                                            : "bg-red-500/20 text-red-400 border border-red-500/30"
-                                    )}
-                                >
-                                    {selectedAccountDetail.is_enabled ? "Enabled" : "Disabled"}
-                                </span>
-                            </div>
-                            <div className="flex gap-6 mt-2 text-sm text-slate-400">
-                                <span>
-                                    Net Liq:{" "}
-                                    <span className="text-white font-medium">
-                                        ${portfolioData.total_equity.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                    </span>
-                                </span>
-                                <span>
-                                    Cash:{" "}
-                                    <span className="text-white font-medium">
-                                        ${portfolioData.cash.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                    </span>
-                                </span>
-                                <span>
-                                    Positions:{" "}
-                                    <span className="text-white font-medium">
-                                        {selectedAccountDetail.position_count}
-                                    </span>
-                                </span>
-                                <span>
-                                    Max Order:{" "}
-                                    <span className="text-white font-medium">${selectedAccountDetail.max_order_value}</span>
-                                </span>
-                                <span>
-                                    Max Positions:{" "}
-                                    <span className="text-white font-medium">{selectedAccountDetail.max_positions}</span>
-                                </span>
-                                <span>
-                                    Max Daily Loss:{" "}
-                                    <span className="text-white font-medium">${selectedAccountDetail.max_daily_loss}</span>
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
+            {/* Account Financial Overview */}
+            {selectedAccountDetail && <AccountOverview account={selectedAccountDetail} />}
 
             {/* Account Tabs */}
             <div className="flex gap-2">
@@ -279,58 +226,53 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                                 <th className="text-right px-6 py-3">Qty</th>
                                 <th className="text-right px-6 py-3">Avg Cost</th>
                                 <th className="text-right px-6 py-3">Last Price</th>
+                                <th className="text-right px-6 py-3">Cost Basis</th>
                                 <th className="text-right px-6 py-3">Mkt Value</th>
-                                <th className="text-right px-6 py-3">PnL</th>
+                                <th className="text-right px-6 py-3">PnL ($)</th>
+                                <th className="text-right px-6 py-3">PnL (%)</th>
+                                <th className="text-right px-6 py-3">Weight</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {livePositions.length > 0
-                                ? livePositions.map((pos) => {
-                                      const unitCost = pos.market_value / (pos.quantity || 1);
-                                      const pnl = pos.market_value - pos.quantity * unitCost;
-                                      return (
-                                          <tr key={pos.symbol} className="border-t border-white/5 hover:bg-white/5 transition-colors">
-                                              <td className="px-6 py-3 font-medium text-white">{pos.symbol}</td>
-                                              <td className="px-6 py-3 text-right text-slate-300">{pos.quantity}</td>
-                                              <td className="px-6 py-3 text-right text-slate-300">${unitCost.toFixed(2)}</td>
-                                              <td className="px-6 py-3 text-right text-slate-300">—</td>
-                                              <td className="px-6 py-3 text-right text-slate-300">
-                                                  ${pos.market_value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                              </td>
-                                              <td className={cn("px-6 py-3 text-right font-medium", pnl >= 0 ? "text-emerald-400" : "text-red-400")}>
-                                                  {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}
-                                              </td>
-                                          </tr>
-                                      );
-                                  })
-                                : filteredPositions.map((pos) => {
-                                      const qty = parseFloat(pos.quantity);
-                                      const avgPrice = parseFloat(pos.avg_price);
-                                      const curPrice = pos.current_price ? parseFloat(pos.current_price) : null;
-                                      const mktValue = pos.market_value ? parseFloat(pos.market_value) : null;
-                                      const pnl = pos.unrealized_pnl ? parseFloat(pos.unrealized_pnl) : 0;
-                                      const costBasis = Math.abs(qty) * avgPrice;
-                                      const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
-                                      return (
-                                          <tr key={`${pos.account_id}-${pos.symbol}`} className="border-t border-white/5 hover:bg-white/5 transition-colors">
-                                              <td className="px-6 py-3 font-medium text-white">{pos.symbol}</td>
-                                              <td className="px-6 py-3 text-right text-slate-300">{qty}</td>
-                                              <td className="px-6 py-3 text-right text-slate-300">${avgPrice.toFixed(2)}</td>
-                                              <td className="px-6 py-3 text-right text-slate-300">
-                                                  {curPrice != null ? `$${curPrice.toFixed(2)}` : "—"}
-                                              </td>
-                                              <td className="px-6 py-3 text-right text-slate-300">
-                                                  {mktValue != null ? `$${mktValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "—"}
-                                              </td>
-                                              <td className={cn("px-6 py-3 text-right font-medium", pnl >= 0 ? "text-emerald-400" : "text-red-400")}>
-                                                  {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
-                                              </td>
-                                          </tr>
-                                      );
-                                  })}
-                            {livePositions.length === 0 && filteredPositions.length === 0 && (
+                            {filteredPositions.map((pos) => {
+                                const qty = parseFloat(pos.quantity);
+                                const avgPrice = parseFloat(pos.avg_price);
+                                const curPrice = pos.current_price ? parseFloat(pos.current_price) : null;
+                                const costBasis = parseFloat(pos.cost_basis);
+                                const mktValue = pos.market_value ? parseFloat(pos.market_value) : null;
+                                const pnl = pos.unrealized_pnl ? parseFloat(pos.unrealized_pnl) : 0;
+                                const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+                                const totalMktVal = selectedAccountDetail ? parseFloat(selectedAccountDetail.total_market_value) : 0;
+                                const weight = totalMktVal > 0 && mktValue != null ? (Math.abs(mktValue) / totalMktVal) * 100 : 0;
+                                return (
+                                    <tr key={`${pos.account_id}-${pos.symbol}`} className="border-t border-white/5 hover:bg-white/5 transition-colors">
+                                        <td className="px-6 py-3 font-medium text-white">{pos.symbol}</td>
+                                        <td className="px-6 py-3 text-right text-slate-300">{qty}</td>
+                                        <td className="px-6 py-3 text-right text-slate-300">${avgPrice.toFixed(2)}</td>
+                                        <td className="px-6 py-3 text-right text-slate-300">
+                                            {curPrice != null ? `$${curPrice.toFixed(2)}` : "—"}
+                                        </td>
+                                        <td className="px-6 py-3 text-right text-slate-300">
+                                            ${costBasis.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                        </td>
+                                        <td className="px-6 py-3 text-right text-slate-300">
+                                            {mktValue != null ? `$${mktValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "—"}
+                                        </td>
+                                        <td className={cn("px-6 py-3 text-right font-medium", pnl >= 0 ? "text-emerald-400" : "text-red-400")}>
+                                            {pnl >= 0 ? "+" : ""}${Math.abs(pnl).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                        </td>
+                                        <td className={cn("px-6 py-3 text-right font-medium", pnlPct >= 0 ? "text-emerald-400" : "text-red-400")}>
+                                            {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%
+                                        </td>
+                                        <td className="px-6 py-3 text-right text-slate-400">
+                                            {weight.toFixed(1)}%
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                            {filteredPositions.length === 0 && (
                                 <tr>
-                                    <td colSpan={6} className="px-6 py-8 text-center text-slate-500">
+                                    <td colSpan={9} className="px-6 py-8 text-center text-slate-500">
                                         No positions found
                                     </td>
                                 </tr>
@@ -534,6 +476,102 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
 }
 
 // Sub-components
+
+function formatDollar(value: number): string {
+    const abs = Math.abs(value);
+    const formatted = abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return value < 0 ? `-$${formatted}` : `$${formatted}`;
+}
+
+function AccountOverview({ account }: { account: AccountSummary }) {
+    const netLiq = parseFloat(account.net_liquidation);
+    const cash = parseFloat(account.cash_balance);
+    const mktValue = parseFloat(account.total_market_value);
+    const unrealizedPnl = parseFloat(account.unrealized_pnl);
+    const initialCapital = parseFloat(account.initial_capital);
+    const costBasis = parseFloat(account.total_cost_basis);
+    const commissions = parseFloat(account.total_commissions);
+
+    const totalReturn = netLiq - initialCapital;
+    const returnPct = initialCapital > 0 ? (totalReturn / initialCapital) * 100 : 0;
+    const deployedPct = netLiq > 0 ? (costBasis / netLiq) * 100 : 0;
+
+    return (
+        <div className="space-y-3">
+            {/* Account Label Row */}
+            <div className="flex items-center gap-2">
+                <span className="text-lg font-semibold text-white">{account.label}</span>
+                <span className="text-sm text-slate-400">{account.broker_account}</span>
+                <span
+                    className={cn(
+                        "text-xs font-bold px-2 py-0.5 rounded-full border",
+                        account.is_enabled
+                            ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                            : "bg-red-500/20 text-red-400 border-red-500/30"
+                    )}
+                >
+                    {account.is_enabled ? "Enabled" : "Disabled"}
+                </span>
+            </div>
+
+            {/* Row 1: Portfolio Overview */}
+            <div className="grid grid-cols-4 gap-3">
+                <OverviewCard label="Net Liquidation" value={formatDollar(netLiq)} />
+                <OverviewCard label="Cash Balance" value={formatDollar(cash)} />
+                <OverviewCard label="Stock Market Value" value={formatDollar(mktValue)} />
+                <OverviewCard
+                    label="Unrealized PnL"
+                    value={`${unrealizedPnl >= 0 ? "+" : ""}${formatDollar(unrealizedPnl)}${costBasis > 0 ? ` (${unrealizedPnl >= 0 ? "+" : ""}${((unrealizedPnl / costBasis) * 100).toFixed(1)}%)` : ""}`}
+                    valueColor={unrealizedPnl >= 0 ? "text-emerald-400" : "text-red-400"}
+                />
+            </div>
+
+            {/* Row 2: Performance & Limits */}
+            <div className="grid grid-cols-4 gap-3">
+                <OverviewCard
+                    label="Total Return"
+                    value={`${totalReturn >= 0 ? "+" : ""}${formatDollar(totalReturn)} (${totalReturn >= 0 ? "+" : ""}${returnPct.toFixed(1)}%)`}
+                    valueColor={totalReturn >= 0 ? "text-emerald-400" : "text-red-400"}
+                />
+                <OverviewCard
+                    label="Capital Deployed"
+                    value={`${deployedPct.toFixed(1)}%`}
+                    subtitle={`${formatDollar(costBasis)} of net liq`}
+                />
+                <OverviewCard
+                    label="Commissions"
+                    value={formatDollar(commissions)}
+                    subtitle={`${account.total_trades} trade${account.total_trades !== 1 ? "s" : ""}`}
+                />
+                <OverviewCard
+                    label="Positions"
+                    value={`${account.position_count} / ${account.max_positions}`}
+                    subtitle={`Max order $${account.max_order_value} | Max loss $${account.max_daily_loss}`}
+                />
+            </div>
+        </div>
+    );
+}
+
+function OverviewCard({
+    label,
+    value,
+    subtitle,
+    valueColor,
+}: {
+    label: string;
+    value: string;
+    subtitle?: string;
+    valueColor?: string;
+}) {
+    return (
+        <div className="bg-slate-900/50 border border-white/10 rounded-xl px-4 py-3">
+            <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{label}</p>
+            <p className={cn("text-sm font-semibold", valueColor || "text-white")}>{value}</p>
+            {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+        </div>
+    );
+}
 
 function StatusBadge({ status }: { status: string }) {
     const upper = status.toUpperCase();
