@@ -273,6 +273,45 @@ impl AlpsGA {
         self.layers.iter().map(|l| l.population.len()).sum()
     }
 
+    /// Inject externally-generated genomes into a specific layer.
+    /// Used by the LLM mutation oracle to insert guided genomes into Layer 0.
+    /// Replaces the worst genomes if the layer is at capacity.
+    #[allow(dead_code)]
+    pub fn inject_genomes(&mut self, layer_idx: usize, genomes: Vec<Genome>) {
+        if layer_idx >= self.layers.len() || genomes.is_empty() {
+            return;
+        }
+        let layer = &mut self.layers[layer_idx];
+        layer.sort_by_fitness();
+        for genome in genomes {
+            if layer.population.len() < ALPS_LAYER_POP_SIZE {
+                layer.population.push(genome);
+            } else {
+                // Replace worst genome
+                layer.population.pop();
+                layer.population.push(genome);
+            }
+        }
+    }
+
+    /// Collect top-N genomes from each layer (for LLM oracle context).
+    #[allow(dead_code)]
+    pub fn collect_elites(&self, per_layer: usize) -> Vec<(usize, &Genome)> {
+        let mut elites = Vec::new();
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            let mut sorted: Vec<&Genome> = layer.population.iter().collect();
+            sorted.sort_by(|a, b| {
+                b.fitness
+                    .partial_cmp(&a.fitness)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for genome in sorted.into_iter().take(per_layer) {
+                elites.push((layer_idx, genome));
+            }
+        }
+        elites
+    }
+
     /// Summary of layer sizes and best fitness per layer (for logging).
     pub fn layer_summary(&self) -> Vec<(usize, usize, f64)> {
         self.layers

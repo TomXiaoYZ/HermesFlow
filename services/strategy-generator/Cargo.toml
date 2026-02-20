@@ -21,6 +21,8 @@ rust_decimal = { workspace = true }
 axum = { workspace = true }
 hyper = { workspace = true }
 
+reqwest = { workspace = true }
+
 # Internal
 backtest-engine = { workspace = true }
 common = { workspace = true, features = ["health", "heartbeat"] }

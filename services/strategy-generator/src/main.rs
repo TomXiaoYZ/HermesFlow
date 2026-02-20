@@ -10,6 +10,10 @@ use tracing::{error, info, warn};
 mod api;
 mod backtest;
 mod genetic;
+#[allow(dead_code)]
+mod genome_decoder;
+#[allow(dead_code)]
+mod llm_oracle;
 
 use backtest::StrategyMode;
 use backtest::{is_sentinel, sentinel_label, Backtester, WalkForwardConfig};

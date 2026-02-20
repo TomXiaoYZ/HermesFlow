@@ -81,6 +81,9 @@ hex = "0.4"
 # Scheduling
 tokio-cron-scheduler = "0.9"
 
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+
 # WebSocket & Streaming
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 tokio-stream = "0.1"
