@@ -323,6 +323,10 @@ services:
       - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
       - GENERATOR_CONFIG=config/generator.yaml
       - GENERATOR_API_PORT=8082
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
     ports:
       - "8082:8082"
     volumes:
