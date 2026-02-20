@@ -698,6 +698,8 @@ fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> 
         .and_then(|m| m.get("fold_psrs").or_else(|| m.get("fold_pnls")))
         .cloned();
 
+    let llm_oracle = metadata.as_ref().and_then(|m| m.get("llm_oracle")).cloned();
+
     let backtest = if pnl_percent.is_some() {
         let mut bt = json!({
             "pnl_percent": pnl_percent,
@@ -734,5 +736,6 @@ fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> 
         "stagnation": stagnation,
         "fold_psrs": fold_psrs,
         "backtest": backtest,
+        "llm_oracle": llm_oracle,
     })
 }

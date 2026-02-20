@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { ChevronDown, ChevronRight, Filter, RefreshCw, Dna, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, Filter, RefreshCw, Dna, TrendingUp, TrendingDown, Minus, Sparkles } from "lucide-react";
 import {
     ComposedChart,
     Line,
@@ -84,6 +84,21 @@ interface BacktestData {
     metrics?: BacktestMetrics;
 }
 
+interface LlmOracleLog {
+    enabled: boolean;
+    invocations: number;
+    total_injected: number;
+    injected_this_gen: number;
+    last_oracle_gen: number;
+    tft_rate_50gen: number;
+    trigger_reason?: string;
+    prompt?: string;
+    response?: string;
+    parsed_formulas?: string[];
+    accepted_formulas?: string[];
+    rejected_details?: [string, string][];
+}
+
 interface Generation {
     generation: number;
     fitness: number | null;
@@ -94,6 +109,7 @@ interface Generation {
     stagnation?: number;
     fold_psrs?: number[];
     backtest: BacktestData | null;
+    llm_oracle?: LlmOracleLog;
 }
 
 const SYMBOL_NAMES: Record<string, string> = {
@@ -647,6 +663,11 @@ export default function EvolutionExplorer() {
                                                                 )}
                                                                 {isBest && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shadow-[0_0_6px_#f59e0b]" />}
                                                                 {g.generation}
+                                                                {(g.llm_oracle?.injected_this_gen ?? 0) > 0 && (
+                                                                    <span title={`LLM Oracle: ${g.llm_oracle?.injected_this_gen} injected (${g.llm_oracle?.trigger_reason})`}>
+                                                                        <Sparkles className="w-3 h-3 text-violet-400" />
+                                                                    </span>
+                                                                )}
                                                             </span>
                                                             <span className={`text-right font-mono ${g.fitness != null && g.fitness > 0 ? "text-emerald-400" : "text-slate-500"}`}>
                                                                 {fmtNum(g.fitness)}
@@ -1266,6 +1287,11 @@ function BacktestDetail({
                         </div>
                     )}
 
+                    {/* LLM Oracle Interaction Log */}
+                    {generation.llm_oracle && (generation.llm_oracle.injected_this_gen > 0 || generation.llm_oracle.prompt) && (
+                        <OracleDetailPanel oracle={generation.llm_oracle} />
+                    )}
+
                     <button
                         onClick={handleRerun}
                         className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10 hover:text-slate-200 transition-colors cursor-pointer"
@@ -1354,6 +1380,110 @@ function BacktestDetail({
                     )}
                 </div>
             </div>
+        </div>
+    );
+}
+
+function OracleDetailPanel({ oracle }: { oracle: LlmOracleLog }) {
+    const [showPrompt, setShowPrompt] = useState(false);
+    const [showResponse, setShowResponse] = useState(false);
+
+    const accepted = oracle.accepted_formulas ?? [];
+    const rejected = oracle.rejected_details ?? [];
+    const totalParsed = (oracle.parsed_formulas ?? []).length;
+
+    return (
+        <div>
+            <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold flex items-center gap-1.5">
+                <Sparkles className="w-3 h-3 text-violet-400" />
+                LLM Oracle
+                <span className="text-violet-400/70 normal-case tracking-normal">
+                    — {oracle.trigger_reason ?? "unknown"}, {accepted.length}/{totalParsed} formulas
+                </span>
+            </h5>
+
+            {/* Trigger info */}
+            <div className="grid grid-cols-2 gap-1.5 mb-3">
+                <div className="bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                    <span className="text-[8px] text-slate-600 block">Trigger</span>
+                    <span className="font-mono text-[10px] text-violet-300">{oracle.trigger_reason ?? "—"}</span>
+                </div>
+                <div className="bg-white/[0.03] rounded px-2 py-1 border border-white/5">
+                    <span className="text-[8px] text-slate-600 block">TFT Rate</span>
+                    <span className="font-mono text-[10px] text-slate-300">{(oracle.tft_rate_50gen * 100).toFixed(1)}%</span>
+                </div>
+            </div>
+
+            {/* Accepted formulas */}
+            {accepted.length > 0 && (
+                <div className="mb-2">
+                    <span className="text-[8px] text-emerald-500/70 uppercase tracking-wider font-bold">
+                        Accepted ({accepted.length})
+                    </span>
+                    <div className="mt-1 space-y-0.5">
+                        {accepted.map((f, i) => (
+                            <div key={i} className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/5 rounded border border-emerald-500/10">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/60 shrink-0" />
+                                <code className="text-[9px] text-emerald-300/80 font-mono truncate">{f}</code>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Rejected formulas */}
+            {rejected.length > 0 && (
+                <div className="mb-2">
+                    <span className="text-[8px] text-red-500/70 uppercase tracking-wider font-bold">
+                        Rejected ({rejected.length})
+                    </span>
+                    <div className="mt-1 space-y-0.5">
+                        {rejected.map(([formula, reason], i) => (
+                            <div key={i} className="flex items-center gap-1.5 px-2 py-0.5 bg-red-500/5 rounded border border-red-500/10">
+                                <span className="w-1.5 h-1.5 rounded-full bg-red-500/60 shrink-0" />
+                                <code className="text-[9px] text-red-300/70 font-mono truncate flex-1">{formula}</code>
+                                <span className="text-[8px] text-red-400/50 shrink-0">{reason}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Collapsible Prompt */}
+            {oracle.prompt && (
+                <div className="mb-2">
+                    <button
+                        onClick={() => setShowPrompt(!showPrompt)}
+                        className="flex items-center gap-1 text-[8px] text-slate-500 uppercase tracking-wider font-bold hover:text-slate-300 transition-colors cursor-pointer"
+                    >
+                        {showPrompt ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                        Prompt ({oracle.prompt.length} chars)
+                    </button>
+                    {showPrompt && (
+                        <pre className="mt-1 p-2 bg-white/[0.02] rounded border border-white/5 text-[9px] text-slate-400 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar">
+                            {oracle.prompt}
+                        </pre>
+                    )}
+                </div>
+            )}
+
+            {/* Collapsible Response */}
+            {oracle.response && (
+                <div>
+                    <button
+                        onClick={() => setShowResponse(!showResponse)}
+                        className="flex items-center gap-1 text-[8px] text-slate-500 uppercase tracking-wider font-bold hover:text-slate-300 transition-colors cursor-pointer"
+                    >
+                        {showResponse ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                        Raw Response ({oracle.response.length} chars)
+                    </button>
+                    {showResponse && (
+                        <pre className="mt-1 p-2 bg-white/[0.02] rounded border border-white/5 text-[9px] text-slate-400 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar">
+                            {oracle.response}
+                        </pre>
+                    )}
+                </div>
+            )}
         </div>
     );
 }

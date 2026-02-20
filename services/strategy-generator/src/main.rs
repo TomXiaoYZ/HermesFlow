@@ -782,8 +782,10 @@ async fn run_symbol_evolution(
 
             // ═══ LLM Oracle Trigger Check ═══
             let mut oracle_injected_this_gen = 0usize;
+            let mut trigger_reason: Option<&str> = None;
+            let mut oracle_log: Option<llm_oracle::OracleResult> = None;
             if oracle_config.enabled {
-                let should_trigger = should_trigger_oracle(
+                let trigger = should_trigger_oracle(
                     gen,
                     &promo_tracker,
                     &tft_tracker,
@@ -792,7 +794,8 @@ async fn run_symbol_evolution(
                     &oracle_config,
                 );
 
-                if should_trigger {
+                if let Some(reason) = trigger {
+                    trigger_reason = Some(reason);
                     // Collect elites from all layers (3 per layer → 15 total)
                     // Clone to release borrow on `ga` before inject
                     let elites_owned: Vec<(usize, genetic::Genome)> = ga
@@ -834,12 +837,8 @@ async fn run_symbol_evolution(
                     match llm_oracle::generate_mutations(&oracle_config, &ctx, &existing_tokens)
                         .await
                     {
-                        Ok(result) => {
+                        Ok(mut result) => {
                             oracle_injected_this_gen = result.genomes.len();
-                            if oracle_injected_this_gen > 0 {
-                                ga.inject_genomes(0, result.genomes);
-                                oracle_injected_total += oracle_injected_this_gen;
-                            }
                             oracle_invocations += 1;
                             last_oracle_gen = gen;
                             last_oracle_time = std::time::Instant::now();
@@ -847,8 +846,17 @@ async fn run_symbol_evolution(
                                 "[{}:{}:{}] LLM oracle: {}/{} valid genomes injected into L0 (invocation #{}, total injected: {})",
                                 exchange, symbol, mode_str,
                                 oracle_injected_this_gen, result.raw_count,
-                                oracle_invocations, oracle_injected_total
+                                oracle_invocations, oracle_injected_total + oracle_injected_this_gen
                             );
+                            if oracle_injected_this_gen > 0 {
+                                // Extract genomes before moving result into oracle_log
+                                let genomes = std::mem::take(&mut result.genomes);
+                                oracle_log = Some(result);
+                                ga.inject_genomes(0, genomes);
+                                oracle_injected_total += oracle_injected_this_gen;
+                            } else {
+                                oracle_log = Some(result);
+                            }
                         }
                         Err(e) => {
                             warn!(
@@ -901,14 +909,16 @@ async fn run_symbol_evolution(
                     "rolling_total_promoted": promo_tracker.total_promoted_in_window(),
                     "rolling_total_discarded": promo_tracker.total_discarded_in_window(),
                 },
-                "llm_oracle": {
-                    "enabled": oracle_config.enabled,
-                    "invocations": oracle_invocations,
-                    "total_injected": oracle_injected_total,
-                    "injected_this_gen": oracle_injected_this_gen,
-                    "last_oracle_gen": last_oracle_gen,
-                    "tft_rate_50gen": tft_tracker.rate(),
-                },
+                "llm_oracle": build_oracle_metadata(&OracleSnapshot {
+                    enabled: oracle_config.enabled,
+                    invocations: oracle_invocations,
+                    total_injected: oracle_injected_total,
+                    injected_this_gen: oracle_injected_this_gen,
+                    last_oracle_gen,
+                    tft_rate: tft_tracker.rate(),
+                    trigger_reason,
+                    log: &oracle_log,
+                }),
                 "meta": {
                     "name": format!("{}-{}-Gen{}-PSR{:.2}", symbol, mode_str, gen, best.fitness),
                     "description": format!("{} {} Evolved Strategy. IS PSR: {:.4}, OOS PSR: {:.4}", symbol, mode_str, best.fitness, oos_psr)
@@ -1028,8 +1038,55 @@ async fn run_symbol_evolution(
     }
 }
 
+/// Snapshot of oracle state for a single generation, used to build metadata.
+struct OracleSnapshot<'a> {
+    enabled: bool,
+    invocations: usize,
+    total_injected: usize,
+    injected_this_gen: usize,
+    last_oracle_gen: usize,
+    tft_rate: f64,
+    trigger_reason: Option<&'a str>,
+    log: &'a Option<llm_oracle::OracleResult>,
+}
+
+/// Build the `llm_oracle` metadata JSONB value.
+///
+/// Includes full interaction details (prompt, response, formulas, rejection reasons)
+/// on generations where the oracle was invoked.
+fn build_oracle_metadata(snap: &OracleSnapshot<'_>) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "enabled": snap.enabled,
+        "invocations": snap.invocations,
+        "total_injected": snap.total_injected,
+        "injected_this_gen": snap.injected_this_gen,
+        "last_oracle_gen": snap.last_oracle_gen,
+        "tft_rate_50gen": snap.tft_rate,
+    });
+
+    if let Some(reason) = snap.trigger_reason {
+        obj["trigger_reason"] = serde_json::json!(reason);
+    }
+
+    if let Some(log) = snap.log {
+        obj["prompt"] = serde_json::json!(log.prompt);
+        obj["response"] = serde_json::json!(log.response_text);
+        obj["parsed_formulas"] = serde_json::json!(log.parsed_formulas);
+        obj["accepted_formulas"] = serde_json::json!(log.accepted_formulas);
+        let rejected: Vec<serde_json::Value> = log
+            .rejected_details
+            .iter()
+            .map(|(formula, reason)| serde_json::json!([formula, reason]))
+            .collect();
+        obj["rejected_details"] = serde_json::json!(rejected);
+    }
+
+    obj
+}
+
 /// Determine whether the LLM oracle should be invoked this generation.
 ///
+/// Returns `Some(reason)` if triggered, `None` otherwise.
 /// Two trigger conditions (either activates):
 /// 1. **Primary**: L0→L1 promotion rate drops below threshold (random exploration failing)
 /// 2. **Secondary**: too_few_trades rate exceeds threshold (stuck in non-trading genome space)
@@ -1042,33 +1099,33 @@ fn should_trigger_oracle(
     last_oracle_gen: usize,
     last_oracle_time: std::time::Instant,
     config: &LlmOracleConfig,
-) -> bool {
+) -> Option<&'static str> {
     // Minimum generation warmup
     if gen < config.min_generation {
-        return false;
+        return None;
     }
 
     // Generation-based cooldown (skip on first invocation when last_oracle_gen == 0)
     if last_oracle_gen > 0 && gen.saturating_sub(last_oracle_gen) < config.cooldown_gens {
-        return false;
+        return None;
     }
 
     // Time-based cooldown (skip on first invocation)
     if last_oracle_gen > 0 && last_oracle_time.elapsed().as_secs() < config.cooldown_seconds {
-        return false;
+        return None;
     }
 
     // Primary trigger: L0→L1 promotion rate drop
     if let Some(rate) = promo_tracker.avg_rate(0) {
         if rate < config.promotion_rate_threshold {
-            return true;
+            return Some("promotion_rate");
         }
     }
 
     // Secondary trigger: high too_few_trades rate
     if gen >= config.tft_min_generation && tft_tracker.rate() > config.tft_rate_threshold {
-        return true;
+        return Some("tft_rate");
     }
 
-    false
+    None
 }

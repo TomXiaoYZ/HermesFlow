@@ -130,8 +130,16 @@ pub struct OracleResult {
     pub genomes: Vec<Genome>,
     /// Number of formulas returned by the LLM.
     pub raw_count: usize,
-    /// Number that failed parsing or validation.
-    pub rejected_count: usize,
+    /// The prompt sent to the LLM.
+    pub prompt: String,
+    /// Raw text returned by the LLM.
+    pub response_text: String,
+    /// All formulas parsed from the LLM response.
+    pub parsed_formulas: Vec<String>,
+    /// Formulas that passed validation and became genomes.
+    pub accepted_formulas: Vec<String>,
+    /// Formulas that failed validation: (formula, rejection reason).
+    pub rejected_details: Vec<(String, String)>,
 }
 
 /// Build the prompt for the LLM.
@@ -277,9 +285,11 @@ pub fn validate_formulas(
     feat_offset: usize,
     factor_names: &[String],
     existing_tokens: &[Vec<usize>],
-) -> OracleResult {
+) -> ValidatedFormulas {
     let raw_count = formulas.len();
     let mut genomes = Vec::new();
+    let mut accepted_formulas = Vec::new();
+    let mut rejected_details = Vec::new();
     let mut seen: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
 
     // Pre-populate seen with existing elite tokens
@@ -293,6 +303,7 @@ pub fn validate_formulas(
             Some(t) => t,
             None => {
                 debug!("LLM formula rejected (unknown token): {}", formula);
+                rejected_details.push((formula.clone(), "unknown token".to_string()));
                 continue;
             }
         };
@@ -300,15 +311,18 @@ pub fn validate_formulas(
         // Step 2: Stack validation
         if let Err(e) = genome_decoder::validate_stack(&tokens, feat_offset) {
             debug!("LLM formula rejected (stack: {}): {}", e, formula);
+            rejected_details.push((formula.clone(), format!("stack: {}", e)));
             continue;
         }
 
         // Step 3: Dedup
         if !seen.insert(tokens.clone()) {
             debug!("LLM formula rejected (duplicate): {}", formula);
+            rejected_details.push((formula.clone(), "duplicate".to_string()));
             continue;
         }
 
+        accepted_formulas.push(formula.clone());
         genomes.push(Genome {
             tokens,
             fitness: 0.0,
@@ -317,11 +331,23 @@ pub fn validate_formulas(
     }
 
     let rejected_count = raw_count - genomes.len();
-    OracleResult {
+    ValidatedFormulas {
         genomes,
         raw_count,
         rejected_count,
+        accepted_formulas,
+        rejected_details,
     }
+}
+
+/// Intermediate result from validate_formulas, before full OracleResult is assembled.
+#[derive(Debug)]
+pub struct ValidatedFormulas {
+    pub genomes: Vec<Genome>,
+    pub raw_count: usize,
+    pub rejected_count: usize,
+    pub accepted_formulas: Vec<String>,
+    pub rejected_details: Vec<(String, String)>,
 }
 
 /// Call the LLM API and return the raw response text.
@@ -516,16 +542,16 @@ pub async fn generate_mutations(
         &response_text[..response_text.len().min(200)]
     );
 
-    let formulas = parse_response(&response_text);
+    let parsed_formulas = parse_response(&response_text);
     info!(
         "[{}:{}] LLM returned {} formulas",
         ctx.symbol,
         ctx.mode,
-        formulas.len()
+        parsed_formulas.len()
     );
 
-    let result = validate_formulas(
-        formulas,
+    let validated = validate_formulas(
+        parsed_formulas.clone(),
         ctx.feat_offset,
         &ctx.factor_names,
         existing_tokens,
@@ -534,12 +560,20 @@ pub async fn generate_mutations(
         "[{}:{}] LLM oracle result: {} valid, {} rejected (of {} raw)",
         ctx.symbol,
         ctx.mode,
-        result.genomes.len(),
-        result.rejected_count,
-        result.raw_count
+        validated.genomes.len(),
+        validated.rejected_count,
+        validated.raw_count
     );
 
-    Ok(result)
+    Ok(OracleResult {
+        genomes: validated.genomes,
+        raw_count: validated.raw_count,
+        prompt,
+        response_text,
+        parsed_formulas,
+        accepted_formulas: validated.accepted_formulas,
+        rejected_details: validated.rejected_details,
+    })
 }
 
 #[derive(Debug)]
@@ -682,6 +716,10 @@ mod tests {
         assert_eq!(result.raw_count, 5);
         assert_eq!(result.genomes.len(), 2); // only first two are valid
         assert_eq!(result.rejected_count, 3);
+        assert_eq!(result.accepted_formulas.len(), 2);
+        assert_eq!(result.accepted_formulas[0], "return ABS");
+        assert_eq!(result.rejected_details.len(), 3);
+        assert_eq!(result.rejected_details[0].1, "unknown token");
     }
 
     #[test]
