@@ -38,14 +38,13 @@ interface SymbolOverview {
     mode?: string;
     latest_gen: number;
     best_fitness: number | null;
-    best_oos_ic: number | null;
-    best_oos_pnl: number | null;
+    best_oos_psr: number | null;
     best_pnl: number | null;
     sharpe_ratio: number | null;
     max_drawdown: number | null;
     win_rate: number | null;
     stagnation: number | null;
-    fold_pnls: number[] | null;
+    fold_psrs: number[] | null;
     last_updated: string | null;
 }
 
@@ -91,9 +90,9 @@ interface Generation {
     best_genome: number[] | null;
     strategy_id: string | null;
     timestamp: string | null;
-    oos_ic: number | null;
+    oos_psr: number | null;
     stagnation?: number;
-    fold_pnls?: number[];
+    fold_psrs?: number[];
     backtest: BacktestData | null;
 }
 
@@ -277,7 +276,7 @@ export default function EvolutionExplorer() {
     const chartData = [...generations].reverse().map((g) => ({
         gen: g.generation,
         fitness: g.fitness,
-        oos_ic: g.oos_ic,
+        oos_psr: g.oos_psr,
         hasBacktest: g.backtest != null,
     }));
 
@@ -415,9 +414,9 @@ export default function EvolutionExplorer() {
                                             <div className="flex items-center gap-1">
                                                 <span className="text-[8px] text-slate-600 uppercase">OOS</span>
                                                 <span className={`text-[10px] font-mono ${
-                                                    (sym.best_oos_ic ?? 0) > 0 ? "text-cyan-400/80" : "text-slate-600"
+                                                    (sym.best_oos_psr ?? 0) > 0 ? "text-cyan-400/80" : "text-slate-600"
                                                 }`}>
-                                                    {fmtNum(sym.best_oos_ic)}
+                                                    {fmtNum(sym.best_oos_psr)}
                                                 </span>
                                             </div>
                                             <div className="flex items-center gap-1 ml-auto">
@@ -491,8 +490,8 @@ export default function EvolutionExplorer() {
 
                                 {/* Metric summary */}
                                 <div className="grid grid-cols-8 gap-2 px-5 py-3 border-b border-white/5 bg-slate-950/30">
-                                    <MetricCell label="IS PnL" value={fmtNum(selectedOverview.best_fitness)} positive={(selectedOverview.best_fitness ?? 0) > 0} />
-                                    <MetricCell label="OOS PnL" value={fmtNum(selectedOverview.best_oos_ic)} positive={(selectedOverview.best_oos_ic ?? 0) > 0} />
+                                    <MetricCell label="IS PSR" value={fmtNum(selectedOverview.best_fitness)} positive={(selectedOverview.best_fitness ?? 0) > 0} />
+                                    <MetricCell label="OOS PSR" value={fmtNum(selectedOverview.best_oos_psr)} positive={(selectedOverview.best_oos_psr ?? 0) > 0} />
                                     <MetricCell label="Backtest PnL" value={selectedOverview.best_pnl != null ? fmtPct(selectedOverview.best_pnl) : "—"} positive={(selectedOverview.best_pnl ?? 0) >= 0} />
                                     <MetricCell label="Sharpe" value={fmtNum(selectedOverview.sharpe_ratio, 2)} positive={(selectedOverview.sharpe_ratio ?? 0) >= 0} />
                                     <MetricCell label="Max DD" value={selectedOverview.max_drawdown != null ? fmtPct(selectedOverview.max_drawdown) : "—"} positive={false} />
@@ -501,15 +500,15 @@ export default function EvolutionExplorer() {
                                     <MetricCell label="Stagnation" value={selectedOverview.stagnation != null ? String(selectedOverview.stagnation) : "—"} positive={(selectedOverview.stagnation ?? 0) < 50} />
                                 </div>
 
-                                {/* Fold PnL Mini Bars */}
-                                {selectedOverview.fold_pnls && selectedOverview.fold_pnls.length > 0 && (
+                                {/* Fold PSR Mini Bars */}
+                                {selectedOverview.fold_psrs && selectedOverview.fold_psrs.length > 0 && (
                                     <div className="flex items-center gap-2 px-5 py-2 border-b border-white/5 bg-slate-950/20">
                                         <span className="text-[9px] text-slate-600 uppercase tracking-wider font-bold shrink-0">
-                                            Folds (K={selectedOverview.fold_pnls.length})
+                                            Folds (K={selectedOverview.fold_psrs.length})
                                         </span>
                                         <div className="flex items-end gap-1 h-10 flex-1">
-                                            {selectedOverview.fold_pnls.map((pnl, i) => {
-                                                const maxAbs = Math.max(...selectedOverview.fold_pnls!.map(Math.abs), 0.01);
+                                            {selectedOverview.fold_psrs.map((pnl, i) => {
+                                                const maxAbs = Math.max(...selectedOverview.fold_psrs!.map(Math.abs), 0.01);
                                                 const height = Math.abs(pnl) / maxAbs * 100;
                                                 return (
                                                     <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
@@ -558,11 +557,11 @@ export default function EvolutionExplorer() {
                                                         <Tooltip
                                                             contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 11 }}
                                                             labelStyle={{ color: "#94a3b8", fontWeight: "bold" }}
-                                                            formatter={(value: number | string | undefined, name: string | undefined) => [typeof value === "number" ? value.toFixed(6) : "—", name === "fitness" ? "IS PnL" : "OOS PnL"]}
+                                                            formatter={(value: number | string | undefined, name: string | undefined) => [typeof value === "number" ? value.toFixed(6) : "—", name === "fitness" ? "IS PSR" : "OOS PSR"]}
                                                             labelFormatter={(l) => `Generation #${l}`}
                                                         />
                                                         <Line type="monotone" dataKey="fitness" stroke="#818cf8" strokeWidth={1.5} dot={false} name="fitness" />
-                                                        <Line type="monotone" dataKey="oos_ic" stroke="#22d3ee" strokeWidth={1} strokeDasharray="4 3" dot={false} name="oos_ic" connectNulls />
+                                                        <Line type="monotone" dataKey="oos_psr" stroke="#22d3ee" strokeWidth={1} strokeDasharray="4 3" dot={false} name="oos_psr" connectNulls />
                                                         <Scatter dataKey="fitness" data={chartData.filter((d) => d.hasBacktest)} fill="#818cf8" shape="circle" r={3.5} />
                                                     </ComposedChart>
                                                 </ResponsiveContainer>
@@ -653,7 +652,7 @@ export default function EvolutionExplorer() {
                                                                 {fmtNum(g.fitness)}
                                                             </span>
                                                             <span className="text-right font-mono text-cyan-400/60">
-                                                                {fmtNum(g.oos_ic)}
+                                                                {fmtNum(g.oos_psr)}
                                                             </span>
                                                             <span className={`text-right font-mono ${g.backtest ? g.backtest.pnl_percent >= 0 ? "text-emerald-400" : "text-red-400" : "text-slate-700"}`}>
                                                                 {g.backtest ? fmtPct(g.backtest.pnl_percent) : "—"}
@@ -708,20 +707,19 @@ type EvolutionStatus = "improving" | "plateau" | "stagnant";
 
 function getStatus(sym: SymbolOverview, _all: SymbolOverview[]): EvolutionStatus {
     const fitness = sym.best_fitness ?? 0;
-    const oos = sym.best_oos_ic ?? 0;
-    const stag = sym.stagnation ?? 0;
+    const oos = sym.best_oos_psr ?? 0;
 
     // Early generations — still exploring
     if (sym.latest_gen < 30) return "improving";
 
-    // Overfitting or deep stagnation
-    if (stag > 200 || (fitness > 0.3 && oos < -0.1)) return "stagnant";
+    // Overfitting: high IS PSR but negative OOS (strategy fails out-of-sample)
+    if (fitness > 1.0 && oos < -1.0) return "stagnant";
 
-    // Moderate stagnation or negative OOS
-    if (stag > 50 || oos <= 0) return "plateau";
+    // OOS not significantly positive
+    if (oos <= 0) return "plateau";
 
-    // Active improvement: low stagnation, positive fitness and OOS
-    if (stag < 30 && fitness > 0 && oos > 0) return "improving";
+    // Both IS and OOS show significant positive PSR z-scores
+    if (fitness > 0.5 && oos > 0.5) return "improving";
 
     return "plateau";
 }
@@ -845,11 +843,11 @@ function BacktestSummaryPanel({
     overview: SymbolOverview;
     symbol: string;
 }) {
-    const foldPnls = overview.fold_pnls;
-    const foldData = foldPnls
-        ? foldPnls.map((pnl, i) => ({
+    const foldPsrs = overview.fold_psrs;
+    const foldData = foldPsrs
+        ? foldPsrs.map((psr, i) => ({
               idx: i + 1,
-              pnl: +(pnl * 100).toFixed(2),
+              psr: +psr.toFixed(2),
           }))
         : [];
 
@@ -903,25 +901,25 @@ function BacktestSummaryPanel({
                             {foldData.length > 0 ? (
                                 <>
                                     <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-1.5 font-bold">
-                                        Fold PnL (K={foldData.length})
+                                        Fold PSR (K={foldData.length})
                                     </h5>
                                     <div className="h-44 bg-white/[0.02] rounded-lg border border-white/5 p-1">
                                         <ResponsiveContainer width="100%" height="100%">
                                             <BarChart data={foldData} barCategoryGap={4}>
                                                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" strokeOpacity={0.2} />
                                                 <XAxis dataKey="idx" stroke="#475569" fontSize={8} tickLine={false} axisLine={false} tickFormatter={(v) => `F${v}`} />
-                                                <YAxis stroke="#475569" fontSize={8} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}%`} width={36} />
+                                                <YAxis stroke="#475569" fontSize={8} tickLine={false} axisLine={false} width={36} />
                                                 <Tooltip
                                                     contentStyle={{ backgroundColor: "rgba(2, 6, 23, 0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", fontSize: 10 }}
-                                                    formatter={(value: number | string | undefined) => [`${typeof value === "number" ? value.toFixed(2) : "0"}%`, "PnL"]}
+                                                    formatter={(value: number | string | undefined) => [typeof value === "number" ? value.toFixed(2) : "0", "PSR z-score"]}
                                                     labelFormatter={(l) => `Fold #${l}`}
                                                 />
                                                 <ReferenceLine y={0} stroke="#475569" strokeOpacity={0.5} />
-                                                <Bar dataKey="pnl" radius={[2, 2, 0, 0]}>
+                                                <Bar dataKey="psr" radius={[2, 2, 0, 0]}>
                                                     {foldData.map((d, i) => (
                                                         <Cell
                                                             key={i}
-                                                            fill={d.pnl >= 0 ? "#34d399" : "#f87171"}
+                                                            fill={d.psr >= 0 ? "#34d399" : "#f87171"}
                                                             fillOpacity={0.7}
                                                         />
                                                     ))}
@@ -1220,14 +1218,14 @@ function BacktestDetail({
                     )}
 
                     {/* Fold Performance */}
-                    {generation.fold_pnls && generation.fold_pnls.length > 0 && (
+                    {generation.fold_psrs && generation.fold_psrs.length > 0 && (
                         <div>
                             <h5 className="text-[9px] text-slate-600 uppercase tracking-widest mb-2 font-bold">
-                                Fold Performance (K={generation.fold_pnls.length})
+                                Fold Performance (K={generation.fold_psrs.length})
                             </h5>
                             <div className="flex items-end gap-1 h-12">
-                                {generation.fold_pnls.map((pnl, i) => {
-                                    const maxAbs = Math.max(...generation.fold_pnls!.map(Math.abs), 0.01);
+                                {generation.fold_psrs.map((pnl, i) => {
+                                    const maxAbs = Math.max(...generation.fold_psrs!.map(Math.abs), 0.01);
                                     const height = Math.abs(pnl) / maxAbs * 100;
                                     return (
                                         <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">

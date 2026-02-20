@@ -456,29 +456,32 @@ async fn get_overview(
                     let max_drawdown: Option<f64> = row.get("max_drawdown");
                     let win_rate: Option<f64> = row.get("win_rate");
 
-                    let oos_ic = metadata
+                    // Read PSR fields (new) with fallback to PnL fields (historical)
+                    let oos_psr = metadata
                         .as_ref()
-                        .and_then(|m| m.get("oos_ic"))
+                        .and_then(|m| m.get("oos_psr").or_else(|| m.get("oos_ic")))
                         .and_then(|v| v.as_f64());
                     let stagnation = metadata
                         .as_ref()
                         .and_then(|m| m.get("stagnation"))
                         .and_then(|v| v.as_u64());
-                    let fold_pnls = metadata.as_ref().and_then(|m| m.get("fold_pnls")).cloned();
+                    let fold_psrs = metadata
+                        .as_ref()
+                        .and_then(|m| m.get("fold_psrs").or_else(|| m.get("fold_pnls")))
+                        .cloned();
 
                     json!({
                         "symbol": symbol,
                         "mode": mode,
                         "latest_gen": latest_gen,
                         "best_fitness": best_fitness,
-                        "best_oos_ic": oos_ic,
-                        "best_oos_pnl": oos_ic,
+                        "best_oos_psr": oos_psr,
                         "best_pnl": pnl_percent,
                         "sharpe_ratio": sharpe_ratio,
                         "max_drawdown": max_drawdown,
                         "win_rate": win_rate,
                         "stagnation": stagnation,
-                        "fold_pnls": fold_pnls,
+                        "fold_psrs": fold_psrs,
                         "last_updated": last_updated.map(|t| t.to_rfc3339()),
                     })
                 })
@@ -681,15 +684,19 @@ fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> 
     let win_rate: Option<f64> = row.get("win_rate");
     let total_trades: Option<i32> = row.get("total_trades");
 
-    let oos_ic = metadata
+    // Read PSR fields (new) with fallback to PnL fields (historical)
+    let oos_psr = metadata
         .as_ref()
-        .and_then(|m| m.get("oos_ic"))
+        .and_then(|m| m.get("oos_psr").or_else(|| m.get("oos_ic")))
         .and_then(|v| v.as_f64());
     let stagnation = metadata
         .as_ref()
         .and_then(|m| m.get("stagnation"))
         .and_then(|v| v.as_u64());
-    let fold_pnls = metadata.as_ref().and_then(|m| m.get("fold_pnls")).cloned();
+    let fold_psrs = metadata
+        .as_ref()
+        .and_then(|m| m.get("fold_psrs").or_else(|| m.get("fold_pnls")))
+        .cloned();
 
     let backtest = if pnl_percent.is_some() {
         let mut bt = json!({
@@ -723,9 +730,9 @@ fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> 
         "strategy_id": strategy_id,
         "timestamp": timestamp.map(|t| t.to_rfc3339()),
         "mode": mode,
-        "oos_ic": oos_ic,
+        "oos_psr": oos_psr,
         "stagnation": stagnation,
-        "fold_pnls": fold_pnls,
+        "fold_psrs": fold_psrs,
         "backtest": backtest,
     })
 }
