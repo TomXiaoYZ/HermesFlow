@@ -1,6 +1,39 @@
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+/// Per-generation ALPS promotion statistics.
+/// Tracks how many genomes were promoted, discarded, or purged at each layer boundary.
+/// Used to detect convergence slowdown — a key P2 trigger condition.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PromotionStats {
+    /// Promotions that succeeded at each layer boundary [0→1, 1→2, 2→3, 3→4].
+    pub promoted: [usize; 4],
+    /// Genomes that aged out but were not fit enough for the next layer.
+    pub discarded: [usize; 4],
+    /// Genomes purged from the top layer (exceeded max_age=500).
+    pub top_purged: usize,
+}
+
+impl PromotionStats {
+    /// Total promotions across all layer boundaries.
+    pub fn total_promoted(&self) -> usize {
+        self.promoted.iter().sum()
+    }
+
+    /// Promotion rate at a specific boundary: promoted / (promoted + discarded).
+    /// Returns None if no genomes aged out at this boundary.
+    /// Used by P2 trigger analysis (not called in current evolution loop).
+    #[allow(dead_code)]
+    pub fn rate(&self, boundary: usize) -> Option<f64> {
+        let total = self.promoted[boundary] + self.discarded[boundary];
+        if total == 0 {
+            None
+        } else {
+            Some(self.promoted[boundary] as f64 / total as f64)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Genome {
     pub tokens: Vec<usize>,
@@ -256,11 +289,10 @@ impl AlpsGA {
             .collect()
     }
 
-    /// Number of promotions that occurred in the last evolve() call.
-    /// (Stored for logging; reset each generation.)
-    pub fn evolve(&mut self) -> usize {
+    /// Evolve one generation. Returns detailed promotion statistics per layer boundary.
+    pub fn evolve(&mut self) -> PromotionStats {
         let mut rng = rand::thread_rng();
-        let mut total_promotions = 0_usize;
+        let mut stats = PromotionStats::default();
 
         // Phase 1: Age all surviving genomes
         for layer in &mut self.layers {
@@ -274,10 +306,10 @@ impl AlpsGA {
             let max_age = self.layers[layer_idx].max_age;
 
             // Collect genomes that exceeded this layer's max_age
-            let mut promoted = Vec::new();
+            let mut candidates = Vec::new();
             self.layers[layer_idx].population.retain(|g| {
                 if g.age > max_age {
-                    promoted.push(g.clone());
+                    candidates.push(g.clone());
                     false
                 } else {
                     true
@@ -286,11 +318,11 @@ impl AlpsGA {
 
             // Try to insert promoted genomes into the next layer
             let next_layer = &mut self.layers[layer_idx + 1];
-            for genome in promoted {
+            for genome in candidates {
                 if next_layer.population.len() < ALPS_LAYER_POP_SIZE {
                     // Room available — just insert
                     next_layer.population.push(genome);
-                    total_promotions += 1;
+                    stats.promoted[layer_idx] += 1;
                 } else {
                     // Replace worst genome if promoted genome is fitter
                     next_layer.sort_by_fitness();
@@ -298,9 +330,10 @@ impl AlpsGA {
                         if genome.fitness > worst.fitness {
                             next_layer.population.pop();
                             next_layer.population.push(genome);
-                            total_promotions += 1;
+                            stats.promoted[layer_idx] += 1;
+                        } else {
+                            stats.discarded[layer_idx] += 1;
                         }
-                        // else: discard (not fit enough for next layer)
                     }
                 }
             }
@@ -308,7 +341,9 @@ impl AlpsGA {
 
         // Phase 2b: Discard over-aged genomes from top layer (no higher layer to promote to)
         let top = &mut self.layers[ALPS_NUM_LAYERS - 1];
+        let before = top.population.len();
         top.population.retain(|g| g.age <= top.max_age);
+        stats.top_purged = before - top.population.len();
 
         // Phase 3: Replenish layer 0 with fresh random genomes
         let layer0 = &mut self.layers[0];
@@ -379,7 +414,7 @@ impl AlpsGA {
         }
 
         self.generation += 1;
-        total_promotions
+        stats
     }
 
     /// Single-point crossover: take prefix of parent1, suffix of parent2.

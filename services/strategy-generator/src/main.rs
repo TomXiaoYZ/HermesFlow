@@ -14,7 +14,86 @@ mod genetic;
 use backtest::StrategyMode;
 use backtest::{is_sentinel, sentinel_label, Backtester, WalkForwardConfig};
 use backtest_engine::config::FactorConfig;
-use genetic::AlpsGA;
+use genetic::{AlpsGA, PromotionStats};
+
+/// Rolling-window tracker for ALPS layer promotion rates.
+/// Used to detect convergence slowdown as a P2 trigger condition:
+/// if Layer 0→1 promotion rate drops significantly vs baseline,
+/// the search space is too large for random exploration alone.
+struct PromotionRateTracker {
+    /// Circular buffer of per-generation promotion stats.
+    history: Vec<PromotionStats>,
+    /// Rolling window size (number of generations to average over).
+    window: usize,
+    /// Write index in the circular buffer.
+    cursor: usize,
+    /// Total samples recorded (may exceed window for wrap-around).
+    count: usize,
+}
+
+impl PromotionRateTracker {
+    fn new(window: usize) -> Self {
+        Self {
+            history: Vec::with_capacity(window),
+            window,
+            cursor: 0,
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, stats: PromotionStats) {
+        if self.history.len() < self.window {
+            self.history.push(stats);
+        } else {
+            self.history[self.cursor] = stats;
+        }
+        self.cursor = (self.cursor + 1) % self.window;
+        self.count += 1;
+    }
+
+    /// Rolling average promotion rate for a specific layer boundary.
+    /// Returns None if no data or no genomes aged out at this boundary.
+    fn avg_rate(&self, boundary: usize) -> Option<f64> {
+        let n = self.history.len();
+        if n == 0 {
+            return None;
+        }
+        let mut total_promoted = 0usize;
+        let mut total_candidates = 0usize;
+        for s in &self.history {
+            total_promoted += s.promoted[boundary];
+            total_candidates += s.promoted[boundary] + s.discarded[boundary];
+        }
+        if total_candidates == 0 {
+            None
+        } else {
+            Some(total_promoted as f64 / total_candidates as f64)
+        }
+    }
+
+    /// Rolling average promotion rates for all 4 boundaries [0→1, 1→2, 2→3, 3→4].
+    fn avg_rates(&self) -> [Option<f64>; 4] {
+        [
+            self.avg_rate(0),
+            self.avg_rate(1),
+            self.avg_rate(2),
+            self.avg_rate(3),
+        ]
+    }
+
+    /// Total promotions across all boundaries in the rolling window.
+    fn total_promoted_in_window(&self) -> usize {
+        self.history.iter().map(|s| s.total_promoted()).sum()
+    }
+
+    /// Total discards across all boundaries in the rolling window.
+    fn total_discarded_in_window(&self) -> usize {
+        self.history
+            .iter()
+            .map(|s| s.discarded.iter().sum::<usize>())
+            .sum()
+    }
+}
 
 /// Optional walk-forward configuration, loaded from generator.yaml.
 #[derive(Debug, Deserialize, Clone)]
@@ -536,6 +615,9 @@ async fn run_symbol_evolution(
         }
     }
 
+    // Promotion rate tracker: rolling window of 50 generations for smoothed rates
+    let mut promo_tracker = PromotionRateTracker::new(50);
+
     // Evolution loop
     loop {
         let gen = ga.generation;
@@ -548,19 +630,31 @@ async fn run_symbol_evolution(
         for genome in ga.all_genomes_mut() {
             backtester.evaluate_symbol_kfold(genome, &symbol, k, mode);
         }
-        let promotions = ga.evolve();
+        let promo_stats = ga.evolve();
+        promo_tracker.push(promo_stats.clone());
 
-        // Log ALPS layer summary periodically
+        // Log ALPS layer summary + promotion rates periodically
         if gen.is_multiple_of(10) {
             let summary = ga.layer_summary();
+            let rates = promo_tracker.avg_rates();
+            let rate_strs: Vec<String> = rates
+                .iter()
+                .enumerate()
+                .map(|(i, r)| match r {
+                    Some(v) => format!("L{}→{}:{:.1}%", i, i + 1, v * 100.0),
+                    None => format!("L{}→{}:n/a", i, i + 1),
+                })
+                .collect();
             info!(
-                "[{}:{}:{}] Gen {} ALPS layers: {:?} promotions: {} total_pop: {}",
+                "[{}:{}:{}] Gen {} ALPS layers: {:?} promo: [{}] (window={}) top_purged: {} total_pop: {}",
                 exchange,
                 symbol,
                 mode_str,
                 gen,
                 summary,
-                promotions,
+                rate_strs.join(", "),
+                promo_tracker.history.len().min(promo_tracker.window),
+                promo_stats.top_purged,
                 ga.total_population()
             );
         }
@@ -629,6 +723,20 @@ async fn run_symbol_evolution(
                     "std_psr": wf_result.std_psr,
                     "steps": wf_result.steps,
                     "failure_mode": wf_result.failure_mode,
+                },
+                "alps_promotion": {
+                    "promoted": promo_stats.promoted,
+                    "discarded": promo_stats.discarded,
+                    "top_purged": promo_stats.top_purged,
+                    "rolling_rates": {
+                        "l0_l1": promo_tracker.avg_rate(0),
+                        "l1_l2": promo_tracker.avg_rate(1),
+                        "l2_l3": promo_tracker.avg_rate(2),
+                        "l3_l4": promo_tracker.avg_rate(3),
+                    },
+                    "rolling_window": promo_tracker.history.len().min(promo_tracker.window),
+                    "rolling_total_promoted": promo_tracker.total_promoted_in_window(),
+                    "rolling_total_discarded": promo_tracker.total_discarded_in_window(),
                 },
                 "meta": {
                     "name": format!("{}-{}-Gen{}-PSR{:.2}", symbol, mode_str, gen, best.fitness),
