@@ -109,6 +109,15 @@ pub struct EliteContext {
     pub age: usize,
 }
 
+/// Top-performing formula from another symbol, for cross-symbol learning.
+#[derive(Debug, Clone, Serialize)]
+pub struct CrossSymbolElite {
+    pub symbol: String,
+    pub formula: String,
+    pub is_psr: f64,
+    pub oos_psr: f64,
+}
+
 /// Full context for an LLM oracle invocation.
 #[derive(Debug)]
 pub struct OracleContext {
@@ -121,6 +130,7 @@ pub struct OracleContext {
     pub tft_rate: f64,
     pub elites: Vec<EliteContext>,
     pub genomes_requested: usize,
+    pub cross_symbol_elites: Vec<CrossSymbolElite>,
 }
 
 /// Result of a single oracle invocation.
@@ -201,6 +211,25 @@ pub fn build_prompt(ctx: &OracleContext) -> String {
                 elite.fitness,
                 elite.layer,
                 elite.age,
+            ));
+        }
+        prompt.push('\n');
+    }
+
+    // Cross-symbol successful formulas
+    if !ctx.cross_symbol_elites.is_empty() {
+        prompt.push_str("## Cross-Symbol Successful Formulas\n");
+        prompt.push_str(
+            "These formulas achieved positive OOS PSR on similar stocks. Consider adapting these patterns:\n",
+        );
+        for (i, elite) in ctx.cross_symbol_elites.iter().enumerate() {
+            prompt.push_str(&format!(
+                "{}. {}: `{}` → OOS PSR: {:.3}, IS PSR: {:.3}\n",
+                i + 1,
+                elite.symbol,
+                elite.formula,
+                elite.oos_psr,
+                elite.is_psr,
             ));
         }
         prompt.push('\n');
@@ -654,6 +683,12 @@ mod tests {
                 age: 45,
             }],
             genomes_requested: 10,
+            cross_symbol_elites: vec![CrossSymbolElite {
+                symbol: "TSLA".to_string(),
+                formula: "return TS_STD close TS_MEAN DIV".to_string(),
+                is_psr: 1.80,
+                oos_psr: 1.256,
+            }],
         };
 
         let prompt = build_prompt(&ctx);
@@ -664,6 +699,9 @@ mod tests {
         assert!(prompt.contains("ADD"));
         assert!(prompt.contains("TS_MEAN"));
         assert!(prompt.contains("JSON array"));
+        assert!(prompt.contains("Cross-Symbol Successful Formulas"));
+        assert!(prompt.contains("TSLA"));
+        assert!(prompt.contains("return TS_STD close TS_MEAN DIV"));
     }
 
     #[test]

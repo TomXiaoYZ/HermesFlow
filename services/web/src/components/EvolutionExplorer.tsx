@@ -84,6 +84,13 @@ interface BacktestData {
     metrics?: BacktestMetrics;
 }
 
+interface CrossSymbolElite {
+    symbol: string;
+    formula: string;
+    is_psr: number;
+    oos_psr: number;
+}
+
 interface LlmOracleLog {
     enabled: boolean;
     invocations: number;
@@ -97,6 +104,7 @@ interface LlmOracleLog {
     parsed_formulas?: string[];
     accepted_formulas?: string[];
     rejected_details?: [string, string][];
+    cross_symbol_elites?: CrossSymbolElite[];
 }
 
 interface Generation {
@@ -1476,6 +1484,25 @@ function OracleInteractionCard({ generation }: { generation: Generation }) {
                             <span className="font-mono text-slate-300">{oracle.total_injected}</span>
                         </div>
                     </div>
+
+                    {/* Cross-symbol references */}
+                    {(oracle.cross_symbol_elites ?? []).length > 0 && (
+                        <div>
+                            <span className="text-[8px] text-sky-500/70 uppercase tracking-wider font-bold">
+                                Cross-Symbol References ({oracle.cross_symbol_elites!.length})
+                            </span>
+                            <div className="mt-1 space-y-0.5">
+                                {oracle.cross_symbol_elites!.map((e, i) => (
+                                    <div key={i} className="flex items-center gap-1.5 px-2 py-0.5 bg-sky-500/5 rounded border border-sky-500/10">
+                                        <span className="text-[9px] text-sky-300/90 font-bold shrink-0 w-10">{e.symbol}</span>
+                                        <code className="text-[9px] text-sky-300/70 font-mono flex-1 truncate">{e.formula}</code>
+                                        <span className="text-[8px] text-sky-400/60 shrink-0">OOS: {e.oos_psr.toFixed(3)}</span>
+                                        <span className="text-[8px] text-sky-400/40 shrink-0">IS: {e.is_psr.toFixed(3)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     {/* Accepted formulas */}
                     {accepted.length > 0 && (

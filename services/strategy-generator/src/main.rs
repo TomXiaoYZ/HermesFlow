@@ -784,6 +784,7 @@ async fn run_symbol_evolution(
             let mut oracle_injected_this_gen = 0usize;
             let mut trigger_reason: Option<&str> = None;
             let mut oracle_log: Option<llm_oracle::OracleResult> = None;
+            let mut oracle_cross_elites: Vec<llm_oracle::CrossSymbolElite> = Vec::new();
             if oracle_config.enabled {
                 let trigger = should_trigger_oracle(
                     gen,
@@ -822,6 +823,28 @@ async fn run_symbol_evolution(
                     let existing_tokens: Vec<Vec<usize>> =
                         elites_owned.iter().map(|(_, g)| g.tokens.clone()).collect();
 
+                    let cross_symbol_elites = fetch_cross_symbol_elites(
+                        &pool,
+                        exchange,
+                        &symbol,
+                        mode_str,
+                        feat_offset,
+                        &factor_names,
+                        10,
+                    )
+                    .await;
+                    if !cross_symbol_elites.is_empty() {
+                        info!(
+                            "[{}:{}:{}] Cross-symbol context: {} elites from other symbols",
+                            exchange,
+                            symbol,
+                            mode_str,
+                            cross_symbol_elites.len()
+                        );
+                    }
+
+                    oracle_cross_elites = cross_symbol_elites.clone();
+
                     let ctx = llm_oracle::OracleContext {
                         symbol: symbol.clone(),
                         mode: mode_str.to_string(),
@@ -832,6 +855,7 @@ async fn run_symbol_evolution(
                         tft_rate: tft_tracker.rate(),
                         elites,
                         genomes_requested: oracle_config.genomes_per_invocation,
+                        cross_symbol_elites,
                     };
 
                     match llm_oracle::generate_mutations(&oracle_config, &ctx, &existing_tokens)
@@ -918,6 +942,7 @@ async fn run_symbol_evolution(
                     tft_rate: tft_tracker.rate(),
                     trigger_reason,
                     log: &oracle_log,
+                    cross_symbol_elites: &oracle_cross_elites,
                 }),
                 "meta": {
                     "name": format!("{}-{}-Gen{}-PSR{:.2}", symbol, mode_str, gen, best.fitness),
@@ -1048,6 +1073,7 @@ struct OracleSnapshot<'a> {
     tft_rate: f64,
     trigger_reason: Option<&'a str>,
     log: &'a Option<llm_oracle::OracleResult>,
+    cross_symbol_elites: &'a [llm_oracle::CrossSymbolElite],
 }
 
 /// Build the `llm_oracle` metadata JSONB value.
@@ -1079,6 +1105,22 @@ fn build_oracle_metadata(snap: &OracleSnapshot<'_>) -> serde_json::Value {
             .map(|(formula, reason)| serde_json::json!([formula, reason]))
             .collect();
         obj["rejected_details"] = serde_json::json!(rejected);
+
+        if !snap.cross_symbol_elites.is_empty() {
+            let cross: Vec<serde_json::Value> = snap
+                .cross_symbol_elites
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "symbol": e.symbol,
+                        "formula": e.formula,
+                        "is_psr": e.is_psr,
+                        "oos_psr": e.oos_psr,
+                    })
+                })
+                .collect();
+            obj["cross_symbol_elites"] = serde_json::json!(cross);
+        }
     }
 
     obj
@@ -1128,4 +1170,77 @@ fn should_trigger_oracle(
     }
 
     None
+}
+
+/// Fetch top-performing formulas from other symbols (same exchange + mode)
+/// for cross-symbol learning context in the LLM oracle prompt.
+///
+/// Returns empty vec on query failure (non-blocking — oracle still works).
+async fn fetch_cross_symbol_elites(
+    pool: &PgPool,
+    exchange: &str,
+    symbol: &str,
+    mode_str: &str,
+    feat_offset: usize,
+    factor_names: &[String],
+    limit: i64,
+) -> Vec<llm_oracle::CrossSymbolElite> {
+    let rows = match sqlx::query(
+        "SELECT sg.symbol, sg.fitness, sg.best_genome, \
+                (sg.metadata->>'oos_psr')::float AS oos_psr \
+         FROM strategy_generations sg \
+         WHERE sg.exchange = $1 \
+           AND sg.mode = $2 \
+           AND sg.symbol != $3 \
+           AND sg.generation = ( \
+               SELECT MAX(sg2.generation) \
+               FROM strategy_generations sg2 \
+               WHERE sg2.exchange = sg.exchange \
+                 AND sg2.symbol = sg.symbol \
+                 AND sg2.mode = sg.mode \
+           ) \
+           AND (sg.metadata->>'oos_psr')::float > 0 \
+         ORDER BY (sg.metadata->>'oos_psr')::float DESC \
+         LIMIT $4",
+    )
+    .bind(exchange)
+    .bind(mode_str)
+    .bind(symbol)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(
+                "[{}:{}:{}] Cross-symbol elite query failed: {}",
+                exchange, symbol, mode_str, e
+            );
+            return Vec::new();
+        }
+    };
+
+    use sqlx::Row;
+    let mut elites = Vec::new();
+    for row in &rows {
+        let other_symbol: String = row.get("symbol");
+        let fitness: f64 = row.get("fitness");
+        let oos_psr: f64 = row.get("oos_psr");
+
+        let best_genome: Option<Vec<i32>> = row.try_get("best_genome").ok();
+        let tokens = match best_genome {
+            Some(ref genome) => genome.iter().map(|&x| x as usize).collect::<Vec<usize>>(),
+            None => continue,
+        };
+
+        let formula = genome_decoder::decode_genome(&tokens, feat_offset, factor_names);
+        elites.push(llm_oracle::CrossSymbolElite {
+            symbol: other_symbol,
+            formula,
+            is_psr: fitness,
+            oos_psr,
+        });
+    }
+
+    elites
 }
