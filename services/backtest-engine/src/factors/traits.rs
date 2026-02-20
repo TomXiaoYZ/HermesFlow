@@ -22,6 +22,9 @@ pub struct OhlcvData<'a> {
     pub volume: &'a Array2<f64>,
     pub liquidity: &'a Array2<f64>,
     pub fdv: &'a Array2<f64>,
+    /// Optional reference asset close prices (e.g. SPY) for cross-asset factors.
+    /// When None, cross-asset factors gracefully degrade to zeros.
+    pub ref_close: Option<&'a Array2<f64>>,
 }
 
 /// Owned OHLCV arrays, convertible to borrowed `OhlcvData`
@@ -46,6 +49,7 @@ impl OhlcvArrays {
             volume: &self.volume,
             liquidity: &self.liquidity,
             fdv: &self.fdv,
+            ref_close: None,
         }
     }
 }

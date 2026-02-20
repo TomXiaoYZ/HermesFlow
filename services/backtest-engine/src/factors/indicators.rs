@@ -253,6 +253,157 @@ impl MemeIndicators {
         (high - low) / (close + 1e-9)
     }
 
+    // ── Microstructure Factors ──────────────────────────────────────────
+
+    /// Amihud Illiquidity: rolling mean of |return| / dollar_volume.
+    /// Higher = less liquid, more price impact per unit of volume.
+    pub fn amihud_illiquidity(
+        close: &Array2<f64>,
+        volume: &Array2<f64>,
+        window: usize,
+    ) -> Array2<f64> {
+        let prev = ts_delay(close, 1);
+        let abs_ret = ((close / (&prev + 1e-9)).mapv(f64::ln)).mapv(f64::abs);
+        let dollar_vol = close * volume + 1e-9;
+        let ratio = &abs_ret / &dollar_vol;
+        // Rolling mean
+        let mut sum = Array2::zeros(close.dim());
+        for i in 0..window {
+            sum = sum + ts_delay(&ratio, i);
+        }
+        (sum / window as f64).mapv(|v: f64| v.clamp(0.0, 1e6))
+    }
+
+    /// Spread Proxy: (high - low) / midprice, normalized by rolling mean.
+    /// Captures implicit bid-ask spread from OHLC data.
+    pub fn spread_proxy(high: &Array2<f64>, low: &Array2<f64>, window: usize) -> Array2<f64> {
+        let mid = (high + low) / 2.0 + 1e-9;
+        let raw_spread = (high - low) / &mid;
+        // Normalize by rolling mean
+        let mut sum: Array2<f64> = Array2::zeros(high.dim());
+        for i in 0..window {
+            sum = sum + ts_delay(&raw_spread, i);
+        }
+        let avg = &sum / window as f64 + 1e-9;
+        (&raw_spread / &avg).mapv(|v: f64| v.clamp(0.0, 10.0))
+    }
+
+    /// Return Autocorrelation: rolling correlation of ret[t] with ret[t-1].
+    /// Positive = trending, negative = mean-reverting, ~0 = random walk.
+    pub fn return_autocorrelation(close: &Array2<f64>, window: usize) -> Array2<f64> {
+        let prev = ts_delay(close, 1);
+        let ret = (close / (&prev + 1e-9)).mapv(f64::ln);
+        let ret_lag = ts_delay(&ret, 1);
+
+        // Rolling Pearson correlation between ret and ret_lag
+        let mut sum_a = Array2::zeros(close.dim());
+        let mut sum_b = Array2::zeros(close.dim());
+        let mut sum_ab = Array2::zeros(close.dim());
+        let mut sum_a2 = Array2::zeros(close.dim());
+        let mut sum_b2 = Array2::zeros(close.dim());
+
+        for i in 0..window {
+            let a = ts_delay(&ret, i);
+            let b = ts_delay(&ret_lag, i);
+            sum_ab += &(&a * &b);
+            sum_a += &a;
+            sum_b += &b;
+            sum_a2 += &a.mapv(|v: f64| v * v);
+            sum_b2 += &b.mapv(|v: f64| v * v);
+        }
+
+        let n = window as f64;
+        let cov = &sum_ab / n - &(&sum_a / n) * &(&sum_b / n);
+        let var_a = (&sum_a2 / n - (&sum_a / n).mapv(|v: f64| v * v)).mapv(|v: f64| v.max(0.0));
+        let var_b = (&sum_b2 / n - (&sum_b / n).mapv(|v: f64| v * v)).mapv(|v: f64| v.max(0.0));
+        let denom = (var_a * var_b).mapv(f64::sqrt) + 1e-12;
+
+        (&cov / &denom).mapv(|v: f64| v.clamp(-1.0, 1.0))
+    }
+
+    // ── Cross-Asset Factors ──────────────────────────────────────────
+
+    /// Rolling Pearson correlation between two return series.
+    pub fn rolling_correlation(
+        close_a: &Array2<f64>,
+        close_b: &Array2<f64>,
+        window: usize,
+    ) -> Array2<f64> {
+        let prev_a = ts_delay(close_a, 1);
+        let prev_b = ts_delay(close_b, 1);
+        let ret_a = (close_a / (&prev_a + 1e-9)).mapv(f64::ln);
+        let ret_b = (close_b / (&prev_b + 1e-9)).mapv(f64::ln);
+
+        let mut sum_a: Array2<f64> = Array2::zeros(close_a.dim());
+        let mut sum_b: Array2<f64> = Array2::zeros(close_a.dim());
+        let mut sum_ab: Array2<f64> = Array2::zeros(close_a.dim());
+        let mut sum_a2: Array2<f64> = Array2::zeros(close_a.dim());
+        let mut sum_b2: Array2<f64> = Array2::zeros(close_a.dim());
+
+        for i in 0..window {
+            let a = ts_delay(&ret_a, i);
+            let b = ts_delay(&ret_b, i);
+            sum_ab += &(&a * &b);
+            sum_a += &a;
+            sum_b += &b;
+            sum_a2 += &a.mapv(|v: f64| v * v);
+            sum_b2 += &b.mapv(|v: f64| v * v);
+        }
+
+        let n = window as f64;
+        let cov = &sum_ab / n - &(&sum_a / n) * &(&sum_b / n);
+        let var_a = (&sum_a2 / n - (&sum_a / n).mapv(|v: f64| v * v)).mapv(|v: f64| v.max(0.0));
+        let var_b = (&sum_b2 / n - (&sum_b / n).mapv(|v: f64| v * v)).mapv(|v: f64| v.max(0.0));
+        let denom = (var_a * var_b).mapv(f64::sqrt) + 1e-12;
+
+        (&cov / &denom).mapv(|v: f64| v.clamp(-1.0, 1.0))
+    }
+
+    /// Rolling beta: cov(ret_a, ret_b) / var(ret_b) over window.
+    pub fn rolling_beta(
+        close_a: &Array2<f64>,
+        close_b: &Array2<f64>,
+        window: usize,
+    ) -> Array2<f64> {
+        let prev_a = ts_delay(close_a, 1);
+        let prev_b = ts_delay(close_b, 1);
+        let ret_a = (close_a / (&prev_a + 1e-9)).mapv(f64::ln);
+        let ret_b = (close_b / (&prev_b + 1e-9)).mapv(f64::ln);
+
+        let mut sum_a: Array2<f64> = Array2::zeros(close_a.dim());
+        let mut sum_b: Array2<f64> = Array2::zeros(close_a.dim());
+        let mut sum_ab: Array2<f64> = Array2::zeros(close_a.dim());
+        let mut sum_b2: Array2<f64> = Array2::zeros(close_a.dim());
+
+        for i in 0..window {
+            let a = ts_delay(&ret_a, i);
+            let b = ts_delay(&ret_b, i);
+            sum_ab += &(&a * &b);
+            sum_a += &a;
+            sum_b += &b;
+            sum_b2 += &b.mapv(|v: f64| v * v);
+        }
+
+        let n = window as f64;
+        let cov = &sum_ab / n - &(&sum_a / n) * &(&sum_b / n);
+        let var_b = &sum_b2 / n - (&sum_b / n).mapv(|v: f64| v * v) + 1e-12;
+
+        (&cov / &var_b).mapv(|v: f64| v.clamp(-5.0, 5.0))
+    }
+
+    /// Relative strength vs reference: cumulative return of A minus cumulative return of B.
+    pub fn relative_strength_vs(
+        close_a: &Array2<f64>,
+        close_b: &Array2<f64>,
+        window: usize,
+    ) -> Array2<f64> {
+        let delayed_a = ts_delay(close_a, window);
+        let delayed_b = ts_delay(close_b, window);
+        let cum_ret_a = (close_a / (&delayed_a + 1e-9)) - 1.0;
+        let cum_ret_b = (close_b / (&delayed_b + 1e-9)) - 1.0;
+        (&cum_ret_a - &cum_ret_b).mapv(|v| v.clamp(-5.0, 5.0))
+    }
+
     /// Relative Strength (RSI-like)
     pub fn relative_strength(close: &Array2<f64>, window: usize) -> Array2<f64> {
         let diff = close - &ts_delay(close, 1);
@@ -409,5 +560,125 @@ mod tests {
         // t=0 is distorted by zero padding, check t=1 and t=2
         assert_abs_diff_eq!(res[[0, 1]], 0.1, epsilon = 1e-6);
         assert_abs_diff_eq!(res[[0, 2]], -0.04545, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_amihud_illiquidity() {
+        // Known price/volume: stable price, increasing volume should decrease illiquidity
+        let close =
+            Array2::from_shape_vec((1, 30), (0..30).map(|i| 100.0 + (i as f64 * 0.1)).collect())
+                .unwrap();
+        let volume = Array2::from_shape_vec(
+            (1, 30),
+            (0..30).map(|i| 1000.0 + i as f64 * 100.0).collect(),
+        )
+        .unwrap();
+        let result = MemeIndicators::amihud_illiquidity(&close, &volume, 10);
+        // Should be non-negative and finite
+        for &v in result.iter() {
+            assert!(v >= 0.0, "Amihud should be non-negative");
+            assert!(v.is_finite(), "Amihud should be finite");
+        }
+        // Later bars (higher volume) should have lower illiquidity
+        assert!(
+            result[[0, 29]] <= result[[0, 15]] + 1e-9,
+            "Higher volume should mean lower illiquidity"
+        );
+    }
+
+    #[test]
+    fn test_spread_proxy() {
+        // Known OHLC: wider spread = higher value
+        let high = Array2::from_shape_vec(
+            (1, 30),
+            (0..30)
+                .map(|i| 105.0 + if i > 15 { 5.0 } else { 0.0 })
+                .collect(),
+        )
+        .unwrap();
+        let low = Array2::from_shape_vec(
+            (1, 30),
+            (0..30)
+                .map(|i| 95.0 - if i > 15 { 5.0 } else { 0.0 })
+                .collect(),
+        )
+        .unwrap();
+        let result = MemeIndicators::spread_proxy(&high, &low, 10);
+        for &v in result.iter() {
+            assert!(v >= 0.0, "Spread proxy should be non-negative");
+            assert!(v.is_finite(), "Spread proxy should be finite");
+        }
+    }
+
+    #[test]
+    fn test_return_autocorrelation() {
+        // Trending series: consistently increasing -> positive autocorrelation
+        let trending: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let close_trend = Array2::from_shape_vec((1, 50), trending).unwrap();
+        let result_trend = MemeIndicators::return_autocorrelation(&close_trend, 20);
+        // After warmup, trending series should have positive autocorrelation
+        assert!(
+            result_trend[[0, 49]] > 0.0,
+            "Trending series should have positive autocorrelation, got {}",
+            result_trend[[0, 49]]
+        );
+
+        // Random-like series: alternating -> should be negative or near zero
+        let alternating: Vec<f64> = (0..50)
+            .map(|i| if i % 2 == 0 { 100.0 } else { 101.0 })
+            .collect();
+        let close_alt = Array2::from_shape_vec((1, 50), alternating).unwrap();
+        let result_alt = MemeIndicators::return_autocorrelation(&close_alt, 20);
+        assert!(
+            result_alt[[0, 49]] < 0.5,
+            "Alternating series should have low/negative autocorrelation, got {}",
+            result_alt[[0, 49]]
+        );
+    }
+
+    #[test]
+    fn test_rolling_correlation() {
+        // Perfectly correlated: same series -> correlation ~1.0
+        let prices: Vec<f64> = (0..80).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let close_a = Array2::from_shape_vec((1, 80), prices.clone()).unwrap();
+        let close_b = Array2::from_shape_vec((1, 80), prices).unwrap();
+        let result = MemeIndicators::rolling_correlation(&close_a, &close_b, 30);
+        // After warmup period, should be near 1.0
+        assert!(
+            result[[0, 79]] > 0.95,
+            "Self-correlation should be ~1.0, got {}",
+            result[[0, 79]]
+        );
+    }
+
+    #[test]
+    fn test_rolling_beta() {
+        // Beta of a series with itself should be ~1.0
+        let prices: Vec<f64> = (0..80).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let close_a = Array2::from_shape_vec((1, 80), prices.clone()).unwrap();
+        let close_b = Array2::from_shape_vec((1, 80), prices).unwrap();
+        let result = MemeIndicators::rolling_beta(&close_a, &close_b, 30);
+        // After warmup, beta of self should be ~1.0
+        assert!(
+            (result[[0, 79]] - 1.0).abs() < 0.1,
+            "Self-beta should be ~1.0, got {}",
+            result[[0, 79]]
+        );
+    }
+
+    #[test]
+    fn test_relative_strength_vs() {
+        // A outperforms B: A goes up, B stays flat
+        let close_a =
+            Array2::from_shape_vec((1, 30), (0..30).map(|i| 100.0 + i as f64 * 2.0).collect())
+                .unwrap();
+        let close_b = Array2::from_shape_vec((1, 30), vec![100.0; 30]).unwrap();
+        let result = MemeIndicators::relative_strength_vs(&close_a, &close_b, 10);
+        // A outperforms -> positive relative strength
+        assert!(
+            result[[0, 29]] > 0.0,
+            "Outperforming asset should have positive relative strength, got {}",
+            result[[0, 29]]
+        );
     }
 }

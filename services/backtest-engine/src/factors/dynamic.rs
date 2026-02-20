@@ -149,6 +149,7 @@ mod tests {
             volume: &volume,
             liquidity: &liq,
             fdv: &fdv,
+            ref_close: None,
         };
         let features = engineer.compute_features(&ohlcv);
         

@@ -83,6 +83,7 @@ fn test_python_parity() {
         volume: &volume,
         liquidity: &liquidity,
         fdv: &fdv,
+        ref_close: None,
     };
     let features = FeatureEngineer::compute_features(&ohlcv);
 

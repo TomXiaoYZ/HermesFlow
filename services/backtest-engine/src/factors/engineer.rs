@@ -74,6 +74,39 @@ impl FeatureEngineer {
             "trend_strength" => MemeIndicators::trend_strength(d.close, 20),
             "momentum_regime" => MemeIndicators::momentum_regime(d.close, 20),
 
+            // Tier A: Technical enrichment (existing implementations, newly activated)
+            "atr_pct" => ATR::atr_percent(d.high, d.low, d.close),
+            "obv_pct" => OBV::obv_pct_change(d.close, d.volume),
+            "mfi" => MFI::mfi_normalized(d.high, d.low, d.close, d.volume, 14),
+            "bb_percent_b" => BollingerBands::percent_b(d.close, 20),
+            "macd_hist" => {
+                let (_, _, hist) = MACD::macd(d.close);
+                &hist / (d.close + 1e-9)
+            }
+            "sma_200_diff" => {
+                let sma = MovingAverages::sma(d.close, 200);
+                (d.close - &sma) / (d.close + 1e-9)
+            }
+
+            // Tier A: Microstructure (new implementations)
+            "amihud_illiq" => MemeIndicators::amihud_illiquidity(d.close, d.volume, 20),
+            "spread_proxy" => MemeIndicators::spread_proxy(d.high, d.low, 20),
+            "return_autocorr" => MemeIndicators::return_autocorrelation(d.close, 20),
+
+            // Tier B: Cross-asset (SPY reference, graceful degradation if unavailable)
+            "spy_corr" => match d.ref_close {
+                Some(rc) => MemeIndicators::rolling_correlation(d.close, rc, 60),
+                None => Array2::zeros(d.close.dim()),
+            },
+            "spy_beta" => match d.ref_close {
+                Some(rc) => MemeIndicators::rolling_beta(d.close, rc, 60),
+                None => Array2::zeros(d.close.dim()),
+            },
+            "spy_rel_strength" => match d.ref_close {
+                Some(rc) => MemeIndicators::relative_strength_vs(d.close, rc, 20),
+                None => Array2::zeros(d.close.dim()),
+            },
+
             // Legacy crypto factors (kept for backward compat with old configs)
             "liquidity_health" => MemeIndicators::liquidity_health(d.liquidity, d.fdv),
             "buy_sell_pressure" => {

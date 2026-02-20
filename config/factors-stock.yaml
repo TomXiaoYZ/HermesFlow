@@ -1,7 +1,6 @@
 # Factor Configuration for US Stocks (Polygon / IBKR)
-# 10 equity-focused factors derived from OHLCV data
-# Replaces crypto-specific factors (buy_sell_pressure, pump_deviation, log_volume)
-# with equity-standard factors (vwap_deviation, adv_ratio, close_position, intraday_range)
+# 25 equity-focused factors: 13 core + 6 technical + 3 microstructure + 3 cross-asset (SPY)
+# P1: Expanded from 13 → 25 to reduce too_few_trades OOS failures
 
 active_factors:
   - id: 0
@@ -68,3 +67,66 @@ active_factors:
     name: "momentum_regime"
     description: "Momentum regime (trending vs choppy)"
     normalization: "none"
+
+  # Tier A: Technical enrichment (existing implementations, newly activated)
+  - id: 13
+    name: "atr_pct"
+    description: "ATR as percentage of close (captures gaps/volatility)"
+    normalization: "robust"
+
+  - id: 14
+    name: "obv_pct"
+    description: "On-Balance Volume percent change (directional volume)"
+    normalization: "robust"
+
+  - id: 15
+    name: "mfi"
+    description: "Money Flow Index normalized (price-weighted volume momentum)"
+    normalization: "none"
+
+  - id: 16
+    name: "bb_percent_b"
+    description: "Bollinger Bands %B (position within bands, 0-1)"
+    normalization: "none"
+
+  - id: 17
+    name: "macd_hist"
+    description: "MACD histogram / close (momentum acceleration)"
+    normalization: "robust"
+
+  - id: 18
+    name: "sma_200_diff"
+    description: "(close - SMA200) / close (long-term trend context)"
+    normalization: "robust"
+
+  # Tier A: Microstructure
+  - id: 19
+    name: "amihud_illiq"
+    description: "Amihud illiquidity ratio (price impact per volume)"
+    normalization: "robust"
+
+  - id: 20
+    name: "spread_proxy"
+    description: "Implicit bid-ask spread from OHLC (normalized by rolling mean)"
+    normalization: "robust"
+
+  - id: 21
+    name: "return_autocorr"
+    description: "Return autocorrelation (trending vs mean-reverting)"
+    normalization: "none"
+
+  # Tier B: Cross-asset (SPY reference)
+  - id: 22
+    name: "spy_corr"
+    description: "Rolling correlation with SPY (systematic risk exposure)"
+    normalization: "none"
+
+  - id: 23
+    name: "spy_beta"
+    description: "Rolling beta vs SPY (market sensitivity)"
+    normalization: "robust"
+
+  - id: 24
+    name: "spy_rel_strength"
+    description: "Relative strength vs SPY (outperformance/underperformance)"
+    normalization: "robust"

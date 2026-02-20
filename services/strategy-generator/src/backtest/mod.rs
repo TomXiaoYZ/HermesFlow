@@ -175,6 +175,8 @@ pub struct Backtester {
     pool: PgPool,
     vm: StackVM,
     cache: HashMap<String, CachedData>,
+    /// Reference asset close prices for cross-asset factors (e.g. "SPY" -> close array).
+    ref_cache: HashMap<String, Array2<f64>>,
     factor_config: FactorConfig,
     pub exchange: String,
     pub resolution: String,
@@ -196,6 +198,7 @@ impl Backtester {
             pool,
             vm: StackVM::with_window(&factor_config, ts_window),
             cache: HashMap::new(),
+            ref_cache: HashMap::new(),
             factor_config,
             exchange,
             resolution,
@@ -310,6 +313,16 @@ impl Backtester {
             }
 
             // Generate Features based on Config
+            // Align reference data (SPY) to this symbol's bar count
+            let ref_close_aligned = self.ref_cache.get("SPY").and_then(|spy| {
+                let spy_len = spy.shape()[1];
+                let sym_len = close.shape()[1];
+                if spy_len >= sym_len {
+                    Some(spy.slice(ndarray::s![.., (spy_len - sym_len)..]).to_owned())
+                } else {
+                    None
+                }
+            });
             let ohlcv = backtest_engine::factors::traits::OhlcvData {
                 close: &close,
                 open: &open,
@@ -318,6 +331,7 @@ impl Backtester {
                 volume: &volume,
                 liquidity: &liq,
                 fdv: &fdv,
+                ref_close: ref_close_aligned.as_ref(),
             };
             let features =
                 FeatureEngineer::compute_features_from_config(&self.factor_config, &ohlcv);
@@ -378,6 +392,49 @@ impl Backtester {
         }
 
         tracing::info!("Loaded data for {} symbols", loaded_count);
+        Ok(())
+    }
+
+    /// Load reference asset close prices for cross-asset factors (e.g. SPY).
+    /// Queries candle close prices from the same exchange/resolution and stores
+    /// the close Array2 in ref_cache keyed by symbol.
+    pub async fn load_reference_data(&mut self, symbol: &str, days: i64) -> anyhow::Result<()> {
+        let rows = sqlx::query_as::<_, Candle>(
+            r#"
+            SELECT time, open, high, low, close,
+                   COALESCE(volume, 0) as volume,
+                   COALESCE(liquidity, 0) as liquidity,
+                   COALESCE(fdv, 0) as fdv,
+                   COALESCE(amount, 0) as amount
+            FROM mkt_equity_candles
+            WHERE exchange = $2 AND symbol = $1 AND resolution = $3
+            AND time > NOW() - make_interval(days := $4)
+            ORDER BY time ASC
+            "#,
+        )
+        .bind(symbol)
+        .bind(&self.exchange)
+        .bind(&self.resolution)
+        .bind(days as i32)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if rows.len() < 50 {
+            return Err(anyhow::anyhow!(
+                "Insufficient reference data for {}: {} rows",
+                symbol,
+                rows.len()
+            ));
+        }
+
+        let len = rows.len();
+        let mut close = Array2::<f64>::zeros((1, len));
+        for (i, c) in rows.iter().enumerate() {
+            close[[0, i]] = c.close.to_f64().unwrap_or(0.0);
+        }
+
+        tracing::info!("Loaded {} bars of reference data for {}", len, symbol);
+        self.ref_cache.insert(symbol.to_string(), close);
         Ok(())
     }
 

@@ -370,11 +370,24 @@ async fn run_symbol_evolution(
         );
     }
 
+    // Load SPY reference data for cross-asset factors (Polygon only)
+    if exchange == "Polygon" && symbol != "SPY" {
+        if let Err(e) = backtester
+            .load_reference_data("SPY", config.lookback_days)
+            .await
+        {
+            warn!(
+                "[{}:{}:{}] Failed to load SPY reference: {}",
+                exchange, symbol, mode_str, e
+            );
+        }
+    }
+
     // Resume from last generation for this (exchange, symbol, mode)
     use sqlx::Row;
     let resume_query = || {
         sqlx::query(
-            "SELECT generation, best_genome FROM strategy_generations \
+            "SELECT generation, best_genome, metadata FROM strategy_generations \
              WHERE exchange = $1 AND symbol = $2 AND mode = $3 ORDER BY generation DESC LIMIT 1",
         )
         .bind(exchange)
@@ -391,13 +404,39 @@ async fn run_symbol_evolution(
             ga.generation = max_gen as usize + 1;
         }
         if let Ok(best_tokens) = row.try_get::<Vec<i32>, _>("best_genome") {
-            // Seed the best genome from DB into the elite layer (layer 4)
-            let tokens: Vec<usize> = best_tokens.into_iter().map(|x| x as usize).collect();
-            ga.best_genome = Some(genetic::Genome {
-                tokens,
-                fitness: 0.0,
-                age: 0,
-            });
+            // Check genome compatibility via stored feat_offset in metadata.
+            // Old genomes from 13-factor space encode tokens differently than
+            // 25-factor space — operator indices shift, making old genomes invalid.
+            let stored_offset = row
+                .try_get::<serde_json::Value, _>("metadata")
+                .ok()
+                .and_then(|m| m.get("feat_offset").and_then(|v| v.as_u64()))
+                .map(|v| v as usize);
+
+            match stored_offset {
+                Some(old_offset) if old_offset != feat_offset => {
+                    warn!(
+                        "[{}:{}:{}] Skipping genome resume: feat_offset changed ({}→{}), old tokens incompatible",
+                        exchange, symbol, mode_str, old_offset, feat_offset
+                    );
+                }
+                None => {
+                    // No stored feat_offset — legacy genome, assume incompatible
+                    warn!(
+                        "[{}:{}:{}] Skipping genome resume: no feat_offset in metadata, likely from older factor config (current={})",
+                        exchange, symbol, mode_str, feat_offset
+                    );
+                }
+                _ => {
+                    // Compatible: same feat_offset
+                    let tokens: Vec<usize> = best_tokens.into_iter().map(|x| x as usize).collect();
+                    ga.best_genome = Some(genetic::Genome {
+                        tokens,
+                        fitness: 0.0,
+                        age: 0,
+                    });
+                }
+            }
         }
     };
 
@@ -578,6 +617,7 @@ async fn run_symbol_evolution(
                 "age": best.age,
                 "fold_psrs": fold_psrs,
                 "best_tokens": best.tokens,
+                "feat_offset": feat_offset,
                 "exchange": exchange,
                 "symbol": symbol,
                 "mode": mode_str,
