@@ -133,7 +133,9 @@ fn generate_random_rpn(max_depth: usize, feat_offset: usize) -> Vec<usize> {
 }
 
 /// ALPS layer configuration: max_age uses Fibonacci-like gaps.
-const ALPS_LAYER_MAX_AGES: [usize; 5] = [5, 13, 34, 89, usize::MAX];
+/// Layer 4 (elite) capped at 500 to prevent ancient genome stagnation.
+/// Over-aged elites are discarded; best_genome field preserves the all-time best.
+const ALPS_LAYER_MAX_AGES: [usize; 5] = [5, 13, 34, 89, 500];
 const ALPS_LAYER_POP_SIZE: usize = 100;
 const ALPS_NUM_LAYERS: usize = 5;
 
@@ -304,6 +306,10 @@ impl AlpsGA {
             }
         }
 
+        // Phase 2b: Discard over-aged genomes from top layer (no higher layer to promote to)
+        let top = &mut self.layers[ALPS_NUM_LAYERS - 1];
+        top.population.retain(|g| g.age <= top.max_age);
+
         // Phase 3: Replenish layer 0 with fresh random genomes
         let layer0 = &mut self.layers[0];
         while layer0.population.len() < ALPS_LAYER_POP_SIZE {
@@ -313,19 +319,25 @@ impl AlpsGA {
         // Phase 4: Evolve each layer independently
         for layer in &mut self.layers {
             if layer.population.is_empty() {
-                continue;
+                // Seed empty layers with random genomes so evolution can proceed
+                for _ in 0..ALPS_LAYER_POP_SIZE {
+                    layer.population.push(Genome::new_random(self.feat_offset));
+                }
             }
 
             layer.sort_by_fitness();
             layer.deduplicate(self.feat_offset);
 
-            let pop_size = layer.population.len();
-            let elitism_count = (pop_size as f64 * 0.05).max(2.0).min(pop_size as f64) as usize;
+            // Always target ALPS_LAYER_POP_SIZE so layers recover after age-based discarding
+            let pop_size = ALPS_LAYER_POP_SIZE;
+            let current_len = layer.population.len();
+            let elitism_count =
+                (current_len as f64 * 0.05).max(2.0).min(current_len as f64) as usize;
 
             let mut new_pop = Vec::with_capacity(pop_size);
 
             // Elitism: keep top genomes
-            for i in 0..elitism_count.min(pop_size) {
+            for i in 0..elitism_count.min(current_len) {
                 new_pop.push(layer.population[i].clone());
             }
 

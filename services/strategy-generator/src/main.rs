@@ -493,31 +493,28 @@ async fn run_symbol_evolution(
         }
 
         if let Some(best) = ga.best_genome.clone() {
-            let oos_pnl = backtester.evaluate_symbol_oos(&best, &symbol, mode);
-            let fold_pnls = backtester.evaluate_symbol_fold_detail(&best, &symbol, k, mode);
+            let oos_psr = backtester.evaluate_symbol_oos_psr(&best, &symbol, mode);
+            let fold_psrs = backtester.evaluate_symbol_fold_psr_detail(&best, &symbol, k, mode);
             info!(
-                "[{}:{}:{}] Gen {} IS fitness: {:.4} OOS PnL: {:.4} tokens: {} age: {} K: {} folds: {:?}",
+                "[{}:{}:{}] Gen {} IS: {:.4} OOS: {:.4} tokens: {} age: {} K: {} folds: {:?}",
                 exchange,
                 symbol,
                 mode_str,
                 gen,
                 best.fitness,
-                oos_pnl,
+                oos_psr,
                 best.tokens.len(),
                 best.age,
                 k,
-                fold_pnls
+                fold_psrs
             );
 
-            // IS-OOS gap monitoring (log only, ALPS handles diversity naturally)
-            let is_oos_gap = best.fitness - oos_pnl;
-            if best.fitness > 0.05
-                && is_oos_gap > best.fitness.abs().max(0.1) * 0.5
-                && oos_pnl < 0.0
-            {
+            // IS-OOS gap monitoring (same PSR scale, apples-to-apples comparison)
+            let is_oos_gap = best.fitness - oos_psr;
+            if best.fitness > 1.0 && oos_psr < 0.0 && is_oos_gap > 2.0 {
                 warn!(
-                    "[{}:{}:{}] Gen {} — IS-OOS divergence detected (IS={:.3}, OOS={:.3}, gap={:.3})",
-                    exchange, symbol, mode_str, gen, best.fitness, oos_pnl, is_oos_gap
+                    "[{}:{}:{}] Gen {} — IS-OOS divergence (IS={:.3}, OOS={:.3}, gap={:.3})",
+                    exchange, symbol, mode_str, gen, best.fitness, oos_psr, is_oos_gap
                 );
             }
 
@@ -528,17 +525,17 @@ async fn run_symbol_evolution(
                 "formula": best.tokens,
                 "generation": gen,
                 "fitness": best.fitness,
-                "oos_ic": oos_pnl,
+                "oos_psr": oos_psr,
                 "age": best.age,
-                "fold_pnls": fold_pnls,
+                "fold_psrs": fold_psrs,
                 "best_tokens": best.tokens,
                 "exchange": exchange,
                 "symbol": symbol,
                 "mode": mode_str,
                 "resolution": resolution,
                 "meta": {
-                    "name": format!("{}-{}-Gen{}-PnL{:.2}", symbol, mode_str, gen, best.fitness),
-                    "description": format!("{} {} Evolved Strategy. IS PnL: {:.4}, OOS PnL: {:.4}", symbol, mode_str, best.fitness, oos_pnl)
+                    "name": format!("{}-{}-Gen{}-PSR{:.2}", symbol, mode_str, gen, best.fitness),
+                    "description": format!("{} {} Evolved Strategy. IS PSR: {:.4}, OOS PSR: {:.4}", symbol, mode_str, best.fitness, oos_psr)
                 }
             });
             let payload_str = payload.to_string();

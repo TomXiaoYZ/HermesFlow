@@ -336,6 +336,7 @@ impl Backtester {
     }
 
     /// PnL-based evaluation on out-of-sample data (last 30%).
+    #[allow(dead_code)]
     pub fn evaluate_symbol_oos(&self, genome: &Genome, symbol: &str, mode: StrategyMode) -> f64 {
         let data = match self.cache.get(symbol) {
             Some(d) => d,
@@ -359,6 +360,39 @@ impl Backtester {
             self.pnl_fitness(sig_slice, ret_slice, split_idx, len, mode)
         } else {
             0.0
+        }
+    }
+
+    /// PSR-based evaluation on out-of-sample data (last 30%).
+    /// Uses the same PSR metric as K-fold IS fitness for apples-to-apples comparison.
+    pub fn evaluate_symbol_oos_psr(
+        &self,
+        genome: &Genome,
+        symbol: &str,
+        mode: StrategyMode,
+    ) -> f64 {
+        let data = match self.cache.get(symbol) {
+            Some(d) => d,
+            None => return -10.0,
+        };
+
+        if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
+            let sig_slice = signal.as_slice().unwrap();
+            let ret_slice = data.returns.as_slice().unwrap();
+
+            let len = sig_slice.len().min(ret_slice.len());
+            if len < 60 {
+                return -10.0;
+            }
+
+            let split_idx = (len as f64 * 0.7).max(30.0) as usize;
+            if split_idx >= len || len - split_idx < 30 {
+                return -10.0;
+            }
+
+            self.psr_fitness(sig_slice, ret_slice, split_idx, len, mode)
+        } else {
+            -10.0
         }
     }
 
@@ -475,6 +509,7 @@ impl Backtester {
 
     /// Diagnostic: return per-fold PnL for monitoring/frontend display.
     /// Uses the same embargo gaps as evaluate_symbol_kfold for consistency.
+    #[allow(dead_code)]
     pub fn evaluate_symbol_fold_detail(
         &self,
         genome: &Genome,
@@ -519,6 +554,56 @@ impl Backtester {
             }
         }
         fold_pnls
+    }
+
+    /// Diagnostic: return per-fold PSR z-scores (same metric as IS fitness).
+    /// Uses embargo gaps for consistency with evaluate_symbol_kfold.
+    pub fn evaluate_symbol_fold_psr_detail(
+        &self,
+        genome: &Genome,
+        symbol: &str,
+        k: usize,
+        mode: StrategyMode,
+    ) -> Vec<f64> {
+        let data = match self.cache.get(symbol) {
+            Some(d) => d,
+            None => return vec![],
+        };
+
+        let signal = match self.vm.execute(&genome.tokens, &data.features) {
+            Some(s) => s,
+            None => return vec![],
+        };
+
+        let sig_slice = signal.as_slice().unwrap();
+        let ret_slice = data.returns.as_slice().unwrap();
+        let len = sig_slice.len().min(ret_slice.len());
+        if len < 20 {
+            return vec![];
+        }
+
+        let fold_size = len / k;
+        if fold_size < 30 {
+            return vec![];
+        }
+
+        let embargo = self.embargo_size();
+        let mut fold_psrs = Vec::with_capacity(k);
+        for i in 0..k {
+            let raw_start = i * fold_size;
+            let start = if i > 0 {
+                (raw_start + embargo).min(len)
+            } else {
+                raw_start
+            };
+            let end = if i == k - 1 { len } else { (i + 1) * fold_size };
+            if end > start && end - start >= 30 {
+                fold_psrs.push(self.psr_fitness(sig_slice, ret_slice, start, end, mode));
+            } else {
+                fold_psrs.push(-10.0);
+            }
+        }
+        fold_psrs
     }
 
     /// Probabilistic Sharpe Ratio (PSR) fitness for a fold.
