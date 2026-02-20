@@ -86,6 +86,12 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "7497".to_string())
         .parse()
         .unwrap_or(7497);
+    // long_short can connect to a separate gateway (IBKR_HOST_LS/IBKR_PORT_LS)
+    let ibkr_host_ls = env::var("IBKR_HOST_LS").unwrap_or_else(|_| ibkr_host.clone());
+    let ibkr_port_ls: u32 = env::var("IBKR_PORT_LS")
+        .unwrap_or_else(|_| ibkr_port.to_string())
+        .parse()
+        .unwrap_or(ibkr_port);
     let ibkr_client_id_lo: u32 = env::var("IBKR_CLIENT_ID_LONG_ONLY")
         .unwrap_or_else(|_| "1".to_string())
         .parse()
@@ -118,24 +124,25 @@ async fn main() -> anyhow::Result<()> {
 
     info!(
         "Initializing IBKR Trader long_short ({}:{}, client_id={})...",
-        ibkr_host, ibkr_port, ibkr_client_id_ls
+        ibkr_host_ls, ibkr_port_ls, ibkr_client_id_ls
     );
-    let ibkr_long_short = match IBKRTrader::new(&ibkr_host, ibkr_port, ibkr_client_id_ls).await {
-        Ok(t) => {
-            info!(
-                "IBKR Trader long_short connected (client_id={})",
-                ibkr_client_id_ls
-            );
-            Some(Arc::new(t))
-        }
-        Err(e) => {
-            warn!(
-                "IBKR Trader long_short not available (client_id={}): {}",
-                ibkr_client_id_ls, e
-            );
-            None
-        }
-    };
+    let ibkr_long_short =
+        match IBKRTrader::new(&ibkr_host_ls, ibkr_port_ls, ibkr_client_id_ls).await {
+            Ok(t) => {
+                info!(
+                    "IBKR Trader long_short connected (client_id={})",
+                    ibkr_client_id_ls
+                );
+                Some(Arc::new(t))
+            }
+            Err(e) => {
+                warn!(
+                    "IBKR Trader long_short not available (client_id={}): {}",
+                    ibkr_client_id_ls, e
+                );
+                None
+            }
+        };
 
     // ========================================
     // 2b. Sync order ID counter with DB max to avoid uniqueness conflicts
