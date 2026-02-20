@@ -32,7 +32,7 @@ make clean        # Full cleanup
 services/
   data-engine/         # [Rust] Market data aggregation
     collectors/        # 12+ data source connectors (Binance, OKX, Bybit, Polygon, Jupiter, Birdeye, etc.)
-    monitoring/        # Data quality (5-stage), health checks, Prometheus metrics
+    monitoring/        # Data quality (7-stage), health checks, Prometheus metrics
     tasks/             # Candle aggregation (1m/5m/15m/1h/4h/1d/1w), scheduling
     repository/        # TimescaleDB persistence (snapshots, candles, predictions)
     storage/           # Redis cache + pub/sub, ClickHouse client
@@ -56,7 +56,9 @@ docs/
   STANDARDS.md         # Engineering standards (authoritative)
   CODE_CONVENTIONS.md  # Error handling, config patterns
 config/
-  factors.yaml         # Factor definitions for backtest/strategy engines
+  factors.yaml         # Factor definitions for crypto backtest/strategy engines
+  factors-stock.yaml   # Factor definitions for stock (Polygon) evolution
+  generator.yaml       # Strategy generator config (population, resolution, lookback, symbols)
 ```
 
 ## Architecture Patterns
@@ -66,8 +68,20 @@ config/
 - **Error Handling**: `thiserror` derive macros. Two-tier: `DataError` (low-level) + `DataEngineError` (service-level). Use `retry_with_backoff()` for resilience.
 - **Config**: 12-Factor. Priority: env vars > `config/prod.toml` > `config/default.toml`. Naming: `{SERVICE_NAME}__{SECTION}__{KEY}`.
 - **execution-engine** is excluded from the Cargo workspace because Solana SDK pins `tokio ~1.14`, conflicting with workspace `tokio 1.35+`. Build and test it separately.
-- **Data Quality**: 5-stage monitoring pipeline (freshness, gap detection, liquidity guard, price spike detection, metrics export). Runs hourly plus on startup. See `services/data-engine/src/monitoring/quality.rs`.
+- **Data Quality**: 7-stage monitoring pipeline (active count, freshness, gap detection, liquidity guard, price spike, cross-source divergence, volume anomaly, timestamp drift). Tiered scheduling: critical (30s), warning (5min), full audit (1h). See `services/data-engine/src/monitoring/quality.rs`.
 - **StandardMarketData**: Unified data type for all 12+ data sources, using `rust_decimal::Decimal` for financial precision. All collectors normalize into this struct before persistence/broadcast. See `services/data-engine/src/models/market_data.rs`.
+
+### Strategy Generator
+- **ALPS** (Age-Layered Population Structure): 5 Fibonacci-aged layers (5/13/34/89/500), 100 genomes each. Replaces flat GA stagnation-restart.
+- **PSR fitness**: Probabilistic Sharpe Ratio (Bailey & Lopez de Prado, 2012) replaces raw PnL. Both IS and OOS evaluation use PSR z-scores.
+- **Operator pruning**: 14 of 23 VM opcodes used for new genomes; VM retains all 23 for backward compatibility.
+- **Embargo**: Resolution-aware gaps at K-fold boundaries (20/10/8 bars for 1d/1h/15m).
+- **Dual-mode**: Long Only + Long Short evolution per (exchange, symbol).
+
+### IBKR Dual-Gateway
+- Two IB Gateway containers: `ib-gateway` (long_only account) and `ib-gateway-ls` (long_short account).
+- Execution engine creates two `IBKRTrader` instances, one per gateway.
+- Per-account financial data via `get_account_summaries()` cached to DB every 30s.
 
 ### Docker
 - All builds use **root directory** as build context (`context: .` in compose).

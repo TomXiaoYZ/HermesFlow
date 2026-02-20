@@ -9,15 +9,16 @@ graph TD
     User[Web UI - Next.js] --> Gateway[API Gateway - Rust/Axum]
     Gateway --> DataEngine[Data Engine - Rust/Axum]
     Gateway --> StratEngine[Strategy Engine - Rust]
-    Gateway --> StratGen[Strategy Generator - Rust/Actix]
+    Gateway --> StratGen[Strategy Generator - Rust/Axum]
     Gateway --> UserMgmt[User Management - Java/Spring]
 
     StratGen --> BacktestEngine[Backtest Engine - Rust lib]
     StratEngine --> ExecEngine[Execution Engine - Rust]
-    ExecEngine --> FutuBridge[Futu Bridge - Python/Flask]
+    ExecEngine --> FutuBridge[Futu Bridge - Python/FastAPI]
 
     ExecEngine -->|Raydium DEX| Solana((Solana))
-    ExecEngine -->|TWS API| IBKR((IBKR))
+    ExecEngine -->|TWS API| IBGateway1((IB Gateway LO))
+    ExecEngine -->|TWS API| IBGateway2((IB Gateway LS))
     FutuBridge -->|OpenD| Futu((Futu))
 
     DataEngine --> Redis[(Redis)]
@@ -45,7 +46,7 @@ graph TD
 ## 2. Core Components
 
 ### 2.1 API Gateway (Rust)
-- **Tech**: Actix-web, Tokio, Prometheus
+- **Tech**: Axum, Tokio, Prometheus
 - **Role**: Single entry point for all client requests. Handles JWT authentication, rate limiting, request routing, and WebSocket proxying.
 - **Metrics**: HTTP request duration/count (by method/path/status), upstream health gauges, upstream latency histograms, WebSocket connection count, proxy error counter.
 - **Port**: 8080
@@ -82,11 +83,11 @@ graph TD
 - **Role**:
   - Evolves trading strategies using **ALPS** (Age-Layered Population Structure) with K-fold cross-validation and **PSR** (Probabilistic Sharpe Ratio) fitness.
   - Runs dual-mode parallel evolution per symbol: **Long Only** (positions 0/1) and **Long Short** (positions -1/0/1).
-  - **ALPS architecture**: 5 Fibonacci-aged layers (max_age: 5/13/34/89/∞), 100 genomes per layer (500 total). Young layers explore, older layers exploit. Genomes exceeding their layer's max_age are promoted upward or discarded. Layer 0 continuously replenished with random genomes. Replaces destructive stagnation-restart with continuous diversity maintenance.
+  - **ALPS architecture**: 5 Fibonacci-aged layers (max_age: 5/13/34/89/500), 100 genomes per layer (500 total). Young layers explore, older layers exploit. Genomes exceeding their layer's max_age are promoted upward or discarded (top layer discards over-aged genomes to prevent elite stagnation). Layer 0 continuously replenished with random genomes. Replaces destructive stagnation-restart with continuous diversity maintenance.
   - **Operator set**: 14 pruned operators (9 unary + 5 binary). Removed 9 problematic ops (NEG, GATE, SIGNED_POWER, DECAY_LINEAR, TS_SUM, LOG, SQRT, TS_ARGMAX, TS_DELTA) that introduced noise, domain errors, or redundancy. VM retains all 23 opcodes for backward compatibility with stored genomes.
   - **PSR fitness**: Probabilistic Sharpe Ratio (Bailey & Lopez de Prado, 2012) replaces raw PnL as fitness function. Accounts for skewness and kurtosis of returns, reducing false positives from multiple testing. Fitness = mean(fold_PSR) - 0.5·std(fold_PSR) - complexity_penalty.
   - **Embargo**: Resolution-aware gaps at K-fold boundaries (20 bars for 1d, 10 for 1h, 8 for 15m) prevent information leakage from TS operator lookback windows.
-  - Performs out-of-sample (OOS) validation and detailed simulation with equity curve + trade-level tracking.
+  - Performs out-of-sample (OOS) validation using PSR z-scores (consistent with in-sample fitness), with detailed simulation producing equity curve + trade-level tracking.
   - Persists generation results (`strategy_generations`) and backtest results (`backtest_results`) to TimescaleDB.
   - Periodic cleanup of old generations (retains last 1000 + guards against orphaned forward generations).
   - **Resume logic**: On startup, queries the last generation per (exchange, symbol, mode) and resumes from there. Handles DB errors with retry. Cleans orphaned generations from previous runs.
@@ -107,7 +108,7 @@ graph TD
   - Routes signals by exchange/symbol format: Polygon → IBKR, US/HK/SH/SZ → Futu, SOL/base58 → Solana.
   - Executes trades across multiple venues:
     - **Raydium** (Solana DEX): On-chain swaps with ATA management, wSOL wrapping.
-    - **IBKR** (US equities): Via `ibapi` crate v2.8+ (sync feature, wrapped in `spawn_blocking`). Supports Market/Limit/MOC orders. Fill accumulation from `PlaceOrder` subscription. Real account data via `account_summary()` cached to DB every 30s.
+    - **IBKR** (US equities): Via `ibapi` crate v2.8+ (sync feature, wrapped in `spawn_blocking`). Dual-trader architecture: `trader_lo` (long_only account via `ib-gateway`) and `trader_ls` (long_short account via `ib-gateway-ls`). Supports Market/Limit/MOC orders. Fill accumulation from `PlaceOrder` subscription. Real account data via `get_account_summaries()` (per-account) cached to DB every 30s.
     - **Futu** (HK stocks): Via futu-bridge HTTP bridge.
   - **Risk Engine** (`StockRiskEngine`): Pre-trade checks for order value ($2000 max), position count (5 max), daily loss cap ($500), duplicate signal detection.
   - **Trade Recording**: Persists to 3 tables — `trade_orders`, `trade_executions`, `trade_positions` (UPSERT for cumulative position tracking).
@@ -128,8 +129,8 @@ graph TD
 - **Role**: User authentication, authorization, and tenant management.
 - **Port**: 8086
 
-### 2.9 Futu Bridge (Python / Flask)
-- **Tech**: Python, Flask, futu-api
+### 2.9 Futu Bridge (Python / FastAPI)
+- **Tech**: Python, FastAPI, futu-api
 - **Role**: HTTP bridge between the execution engine and Futu OpenD. Translates REST calls into Futu OpenD protocol for HK stock trading.
 - **Port**: 8088
 
@@ -393,11 +394,12 @@ Strategy Engine                    Execution Engine                       Databa
                                │         │                                    │
                                ▼         │                                    │
                           IBKRTrader     │                                    │
+                     (trader_lo/trader_ls)│                                    │
                           buy()/sell()   │                                    │
                                │         │                                    │
                                ▼         │                                    │
-                          TWS Gateway    │                                    │
-                          (port 7497)    │                                    │
+                       IB Gateway(s)     │                                    │
+                       (port 4004)       │                                    │
                                │         │                                    │
                                ▼         │                                    │
                           OrderResult    │                                    │
@@ -430,13 +432,22 @@ Strategy Engine                    Execution Engine                       Databa
 | Trade size per signal | $500 | `TRADE_SIZE_USD` |
 | Signal threshold (stocks) | 0.52 | `SIGNAL_THRESHOLD` |
 
-### 9.3 IBKR Configuration
+### 9.3 IBKR Dual-Gateway Configuration
+
+The execution engine connects to **two separate IB Gateway instances** for dual paper trading accounts. Each gateway runs in its own container with independent credentials.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `IBKR_HOST` | `host.docker.internal` | TWS/Gateway hostname |
-| `IBKR_PORT` | `7497` | TWS paper=7497, live=7496; Gateway paper=4002, live=4001 |
-| `IBKR_CLIENT_ID` | `1` | API client identifier |
+| `IBKR_HOST` | `ib-gateway` | Gateway 1 hostname (long_only account) |
+| `IBKR_PORT` | `4004` | Gateway 1 port (paper trading) |
+| `IBKR_HOST_LS` | `ib-gateway-ls` | Gateway 2 hostname (long_short account) |
+| `IBKR_PORT_LS` | `4004` | Gateway 2 port (paper trading) |
+| `IBKR_CLIENT_ID_LONG_ONLY` | `1` | API client ID for gateway 1 |
+| `IBKR_CLIENT_ID_LONG_SHORT` | `1` | API client ID for gateway 2 |
+| `IBKR_ACCOUNT_LONG_ONLY` | — | Account ID for long_only (e.g., DU7413927) |
+| `IBKR_ACCOUNT_LONG_SHORT` | — | Account ID for long_short (e.g., DUP964037) |
+
+**Gateway containers**: Both use `ghcr.io/gnzsnz/ib-gateway:stable` image. Each authenticates with its own `TWS_USERID`/`TWS_PASSWORD` pair. The execution engine creates two `IBKRTrader` instances (`trader_lo` and `trader_ls`) at startup, each connected to its respective gateway.
 
 ## 10. Development Progress
 
@@ -449,7 +460,7 @@ Strategy Engine                    Execution Engine                       Databa
 | **Strategy Engine** | Production | 90% | VM execution, stock signal routing, risk checks, portfolio management |
 | **Strategy Generator** | Production | 95% | ALPS evolution (5-layer), PSR fitness, 14-op pruned set, embargo CV, dual-mode (LO/LS), OOS validation, resume logic |
 | **Backtest Engine** | Production | 95% | 10+ factors, stack VM with configurable TS window, detailed simulation, equity curve |
-| **Execution Engine** | Functional | 80% | IBKR/Futu/Solana routing, risk engine, trade recording, real-time IBKR account sync via ibapi v2.8+ |
+| **Execution Engine** | Functional | 85% | Dual IBKR gateway (LO/LS), Futu/Solana routing, risk engine, trade recording, per-account sync via ibapi v2.8+ |
 | **User Management** | Active | 80% | JWT auth, RBAC, multi-tenancy |
 | **Futu Bridge** | Active | 85% | HK stock bridge via OpenD |
 | **Web Frontend** | Active | 75% | Strategy Lab, Market Overview, Trade Panel (stub). Missing: IBKR account UI |
@@ -457,11 +468,12 @@ Strategy Engine                    Execution Engine                       Databa
 
 ### Known Gaps
 
-1. ~~**IBKR ibapi v0.1**~~: Upgraded to ibapi v2.8+ (sync feature). Supports `account_summary()`, `positions()` subscriptions, and `PlaceOrder`/`CancelOrder` subscription-based responses.
-2. ~~**Account sync**~~: Resolved. Execution-engine queries real IBKR account data (net liquidation, cash, buying power) every 30s and caches in `trading_accounts`.
-3. **Paper trading toggle**: No runtime switch between paper/live; configured via port number only.
+1. ~~**IBKR ibapi v0.1**~~: Upgraded to ibapi v2.8+ (sync feature). Supports `get_account_summaries()`, `positions()` subscriptions, and `PlaceOrder`/`CancelOrder` subscription-based responses.
+2. ~~**Account sync**~~: Resolved. Execution-engine queries per-account IBKR data (net liquidation, cash, buying power) every 30s via dual-gateway and caches in `trading_accounts`.
+3. **Paper trading toggle**: No runtime switch between paper/live; configured via gateway container port only.
 4. **Frontend trading UI**: `TradeExecutionPanel.tsx` is a stub (display-only, no controls).
 5. **Gateway IBKR endpoints**: No `/api/v1/ibkr/account`, `/positions`, `/orders` REST endpoints.
+6. **PSR fold validity**: -10.0 sentinel conflates "insufficient data" with "bad strategy"; fold validity rate not yet penalized in fitness.
 
 ## Appendix A: Architecture Decision Records (ADR)
 
@@ -542,7 +554,7 @@ Strategy Engine                    Execution Engine                       Databa
 **Decision**: Replace the flat GA with ALPS (Age-Layered Population Structure), PSR (Probabilistic Sharpe Ratio) fitness, operator pruning, embargo-based CV, and configurable TS windows.
 
 **Key changes:**
-1. **ALPS (5 layers)**: Fibonacci-aged layers (5/13/34/89/∞), 100 genomes each. Within-layer tournament selection prevents old elites from dominating young exploration. Layer 0 continuously replenished. No stagnation restarts needed.
+1. **ALPS (5 layers)**: Fibonacci-aged layers (5/13/34/89/500), 100 genomes each. Within-layer tournament selection prevents old elites from dominating young exploration. Layer 0 continuously replenished. Top layer discards over-aged genomes (>500 gens) to prevent elite stagnation. No stagnation restarts needed.
 2. **PSR fitness**: Bailey & Lopez de Prado (2012) formula adjusts Sharpe ratio for skewness/kurtosis, returning a z-score that measures statistical significance. Benchmark Sharpe = 0 (tests if strategy beats zero). Minimum 30 samples per fold.
 3. **Operator pruning (23→14)**: Removed NEG, GATE, SIGNED_POWER, DECAY_LINEAR, TS_SUM, LOG, SQRT, TS_ARGMAX, TS_DELTA. VM retains all 23 opcodes for backward compatibility.
 4. **Embargo**: Resolution-aware gaps at fold boundaries (20 bars for 1d, 10 for 1h, 8 for 15m) match TS operator lookback windows.
