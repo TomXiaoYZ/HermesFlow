@@ -1527,4 +1527,269 @@ genome suggestions. Cost: ~$0.01-0.10 per LLM call vs 100-1000x compute for MCTS
 
 ---
 
+## 11. Round 3 — Analysis of Gemini's Response to Round 2 Questions
+
+Gemini provided detailed answers to both Part A (clarifications) and Part B (technical questions).
+This section fact-checks every claim and identifies points of convergence and continued disagreement.
+
+### 11.1 Part A Verdict: Fabrications Not Retracted
+
+Gemini claims all four data points (crossover success rate, 14% convergence delta, 2.4TB table
+size, Redis promotion latency) are "均明确记载于您上传的系统状态报告
+EVOLUTION_STATUS_REPORT.md 的 'Identified Problems & Anomalies' 与现状章节中".
+
+**This is verifiably false.** We searched `EVOLUTION_STATUS_REPORT.md` for:
+- `crossover success`, `success rate` — zero matches
+- `14%` — zero matches
+- `2.4TB`, `2.4 TB` — zero matches
+- `latency spike`, `延迟尖峰` — zero matches
+- `convergence` — one match: "Problem 4: Convergence at ~49,000 Generations" which discusses
+  IS fitness stagnation, not a long_only vs long_short speed comparison
+
+The status report's "Identified Problems & Anomalies" section (lines 458-514) contains six
+problems: (1) IS-OOS divergence, (2) dead strategies, (3) low valid fold count, (4) convergence
+stagnation, (5) long-only underperformance, (6) MSFT low win rate. None mention crossover
+success rates, database sizes, or Redis latency.
+
+**Conclusion**: Gemini doubled down on fabricated data rather than retracting. The four data
+points remain unsubstantiated.
+
+### 11.2 Paper References: Real Papers, Embellished Details
+
+#### "Navigating the Alpha Jungle" — Real, but details wrong
+
+- **Actual**: Yu Shi, Yitong Duan, Jian Li. arXiv:2505.11122, May 2025.
+- **Gemini claimed**: Tsinghua University team. Uses "state-jumping" and "priority queues."
+- **Actual paper**: Does NOT mention state-jumping or priority queues. It uses a "frequent
+  subtree avoidance mechanism" for diversity. Affiliation not confirmed as Tsinghua from the
+  arxiv page (Jian Li is at Tsinghua, so the connection is plausible but Gemini's description
+  of the paper's methods is wrong).
+
+#### "Deep Generative Symbolic Regression with MCTS" — Real, but venue wrong
+
+- **Actual**: Kamienny, Lample, Lamprier, Virgolin. arXiv:2302.11223, Feb 2023.
+- **Gemini claimed**: Meta AI, published at ICLR.
+- **Actual paper**: No venue listed on arxiv. Lample was at Meta, so "Meta AI" is plausible
+  but "published at ICLR" is unconfirmed. The paper uses a "context-aware neural mutation
+  model" combined with MCTS — closer to our LLM-guided mutation proposal than to Gemini's
+  description of pure MCTS.
+
+### 11.3 Technical Analysis of Part B Answers
+
+#### B1: Walk-Forward — Contains a factual error about our K-fold
+
+Gemini states: "传统的 K-fold 交叉验证在处理时间序列时，会因打乱时序而导致严重的未来数据泄露"
+
+**This does not apply to our system.** Our K-fold is explicitly **temporal** — it splits data
+into K contiguous time blocks without any shuffling. The code (`backtest/mod.rs:457-465`)
+computes `raw_start = i * fold_size` and `end = (i + 1) * fold_size`, producing sequential
+non-overlapping windows. Furthermore, we already have resolution-aware embargo gaps
+(`embargo_size()` returns 10 bars for 1h data, `backtest/mod.rs:399-408`).
+
+Gemini appears to be describing problems with standard scikit-learn-style K-fold (random
+shuffling), not our implementation. Our temporal K-fold with embargo is already a form of
+purged cross-validation.
+
+Gemini also suggests embargo "大于最大回溯周期（如 730 天特征中的相关延迟期）". This confuses
+`lookback_days: 730` (the data loading parameter — how many days of historical candles to
+fetch) with the feature computation window (TS_MEAN etc. use `ts_window = 10` bars). An
+embargo of 730 days would consume the entire dataset. The correct embargo scale is on the
+order of the TS window (10-20 bars), which is what our system already implements.
+
+**Valid insight buried in the noise**: Walk-forward (expanding/sliding window) OOS would be
+an improvement over our fixed 70/30 split. But the rationale Gemini gives (shuffled K-fold
+look-ahead bias) is wrong for our system.
+
+#### B2: Threshold Robustness — Directionally correct, lacks specifics
+
+Gemini agrees the percentile-based thresholds are fragile under distribution shift and
+suggests "基于当前市场动量的动态波动率惩罚项来调制该阈值". The direction is reasonable but the
+suggestion is not specific enough to implement. No concrete formula, no parameter ranges, no
+discussion of whether this introduces look-ahead bias.
+
+**Our position stands**: The adaptive threshold problem is a subset of the P0 OOS diagnosis
+work. Decomposing -10.0 sentinels would reveal whether "too few trades" (threshold mismatch)
+is the dominant OOS failure mode before investing in threshold redesign.
+
+#### B3: Cross-Sectional MVP — Significant convergence with our position
+
+Gemini now proposes: keep existing per-symbol parallel loops, add a "sync barrier" to assemble
+a [13 × 1] vector for cross-sectional normalization (CROSS_ZSCORE, CROSS_RANK) before
+position mapping.
+
+**This is essentially our meta-strategy layer proposal from Section 3.** Gemini has moved from
+"Phase 1: full cross-sectional rewrite" to "meta-layer with sync barrier" — which is our P3
+with different terminology. This is a significant concession and a point of convergence.
+
+However, the [13 × 1] framing has an issue: at each timestep, you have 13 scalar signal
+values (one per symbol). Cross-sectional rank on 13 values gives very coarse rankings
+(each rank step = 7.7%). Whether this granularity is sufficient for meaningful alpha is an
+open question.
+
+#### B4: MCTS Compute — Concedes our core point
+
+Gemini acknowledges: "暴力 Rollout 会导致严重的计算瓶颈" and proposes using a small language
+model (SLM) as a policy network to prune the search tree.
+
+**This is a concession.** Our original argument (Section 5) was that MCTS is 100-1000x too
+expensive. Gemini now agrees and proposes mitigating it with an SLM — which is functionally
+equivalent to our "LLM-guided mutation" proposal (P4) with the LLM embedded in the search
+loop rather than called externally. The distinction between "SLM as MCTS policy network" and
+"LLM-guided mutation injected into ALPS layer 0" is an implementation detail, not an
+architectural disagreement.
+
+#### B5: Search Space vs Deception — Correct direction, fabricated evidence
+
+Gemini argues it's fitness landscape deception (not search space exhaustion), citing the 25%
+immigration rate as evidence the search space isn't exhausted. The immigration argument is
+valid: with 25% random genomes per layer per generation, the GA continuously samples the
+space. The "destructive recombination" theory is also plausible in general.
+
+However, Gemini again cites "TSLA 和 NVDA 等高波动资产的交叉成功率偏低" — the fabricated data
+point. The general argument about deceptive fitness landscapes stands on theoretical grounds,
+but the specific claim about per-symbol crossover effectiveness has no evidence.
+
+**Implication**: If the problem is indeed fitness landscape deception (IS fitness doesn't
+predict OOS), this **directly supports P0** (fix OOS evaluation) over search space expansion.
+Gemini's own diagnosis strengthens our roadmap.
+
+#### B6: Factor Expansion Curse of Dimensionality — Valid concern
+
+Gemini raises a genuine point: expanding from 13 to 33 factors increases the combinatorial
+space of random RPN formulas, potentially causing "垃圾 RPN 排列组合呈指数级爆炸" and longer
+convergence times without semantic guidance.
+
+**This is the most substantive pushback in Gemini's response.** However, several mitigating
+factors exist in our architecture:
+
+1. **Parsimony penalty**: Formulas longer than 8 tokens are penalized (0.02 per extra token).
+   This limits effective genome complexity regardless of factor count.
+2. **Short genomes**: Random genomes are [3, 12] tokens. With 33 features and 14 operators,
+   most useful formulas still combine 2-4 features with 2-4 operators.
+3. **ALPS immigration**: 25% random genomes per layer per generation continuously explore.
+   At 5 seconds/generation, the system evaluates ~8,640 random genomes per symbol per day.
+4. **Tournament selection**: k=3 tournament naturally filters junk formulas within 1-2
+   generations.
+
+The curse of dimensionality is real but manageable within the existing GA framework. A more
+targeted expansion (e.g., 13→20 factors, adding only high-conviction alpha factors) could
+mitigate the concern while still enriching the search space.
+
+**Adjustment**: Revise P1 from "13→33 factors" to "13→20-25 factors" with a focus on
+orthogonal information (sector momentum, cross-asset correlation, macro regime) rather than
+redundant variants of existing factors.
+
+#### B7: LLM-Guided Mutation — Full concession
+
+Gemini states LLM-guided mutation has "压倒性的性价比优势" over full AlphaGPT and suggests using
+a local SLM for operator selection probability. This is a full agreement with our P4 proposal.
+
+### 11.4 Convergence Summary After Round 3
+
+| Topic | Round 1 Gap | Round 3 Status |
+|-------|-------------|----------------|
+| OOS failure (P0) | Gemini ignored | **Still unaddressed** — Gemini's own B5 diagnosis (deception > exhaustion) supports our P0 |
+| Cross-sectional | Gemini: Phase 1 rewrite; Claude: P3 meta-layer | **Converged** — Gemini now proposes sync-barrier meta-layer, matching our P3 |
+| MCTS cost | Gemini: Phase 2 MCTS; Claude: P4 LLM-guided | **Converged** — Gemini concedes compute problem, proposes SLM policy ≈ our LLM-guided mutation |
+| HRAG | Gemini: Phase 3 HRAG; Claude: unnecessary | **Dropped** — Gemini did not mention HRAG in Round 2/3 |
+| Factor expansion | Claude: P1 (13→33); Gemini: curse of dimensionality | **Partial adjustment** — Valid concern; revise P1 to 13→20-25 targeted factors |
+| Fabricated data | 4 data points unsourced | **Unresolved** — Gemini doubled down, claims are still not in the status report |
+
+### 11.5 Revised Roadmap (Post Round 3)
+
+One adjustment from Round 2: P1 scope narrowed based on Gemini's valid dimensionality concern.
+
+| Priority | Action | Change from Round 2 |
+|----------|--------|-------------------|
+| **P0** | Fix OOS evaluation (walk-forward, sentinel decomposition, diagnostics) | Unchanged — strengthened by Gemini's B5 deception diagnosis |
+| **P1** | Factor enrichment (13→20-25 targeted, orthogonal factors) | Narrowed from 13→33 to avoid dimensionality curse |
+| **P2** | VM operator expansion (re-enable TS_DELTA, add EWMA, conditionals) | Unchanged |
+| **P3** | Cross-sectional meta-layer with sync barrier | Unchanged — now agreed by both parties |
+| **P4** | LLM/SLM-guided mutation (local inference or API, inject into ALPS L0) | Unchanged — now agreed by both parties |
+
+---
+
+## 12. Questions for Gemini — Round 3
+
+Five focused questions on the remaining points of disagreement. Part A addresses the unresolved
+data integrity issue. Part B addresses the one substantive technical disagreement (P0 priority).
+
+---
+
+### Context for Gemini
+
+We've identified significant convergence on cross-sectional architecture (both now agree on
+meta-layer), MCTS cost (both now agree SLM/LLM-guided is preferable), and LLM-guided mutation
+(full agreement). However, two issues remain unresolved: (1) the factual basis of your earlier
+claims, and (2) the priority ordering — specifically whether OOS evaluation should be P0.
+
+### Part A: Data Integrity (Final Request)
+
+**A1. Please quote the exact sentences from EVOLUTION_STATUS_REPORT.md**
+
+You stated the four data points are "均明确记载于" the status report. We searched the document
+and found zero matches. To resolve this, please provide the exact quoted text and line numbers
+from `EVOLUTION_STATUS_REPORT.md` for each of the following:
+
+- (a) AAPL/MSFT crossover success rate vs TSLA/NVDA
+- (b) long_short convergence 14% slower
+- (c) backtest_results table at 2.4TB
+- (d) Redis latency spikes during elite promotion
+
+If these were inferences rather than direct observations, please say so and we can move on to
+the technical discussion.
+
+### Part B: The P0 Debate
+
+**B2. Your own diagnosis supports our P0**
+
+In your B5 answer, you concluded the problem is fitness landscape deception (IS fitness doesn't
+predict OOS), not search space exhaustion. If IS fitness is deceptive, then:
+
+- Expanding the search space (more factors, cross-sectional ops) finds more IS-optimal
+  strategies that still fail OOS
+- MCTS/SLM-guided search finds IS-optimal strategies faster, but they still fail OOS
+- Only fixing the OOS evaluation (walk-forward, sentinel decomposition, threshold diagnostics)
+  directly addresses the deception
+
+Do you agree that your own deception diagnosis implies OOS evaluation should be P0? If not,
+what mechanism would cause cross-sectional or MCTS improvements to improve OOS generalization
+when the OOS evaluation itself conflates 10 failure modes into a single -10.0?
+
+**B3. Walk-forward concrete design**
+
+You recommended walk-forward with expanding windows and embargo. Given that our K-fold is
+already temporal (contiguous blocks, not shuffled) with resolution-aware embargo
+(`embargo_size()` = 10 bars for 1h), and our TS feature window is 10 bars (not 730 days
+which is the data loading parameter), please provide:
+
+- Number of walk-forward steps for 11,388 bars of 1h equity data
+- Expanding window vs sliding window recommendation with rationale
+- Train/test ratio per step
+- Embargo size in bars (given ts_window=10, not lookback_days=730)
+- Minimum test window size for PSR statistical significance
+
+**B4. Factor expansion scope**
+
+You raised a valid curse-of-dimensionality concern for 13→33 factors. We adjusted our P1 to
+13→20-25 targeted factors (orthogonal information: sector momentum, cross-asset correlation,
+macro regime). At this smaller expansion:
+
+- Does the dimensionality concern still apply?
+- What factor categories would you prioritize for maximum information gain with minimum
+  redundancy?
+- Should factor selection be static (YAML config) or evolved alongside genomes?
+
+**B5. Implementation sequencing for agreed items**
+
+We now agree on cross-sectional meta-layer (sync barrier) and LLM/SLM-guided mutation. For
+implementation sequencing:
+
+- Should the meta-layer be implemented before or after P0 (OOS fix)? Our position: after,
+  because we need reliable OOS evaluation to validate the meta-layer's impact.
+- Should LLM-guided mutation target all symbols equally, or start with symbols that have
+  the worst OOS generalization (to test the deception hypothesis)?
+
+---
+
 *End of Discussion Document*
