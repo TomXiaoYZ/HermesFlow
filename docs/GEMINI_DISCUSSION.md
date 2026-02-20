@@ -5,8 +5,14 @@
 > `docs/EVOLUTION_STATUS_REPORT.md` — a 660-line status report covering architecture, GA
 > implementation, live results, and open problems — and replied with a 5-phase AlphaGPT-inspired
 > roadmap. Claude reviewed that roadmap against the actual codebase and identified five specific
-> disagreements. This document is self-contained: all code, data, and arguments are included
-> inline so either party can continue the debate without external references.
+> disagreements. Gemini then provided a second response with further analysis. Claude fact-checked
+> that response and found multiple fabricated data points. This document is self-contained: all
+> code, data, and arguments are included inline so either party can continue the debate without
+> external references.
+>
+> **Document history**:
+> - Round 1: Claude's initial 4-disagreement analysis + counter-proposal roadmap (Sections 1-7)
+> - Round 2: Gemini's second response + Claude's fact-check and rebuttal (Section 9)
 
 ## System Summary
 
@@ -1189,7 +1195,7 @@ loop {
 
 ---
 
-## 8. Closing Questions for Gemini
+## 8. Closing Questions for Gemini (Round 1)
 
 Eight specific questions to advance the discussion:
 
@@ -1232,6 +1238,292 @@ Eight specific questions to advance the discussion:
    deceptive (IS fitness plateaus don't correspond to OOS improvement)? These require
    fundamentally different interventions: the former needs search space expansion, the latter
    needs fitness function reform.
+
+---
+
+## 9. Round 2 — Fact-Check of Gemini's Second Response
+
+Gemini provided a follow-up analysis with three sections: (1) ALPS framework performance and
+improvement opportunities, (2) system anomalies and architecture bottlenecks, and (3) adjusted
+evolution recommendations. Claude fact-checked every claim against the codebase.
+
+### 9.1 Fabricated Data Points
+
+Gemini's response cites `[1]` (the status report) throughout, but at least four core claims
+have no basis in either the status report or the codebase:
+
+#### Fabrication 1: "AAPL/MSFT crossover success rate higher than TSLA/NVDA"
+
+**Claim**: "当前运行数据表明，AAPL 和 MSFT 的交叉成功率高于 TSLA 和 NVDA 等高波动资产"
+
+**Fact**: The codebase has **no crossover success rate metric**. The `crossover()` function in
+`genetic.rs` does not track success or failure. The `evolve()` method returns `total_promotions`
+(inter-layer promotions), not crossover outcomes. There is no per-symbol breakdown of any
+genetic operator's performance.
+
+**Evidence**: Searched the entire `services/strategy-generator/` directory for patterns matching
+`crossover.*rate`, `crossover.*success`, `crossover.*count` — zero matches. The crossover
+function (`genetic.rs:349-355`) simply produces a child genome and pushes it to the new
+population unconditionally:
+
+```rust
+if r < 0.40 {
+    let mut child = Self::crossover(parent1, parent2, self.feat_offset);
+    child.age = parent1.age.max(parent2.age);
+    Self::mutate(&mut child, self.feat_offset);
+    new_pop.push(child);
+}
+```
+
+No success/failure tracking. No per-symbol differentiation. The claim is fabricated.
+
+#### Fabrication 2: "long_short convergence 14% slower than long_only"
+
+**Claim**: "当前 long_short 模式的收敛时间比 long_only 模式长约 14%"
+
+**Fact**: There is **no convergence time tracking** in the codebase. Both modes run on
+identical 5-second generation cycles in independent `tokio::spawn` tasks. The status report
+shows both modes at approximately the same generation count (~49,000). The "14%" figure has
+no source.
+
+**Evidence**: Searched for `convergence`, `converge.*time`, `long_short.*slow` across the
+strategy-generator — zero matches.
+
+#### Fabrication 3: "backtest_results table bloated to 2.4TB"
+
+**Claim**: "PostgreSQL 中的 backtest_results 表已膨胀至 2.4TB"
+
+**Fact**: The status report contains **no database size information**. The codebase has an
+active retention policy (`main.rs:635-643`) that cleans up old generations every 10 generations,
+keeping only a `[gen-1000, gen+100]` window per (exchange, symbol, mode). The "2.4TB" figure
+has no source.
+
+#### Fabrication 4: "Redis latency spikes during elite promotion"
+
+**Claim**: "Redis Pub/Sub 事件总线在'精英晋升（Elite promotion）'阶段出现明显的延迟尖峰"
+
+**Fact**: The elite promotion phase (`genetic.rs:272-306`) is a **pure in-memory operation**.
+It iterates over `Vec<Genome>`, calls `.retain()` and `.push()` — no Redis, no I/O, no
+network calls. Redis pub/sub happens **after** `evolve()` completes, at `main.rs:543-551`,
+publishing the best genome result. There is no Redis interaction during promotion.
+
+**Evidence** — the promotion code (`genetic.rs:272-306`):
+
+```rust
+// Phase 2: Promote over-aged genomes upward (bottom-up)
+for layer_idx in 0..ALPS_NUM_LAYERS - 1 {
+    let max_age = self.layers[layer_idx].max_age;
+    let mut promoted = Vec::new();
+    self.layers[layer_idx].population.retain(|g| {
+        if g.age > max_age {
+            promoted.push(g.clone());
+            false
+        } else {
+            true
+        }
+    });
+    let next_layer = &mut self.layers[layer_idx + 1];
+    for genome in promoted {
+        if next_layer.population.len() < ALPS_LAYER_POP_SIZE {
+            next_layer.population.push(genome);
+            total_promotions += 1;
+        } else {
+            next_layer.sort_by_fitness();
+            if let Some(worst) = next_layer.population.last() {
+                if genome.fitness > worst.fitness {
+                    next_layer.population.pop();
+                    next_layer.population.push(genome);
+                    total_promotions += 1;
+                }
+            }
+        }
+    }
+}
+```
+
+Pure `Vec` operations. No Redis. No I/O. The claim is fabricated.
+
+### 9.2 Valid Observations
+
+Two points in Gemini's response are factually correct:
+
+1. **Operator pruning correctness** — Gemini correctly identifies that removing LOG, SQRT,
+   GATE etc. aligns with symbolic regression best practices. This matches our analysis in
+   Section 1.3.
+
+2. **Per-symbol isolation limits cross-sectional strategies** — This is correct but was
+   already thoroughly analyzed in Section 3 (Disagreement 2), including the specific code
+   showing `cs_rank()` returning constant 0.5 with `batch=1`.
+
+### 9.3 Gemini Still Avoids the Core Issue
+
+Gemini's second response **does not address the 65% OOS failure rate** — the central argument
+of Section 2 (Disagreement 1). The eight specific questions from Section 8 remain unanswered.
+Instead, Gemini continues to advocate for cross-sectional refactoring and MCTS, both of which
+were challenged with code evidence in Sections 3 and 5.
+
+The fundamental question remains: **how do you validate any improvement (cross-sectional,
+MCTS, or otherwise) when the OOS evaluation function produces -10.0 for 10 different failure
+modes indistinguishably?**
+
+### 9.4 Adjusted Assessment of Gemini's Recommendations
+
+| Gemini Recommendation | Assessment | Issue |
+|----------------------|------------|-------|
+| "打破 13 个标的完全独立演化的孤岛状态" as highest priority | **Disagree** — valid direction, wrong priority | Cannot validate improvement while OOS eval is broken |
+| "小范围 MCTS 变异测试" for TSLA/NVDA | **Premise fabricated** — "交叉成功率" metric doesn't exist | Reframe as LLM-guided mutation (our P4), applicable to all symbols equally |
+| "backtest_results 引入时间范围分区" | **Premise fabricated** — 2.4TB claim unsourced | Existing retention policy already manages table size |
+| State-jumping MCTS reference | **Uncited** — no paper URL or author provided | Cannot evaluate without concrete reference |
+
+### 9.5 Updated Roadmap (Unchanged)
+
+After reviewing Gemini's second response, our proposed priority order remains unchanged because
+Gemini did not provide new evidence against any of the four disagreements:
+
+| Priority | Action | Status After Round 2 |
+|----------|--------|---------------------|
+| **P0** | Fix OOS evaluation (walk-forward, sentinel decomposition, diagnostics) | **Uncontested** — Gemini did not address |
+| **P1** | Factor enrichment (13→33) | **Uncontested** — Gemini did not address |
+| **P2** | VM operator expansion | **Uncontested** — Gemini did not address |
+| **P3** | Cross-sectional (meta-strategy layer first) | Gemini still advocates as P0; we maintain P3 pending OOS fix |
+| **P4** | LLM-guided mutation | Gemini's MCTS pilot partially aligns; we maintain cheaper alternative |
+
+---
+
+## 10. Questions for Gemini — Round 2
+
+The following questions incorporate both the original Round 1 questions (which remain unanswered)
+and new questions arising from the Round 2 fact-check. These are intended to be sent directly
+to Gemini.
+
+---
+
+### Context for Gemini
+
+This message is a follow-up to our ongoing discussion about HermesFlow's strategy evolution
+roadmap. Your second response contained several claims that we could not verify against the
+codebase. Below we provide the specific discrepancies and re-state our technical questions.
+All code references point to files in the HermesFlow repository; the full code is embedded in
+`docs/GEMINI_DISCUSSION.md` Sections 2-5 and Appendix (Section 7).
+
+### Part A: Clarifications on Your Second Response
+
+**A1. Crossover success rate data source**
+
+You stated: "AAPL 和 MSFT 的交叉成功率高于 TSLA 和 NVDA 等高波动资产 [1]"
+
+Our codebase has no crossover success rate metric. The `crossover()` function does not track
+success/failure, and `evolve()` only returns total inter-layer promotions without per-symbol
+or per-operator breakdown. What data source did you use for this claim? If this was an
+inference rather than observation, what evidence supports it?
+
+**A2. Long-short convergence time**
+
+You stated: "long_short 模式的收敛时间比 long_only 模式长约 14% [1]"
+
+Both modes run on identical 5-second generation cycles in independent tokio tasks and are
+at approximately the same generation count (~49,000). There is no convergence time tracking
+in the system. Where does the "14%" figure come from?
+
+**A3. Database size**
+
+You stated: "PostgreSQL 中的 backtest_results 表已膨胀至 2.4TB [1]"
+
+The status report contains no database size information, and the system has an active retention
+policy (keep only [gen-1000, gen+100] window per symbol/mode). What is the source of "2.4TB"?
+
+**A4. Redis latency during promotion**
+
+You stated: "Redis Pub/Sub 事件总线在'精英晋升（Elite promotion）'阶段出现明显的延迟尖峰 [1]"
+
+The elite promotion phase (genetic.rs:272-306) is pure in-memory Vec operations with zero Redis
+interaction. Redis pub/sub occurs after evolve() completes (main.rs:543-551). What observation
+led to this claim?
+
+**A5. MCTS state-jumping reference**
+
+You referenced "最新的 MCTS 符号回归研究支持使用状态跳转（State-jumping）和优先队列来进行非局部探索"
+but provided no citation. Please provide the specific paper (authors, year, venue) so we can
+evaluate its applicability.
+
+### Part B: Core Technical Questions (Carried from Round 1, Unanswered)
+
+**B1. OOS failure diagnosis — the 65% problem**
+
+17 out of 26 strategy slots (65%) show OOS PSR = -10.0 despite IS fitness > 2.0. The -10.0
+sentinel is returned by 10 distinct code paths (4 in `evaluate_symbol_oos_psr()` + 6 in
+`psr_fitness()`), making it impossible to distinguish "strategy doesn't trade on OOS data"
+from "strategy trades but has bad returns" from "VM execution failure."
+
+- Do you agree this should be P0 (fix before expanding search space)?
+- What walk-forward scheme do you recommend for 11,388 bars of 1h US equity data?
+  Expanding window vs sliding window? What train/test ratio?
+- Should we decompose -10.0 into distinct sentinel values, or track failure modes as
+  structured metadata (JSONB)?
+
+**B2. Adaptive threshold distribution shift**
+
+The adaptive thresholds (70th/30th percentile of sigmoid signal) are computed independently
+per evaluation window. When a genome's signal distribution shifts between IS and OOS periods,
+the thresholds change, potentially causing a strategy that was "top 30%" in IS to fall into
+the "middle 40%" in OOS — producing zero trades and scoring -10.0.
+
+- Is this a fundamental limitation of percentile-based thresholds?
+- Would threshold anchoring (compute on IS, apply to OOS with decay) help, or does it
+  introduce look-ahead bias?
+
+**B3. Cross-sectional: minimal architecture change**
+
+The current system spawns independent tokio tasks per (exchange, symbol, mode) — 26 parallel
+evolution loops with no shared state. The VM operates on `Array3<f64>` with `batch=1`.
+`cs_rank()` returns constant 0.5 and `cs_mean()` is identity when batch=1.
+
+Full cross-sectional requires: multi-symbol data loading (13x memory), portfolio-level fitness,
+shared evolution loop, new DB schema. This is a rewrite, not a feature.
+
+- Can a meta-strategy layer (portfolio weight optimizer on top of per-symbol signals) capture
+  80% of cross-sectional value without touching the VM?
+- If full VM rewrite is needed, what is the minimum viable change?
+
+**B4. MCTS compute budget**
+
+Current system: 500 genomes x 8 folds = 4,000 evaluations per generation, targeting
+5 seconds/generation. MCTS at 10K rollouts x 8 folds = 80,000 evaluations (20x current).
+At 100K rollouts = 800,000 evaluations (200x current).
+
+- What rollout count do you estimate is needed for MCTS to outperform tournament selection GA
+  in this specific problem (14 operators, 13 features, max 20 tokens)?
+- Is a surrogate/proxy model feasible for PSR-based fitness (non-differentiable, depends on
+  higher moments)?
+- Would beam search over partial formulas capture most of the benefit at 10x cost instead
+  of 100-1000x?
+
+**B5. Search space exhaustion vs fitness landscape deception**
+
+At 49,000 generations with 14 operators and 13 features, the system shows no OOS improvement
+despite continued IS fitness improvements. Two hypotheses:
+
+- (a) Search space exhausted: all useful formulas of length <= 20 have been found
+- (b) Fitness landscape deception: IS fitness doesn't predict OOS performance
+
+These require fundamentally different interventions: (a) needs search space expansion
+(more factors, more operators), (b) needs fitness function reform (walk-forward OOS,
+regularization). Which do you believe is dominant, and what evidence supports that?
+
+**B6. Factor expansion as near-term win**
+
+Expanding from 13 to 33 factors (adding Fama-French, Barra, momentum variants, macro
+indicators) requires only YAML changes and factor computation functions — no architectural
+change. Does this provide sufficient search space expansion to defer cross-sectional operators?
+
+**B7. LLM-guided mutation as MCTS alternative**
+
+Instead of full MCTS, inject LLM-suggested genomes into ALPS layer 0 every N generations:
+package top-10 genomes + fitness scores + factor descriptions into a prompt, get 5-10 new
+genome suggestions. Cost: ~$0.01-0.10 per LLM call vs 100-1000x compute for MCTS.
+
+- Does this capture the essential AlphaGPT insight at acceptable cost?
+- Or is tree-structured search integral to AlphaGPT's effectiveness?
 
 ---
 
