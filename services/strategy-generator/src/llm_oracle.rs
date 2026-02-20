@@ -9,28 +9,48 @@ use crate::genome_decoder;
 pub struct LlmOracleConfig {
     /// Feature flag — oracle is only invoked when enabled.
     pub enabled: bool,
-    /// LLM provider: "anthropic", "openai", or "local".
+    /// LLM provider: "anthropic", "openai", or "bedrock".
     pub provider: String,
-    /// API endpoint URL.
+    /// API endpoint URL (not used for bedrock).
+    #[serde(default)]
     pub endpoint: String,
-    /// API key (loaded from env).
+    /// API key (not used for bedrock — uses AWS env credentials).
+    #[serde(default)]
     pub api_key: String,
-    /// Model identifier (e.g., "claude-sonnet-4-20250514").
+    /// Model identifier.
+    /// Bedrock: e.g. "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    /// Anthropic: e.g. "claude-sonnet-4-20250514"
     pub model: String,
+    /// AWS region for Bedrock (default: us-east-1).
+    #[serde(default = "default_region")]
+    pub region: String,
     /// Number of genomes to request per invocation.
+    #[serde(default = "default_genomes_per_invocation")]
     pub genomes_per_invocation: usize,
     /// Maximum tokens in the LLM response.
+    #[serde(default = "default_max_response_tokens")]
     pub max_response_tokens: usize,
+}
+
+fn default_region() -> String {
+    "us-east-1".to_string()
+}
+fn default_genomes_per_invocation() -> usize {
+    10
+}
+fn default_max_response_tokens() -> usize {
+    1024
 }
 
 impl Default for LlmOracleConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            provider: "anthropic".to_string(),
-            endpoint: "https://api.anthropic.com/v1/messages".to_string(),
+            provider: "bedrock".to_string(),
+            endpoint: String::new(),
             api_key: String::new(),
-            model: "claude-sonnet-4-20250514".to_string(),
+            model: "us.anthropic.claude-sonnet-4-20250514-v1:0".to_string(),
+            region: "us-east-1".to_string(),
             genomes_per_invocation: 10,
             max_response_tokens: 1024,
         }
@@ -264,16 +284,21 @@ pub fn validate_formulas(
 
 /// Call the LLM API and return the raw response text.
 ///
-/// Supports Anthropic Messages API and OpenAI Chat Completions API.
+/// Supports Anthropic Messages API, OpenAI Chat Completions, and AWS Bedrock Converse.
 pub async fn call_llm(config: &LlmOracleConfig, prompt: &str) -> Result<String, LlmError> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| LlmError::HttpClient(e.to_string()))?;
-
     match config.provider.as_str() {
-        "anthropic" => call_anthropic(&client, config, prompt).await,
-        "openai" => call_openai(&client, config, prompt).await,
+        "bedrock" => call_bedrock(config, prompt).await,
+        "anthropic" | "openai" => {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| LlmError::HttpClient(e.to_string()))?;
+            match config.provider.as_str() {
+                "anthropic" => call_anthropic(&client, config, prompt).await,
+                "openai" => call_openai(&client, config, prompt).await,
+                _ => unreachable!(),
+            }
+        }
         other => Err(LlmError::UnsupportedProvider(other.to_string())),
     }
 }
@@ -366,6 +391,62 @@ async fn call_openai(
         .and_then(|choice| choice["message"]["content"].as_str())
         .map(String::from)
         .ok_or_else(|| LlmError::ParseResponse("no content in response choices".to_string()))
+}
+
+/// Call AWS Bedrock Converse API.
+/// Auth via environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+/// and optionally AWS_SESSION_TOKEN.
+async fn call_bedrock(config: &LlmOracleConfig, prompt: &str) -> Result<String, LlmError> {
+    use aws_sdk_bedrockruntime::types::{
+        ContentBlock, ConversationRole, InferenceConfiguration, Message as BrMessage,
+    };
+
+    let region = aws_config::Region::new(config.region.clone());
+    let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(region)
+        .load()
+        .await;
+
+    let client = aws_sdk_bedrockruntime::Client::new(&aws_config);
+
+    let message = BrMessage::builder()
+        .role(ConversationRole::User)
+        .content(ContentBlock::Text(prompt.to_string()))
+        .build()
+        .map_err(|e| LlmError::Request(format!("failed to build message: {}", e)))?;
+
+    let inference_config = InferenceConfiguration::builder()
+        .max_tokens(config.max_response_tokens as i32)
+        .build();
+
+    let response = client
+        .converse()
+        .model_id(&config.model)
+        .messages(message)
+        .inference_config(inference_config)
+        .send()
+        .await
+        .map_err(|e| LlmError::Request(format!("Bedrock Converse failed: {}", e)))?;
+
+    // Extract text from Converse response
+    let output = response
+        .output()
+        .ok_or_else(|| LlmError::ParseResponse("no output in Bedrock response".to_string()))?;
+
+    if let aws_sdk_bedrockruntime::types::ConverseOutput::Message(msg) = output {
+        for block in msg.content() {
+            if let ContentBlock::Text(text) = block {
+                return Ok(text.clone());
+            }
+        }
+        Err(LlmError::ParseResponse(
+            "no text block in Bedrock response".to_string(),
+        ))
+    } else {
+        Err(LlmError::ParseResponse(
+            "unexpected Bedrock output type".to_string(),
+        ))
+    }
 }
 
 /// End-to-end oracle invocation: build prompt → call LLM → parse → validate.

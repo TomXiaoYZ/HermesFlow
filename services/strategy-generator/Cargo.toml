@@ -22,6 +22,8 @@ axum = { workspace = true }
 hyper = { workspace = true }
 
 reqwest = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-bedrockruntime = { workspace = true }
 
 # Internal
 backtest-engine = { workspace = true }
