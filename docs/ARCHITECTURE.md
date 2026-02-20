@@ -91,6 +91,13 @@ graph TD
   - Persists generation results (`strategy_generations`) and backtest results (`backtest_results`) to TimescaleDB.
   - Periodic cleanup of old generations (retains last 1000 + guards against orphaned forward generations).
   - **Resume logic**: On startup, queries the last generation per (exchange, symbol, mode) and resumes from there. Handles DB errors with retry. Cleans orphaned generations from previous runs.
+  - **LLM-Guided Mutation Oracle** (P2): When GA evolution stalls, an LLM generates semantically meaningful formulas for injection into Layer 0:
+    - **Genome Decoder** (`genome_decoder.rs`): Bidirectional RPN token ↔ human-readable formula conversion with stack validation.
+    - **Oracle Core** (`llm_oracle.rs`): Prompt construction, multi-provider API (AWS Bedrock Converse, Anthropic, OpenAI), response parsing, formula validation/dedup against existing elites.
+    - **Trigger Conditions** (dual): (1) L0→L1 promotion rate drops below 70% (exploration failing), or (2) too_few_trades rate exceeds 40% (stuck in non-trading genome space). Both gated by min-generation warmup (100) and cooldown (50 gens / 600s).
+    - **Cross-Symbol Learning** (P2e): At invocation time, queries DB for top OOS-PSR formulas from other symbols (same exchange + mode). Includes up to 10 cross-symbol elite patterns in the LLM prompt, enabling knowledge transfer across tickers.
+    - **Config**: `config/generator.yaml` → `llm_oracle` section. Feature-flagged (`enabled: true/false`).
+    - **Monitoring**: Full interaction logged to `strategy_generations.metadata` JSONB — prompt, response, parsed/accepted/rejected formulas, rejection reasons, cross-symbol elites. Frontend displays in Oracle Interactions panel.
   - Exposes REST API: `/overview`, `/generations`, `/generations/:gen`, `/backtest` (re-run), `/exchanges`.
 - **Port**: 8082 (external API), 8084 (internal health).
 
@@ -451,19 +458,19 @@ The execution engine connects to **two separate IB Gateway instances** for dual 
 
 ## 10. Development Progress
 
-### Module Completion Status (as of 2026-02-18)
+### Module Completion Status (as of 2026-02-20)
 
 | Module | Status | Completion | Notes |
 |--------|--------|------------|-------|
 | **Data Engine** | Production | 95% | 12+ collectors, 7-stage DQ, circuit breaker, dead letter |
 | **Gateway** | Production | 90% | REST proxy, WebSocket broadcast, metrics. Missing: IBKR-specific endpoints |
 | **Strategy Engine** | Production | 90% | VM execution, stock signal routing, risk checks, portfolio management |
-| **Strategy Generator** | Production | 95% | ALPS evolution (5-layer), PSR fitness, 14-op pruned set, embargo CV, dual-mode (LO/LS), OOS validation, resume logic |
+| **Strategy Generator** | Production | 97% | ALPS evolution (5-layer), PSR fitness, 14-op pruned set, embargo CV, dual-mode (LO/LS), OOS validation, resume logic, LLM-guided mutation oracle (P2: genome decoder, multi-provider LLM, dual triggers, cross-symbol learning) |
 | **Backtest Engine** | Production | 95% | 10+ factors, stack VM with configurable TS window, detailed simulation, equity curve |
 | **Execution Engine** | Functional | 85% | Dual IBKR gateway (LO/LS), Futu/Solana routing, risk engine, trade recording, per-account sync via ibapi v2.8+ |
 | **User Management** | Active | 80% | JWT auth, RBAC, multi-tenancy |
 | **Futu Bridge** | Active | 85% | HK stock bridge via OpenD |
-| **Web Frontend** | Active | 75% | Strategy Lab, Market Overview, Trade Panel (stub). Missing: IBKR account UI |
+| **Web Frontend** | Active | 80% | Strategy Lab, Market Overview, Trade Panel (stub), LLM Oracle Interactions panel. Missing: IBKR account UI |
 | **Infrastructure** | Production | 90% | TimescaleDB, Redis, ClickHouse, Prometheus, Grafana, Jaeger, Vector |
 
 ### Known Gaps
@@ -566,3 +573,23 @@ The execution engine connects to **two separate IB Gateway instances** for dual 
 3. Pruning reduces the search space from ~23^N to ~14^N per token position, improving convergence speed.
 4. Embargo prevents the well-documented look-ahead bias in temporal cross-validation of time-series models.
 5. All changes are backward-compatible: existing genomes in DB execute correctly with the unchanged VM.
+
+### ADR-010: LLM-Guided Mutation Oracle (2026-02)
+
+**Context**: Despite ALPS improvements, GA evolution still faces search-space bottlenecks. With 25 factors and 14 operators, the combinatorial space is vast. Random mutation alone cannot discover semantically meaningful factor combinations (e.g., "spy_rel_strength momentum TS_CORR" for relative momentum). Two stagnation signals emerge: (1) L0→L1 promotion rate dropping below 70% indicates random exploration is failing; (2) high too_few_trades rate indicates the GA is stuck in non-trading genome regions.
+
+**Decision**: Add an LLM mutation oracle that activates on stagnation signals, generates semantically meaningful RPN formulas, and injects them into ALPS Layer 0. The oracle comprises: genome decoder (bidirectional token↔formula conversion), multi-provider LLM API (AWS Bedrock Converse, Anthropic, OpenAI), prompt construction with elite context, response parsing/validation, and cross-symbol elite sharing.
+
+**Key components:**
+1. **Genome Decoder** (`genome_decoder.rs`): `decode_genome()` converts token arrays to human-readable RPN; `encode_formula()` converts back with stack validation. Enables human-LLM-GA translation layer.
+2. **Dual Triggers**: Primary — L0→L1 promotion rate < 70% (50-gen rolling window). Secondary — TFT rate > 40% (gen >= 200). Both gated by min_generation warmup (100) and cooldown (50 gens / 600s between invocations).
+3. **Cross-Symbol Learning** (P2e): At invocation time, queries `strategy_generations` for top OOS-PSR formulas from other symbols (same exchange + mode, latest generation, OOS PSR > 0). Up to 10 cross-symbol elite patterns included in the LLM prompt, enabling knowledge transfer (e.g., NVDA's successful momentum formula adapted for TSLA).
+4. **Validation Pipeline**: LLM-generated formulas pass through token encoding → stack validation → dedup against existing elites. Only valid, novel formulas become genomes injected into L0.
+5. **Full Audit Trail**: Every invocation persists prompt, response, parsed/accepted/rejected formulas, rejection reasons, cross-symbol elites into `strategy_generations.metadata` JSONB. Frontend Oracle Interactions panel displays all details.
+
+**Rationale:**
+1. LLM understands financial semantics — it can generate "return TS_STD close TS_MEAN DIV" (coefficient of variation) which random mutation would never discover in reasonable time.
+2. Dual trigger conditions target the two most common stagnation patterns: convergence trap (low promotion) and degenerate search region (high TFT).
+3. Cross-symbol learning multiplies the effective data: if NVDA found a high-PSR pattern, TSLA/META/AAPL can adapt it without rediscovering from scratch.
+4. Non-blocking design: oracle failure (LLM error, empty response) doesn't interrupt evolution. Cross-symbol query failure returns empty vec.
+5. Cost-efficient: ~10 LLM calls per symbol per ~500 generations at ~$0.005/call.

@@ -77,6 +77,8 @@ config/
 - **Operator pruning**: 14 of 23 VM opcodes used for new genomes; VM retains all 23 for backward compatibility.
 - **Embargo**: Resolution-aware gaps at K-fold boundaries (20/10/8 bars for 1d/1h/15m).
 - **Dual-mode**: Long Only + Long Short evolution per (exchange, symbol).
+- **LLM Oracle** (P2): On stagnation (low promotion rate or high TFT rate), invokes LLM (Bedrock/Anthropic/OpenAI) to generate semantically meaningful RPN formulas → validates → injects into Layer 0. Config in `config/generator.yaml` → `llm_oracle`. Code: `llm_oracle.rs`, `genome_decoder.rs`.
+- **Cross-Symbol Learning** (P2e): Oracle prompt includes top OOS-PSR formulas from other symbols (same exchange+mode), enabling knowledge transfer across tickers.
 
 ### IBKR Dual-Gateway
 - Two IB Gateway containers: `ib-gateway` (long_only account) and `ib-gateway-ls` (long_short account).
