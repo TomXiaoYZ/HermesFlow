@@ -11,3 +11,22 @@ exchanges:
       target_test_window: 1000
       min_test_window: 400
       target_steps: 3
+
+# LLM-guided mutation oracle (P2)
+# Invoked when GA stalls (promotion rate drop or high TFT rate).
+# Generates semantically meaningful formulas via LLM, injects into Layer 0.
+llm_oracle:
+  enabled: true
+  provider: "bedrock"
+  model: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+  region: "us-east-1"
+  genomes_per_invocation: 10
+  max_response_tokens: 1024
+  # Trigger thresholds
+  min_generation: 100
+  promotion_rate_threshold: 0.70
+  tft_rate_threshold: 0.40
+  tft_min_generation: 200
+  # Cooldown
+  cooldown_gens: 50
+  cooldown_seconds: 600

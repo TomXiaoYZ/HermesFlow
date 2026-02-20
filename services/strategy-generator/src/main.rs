@@ -10,15 +10,14 @@ use tracing::{error, info, warn};
 mod api;
 mod backtest;
 mod genetic;
-#[allow(dead_code)]
 mod genome_decoder;
-#[allow(dead_code)]
 mod llm_oracle;
 
 use backtest::StrategyMode;
 use backtest::{is_sentinel, sentinel_label, Backtester, WalkForwardConfig};
 use backtest_engine::config::FactorConfig;
 use genetic::{AlpsGA, PromotionStats};
+use llm_oracle::LlmOracleConfig;
 
 /// Rolling-window tracker for ALPS layer promotion rates.
 /// Used to detect convergence slowdown as a P2 trigger condition:
@@ -99,6 +98,47 @@ impl PromotionRateTracker {
     }
 }
 
+/// Rolling-window tracker for too_few_trades rate.
+/// Used by the LLM oracle trigger to detect when evolution is stuck
+/// producing genomes that can't generate enough trades.
+struct TftTracker {
+    history: Vec<bool>,
+    window: usize,
+    cursor: usize,
+    count: usize,
+}
+
+impl TftTracker {
+    fn new(window: usize) -> Self {
+        Self {
+            history: Vec::with_capacity(window),
+            window,
+            cursor: 0,
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, is_tft: bool) {
+        if self.history.len() < self.window {
+            self.history.push(is_tft);
+        } else {
+            self.history[self.cursor] = is_tft;
+        }
+        self.cursor = (self.cursor + 1) % self.window;
+        self.count += 1;
+    }
+
+    /// Fraction of recent generations where best genome had too_few_trades.
+    fn rate(&self) -> f64 {
+        let n = self.history.len();
+        if n == 0 {
+            return 0.0;
+        }
+        let tft_count = self.history.iter().filter(|&&v| v).count();
+        tft_count as f64 / n as f64
+    }
+}
+
 /// Optional walk-forward configuration, loaded from generator.yaml.
 #[derive(Debug, Deserialize, Clone)]
 pub struct WalkForwardYamlConfig {
@@ -121,6 +161,8 @@ pub struct ExchangeConfig {
 #[derive(Debug, Deserialize)]
 struct GeneratorConfig {
     exchanges: Vec<ExchangeConfig>,
+    #[serde(default)]
+    llm_oracle: LlmOracleConfig,
 }
 
 #[tokio::main]
@@ -149,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
     // Load generator config
     let config_path =
         env::var("GENERATOR_CONFIG").unwrap_or_else(|_| "config/generator.yaml".to_string());
-    let exchange_configs = load_exchange_configs(&config_path);
+    let (exchange_configs, oracle_config) = load_exchange_configs(&config_path);
     info!(
         "Loaded {} exchange configs: {:?}",
         exchange_configs.len(),
@@ -201,11 +243,19 @@ async fn main() -> anyhow::Result<()> {
                 let pool = pool.clone();
                 let redis_url = redis_url.clone();
                 let config = ec.clone();
+                let oracle_cfg = oracle_config.clone();
                 let sym = symbol.clone();
                 let ex_name = ec.exchange.clone();
                 let handle = tokio::spawn(async move {
-                    if let Err(e) =
-                        run_symbol_evolution(pool, &redis_url, config, sym.clone(), mode).await
+                    if let Err(e) = run_symbol_evolution(
+                        pool,
+                        &redis_url,
+                        config,
+                        oracle_cfg,
+                        sym.clone(),
+                        mode,
+                    )
+                    .await
                     {
                         error!(
                             "[{}:{}:{}] Evolution loop failed: {}",
@@ -226,13 +276,19 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_exchange_configs(path: &str) -> Vec<ExchangeConfig> {
+fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig) {
     match std::fs::read_to_string(path) {
         Ok(content) => match serde_yaml::from_str::<GeneratorConfig>(&content) {
-            Ok(cfg) => cfg.exchanges,
+            Ok(cfg) => {
+                info!(
+                    "LLM oracle config: enabled={}, provider={}, model={}",
+                    cfg.llm_oracle.enabled, cfg.llm_oracle.provider, cfg.llm_oracle.model
+                );
+                (cfg.exchanges, cfg.llm_oracle)
+            }
             Err(e) => {
                 warn!("Failed to parse {}: {}. Falling back to default.", path, e);
-                default_exchange_configs()
+                (default_exchange_configs(), LlmOracleConfig::default())
             }
         },
         Err(e) => {
@@ -249,13 +305,16 @@ fn load_exchange_configs(path: &str) -> Vec<ExchangeConfig> {
                 .unwrap_or(if exchange == "Polygon" { 365 } else { 7 });
             let factor_config =
                 env::var("FACTOR_CONFIG").unwrap_or_else(|_| "config/factors.yaml".to_string());
-            vec![ExchangeConfig {
-                exchange,
-                resolution,
-                lookback_days,
-                factor_config,
-                walk_forward: None,
-            }]
+            (
+                vec![ExchangeConfig {
+                    exchange,
+                    resolution,
+                    lookback_days,
+                    factor_config,
+                    walk_forward: None,
+                }],
+                LlmOracleConfig::default(),
+            )
         }
     }
 }
@@ -384,6 +443,7 @@ async fn run_symbol_evolution(
     pool: PgPool,
     redis_url: &str,
     config: ExchangeConfig,
+    oracle_config: LlmOracleConfig,
     symbol: String,
     mode: StrategyMode,
 ) -> anyhow::Result<()> {
@@ -399,6 +459,11 @@ async fn run_symbol_evolution(
 
     let factor_config = load_factor_config(&config.factor_config);
     let feat_offset = factor_config.feat_offset();
+    let factor_names: Vec<String> = factor_config
+        .active_factors
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
 
     let client = redis::Client::open(redis_url.to_string())?;
     let mut redis_conn = client.get_async_connection().await?;
@@ -622,6 +687,13 @@ async fn run_symbol_evolution(
     // Promotion rate tracker: rolling window of 50 generations for smoothed rates
     let mut promo_tracker = PromotionRateTracker::new(50);
 
+    // TFT tracker + oracle state for P2 LLM-guided mutation
+    let mut tft_tracker = TftTracker::new(50);
+    let mut last_oracle_gen: usize = 0;
+    let mut last_oracle_time = std::time::Instant::now();
+    let mut oracle_invocations: usize = 0;
+    let mut oracle_injected_total: usize = 0;
+
     // Evolution loop
     loop {
         let gen = ga.generation;
@@ -704,6 +776,93 @@ async fn run_symbol_evolution(
                 );
             }
 
+            // Track TFT rate for LLM oracle trigger
+            let is_tft = wf_result.failure_mode.as_deref() == Some("too_few_trades");
+            tft_tracker.push(is_tft);
+
+            // ═══ LLM Oracle Trigger Check ═══
+            let mut oracle_injected_this_gen = 0usize;
+            if oracle_config.enabled {
+                let should_trigger = should_trigger_oracle(
+                    gen,
+                    &promo_tracker,
+                    &tft_tracker,
+                    last_oracle_gen,
+                    last_oracle_time,
+                    &oracle_config,
+                );
+
+                if should_trigger {
+                    // Collect elites from all layers (3 per layer → 15 total)
+                    // Clone to release borrow on `ga` before inject
+                    let elites_owned: Vec<(usize, genetic::Genome)> = ga
+                        .collect_elites(3)
+                        .into_iter()
+                        .map(|(layer, g)| (layer, g.clone()))
+                        .collect();
+
+                    let elites: Vec<llm_oracle::EliteContext> = elites_owned
+                        .iter()
+                        .map(|(layer_idx, genome)| llm_oracle::EliteContext {
+                            formula: genome_decoder::decode_genome(
+                                &genome.tokens,
+                                feat_offset,
+                                &factor_names,
+                            ),
+                            fitness: genome.fitness,
+                            oos_psr: 0.0,
+                            layer: *layer_idx,
+                            age: genome.age,
+                        })
+                        .collect();
+
+                    let existing_tokens: Vec<Vec<usize>> =
+                        elites_owned.iter().map(|(_, g)| g.tokens.clone()).collect();
+
+                    let ctx = llm_oracle::OracleContext {
+                        symbol: symbol.clone(),
+                        mode: mode_str.to_string(),
+                        generation: gen,
+                        feat_offset,
+                        factor_names: factor_names.clone(),
+                        best_oos_psr: oos_psr,
+                        tft_rate: tft_tracker.rate(),
+                        elites,
+                        genomes_requested: oracle_config.genomes_per_invocation,
+                    };
+
+                    match llm_oracle::generate_mutations(&oracle_config, &ctx, &existing_tokens)
+                        .await
+                    {
+                        Ok(result) => {
+                            oracle_injected_this_gen = result.genomes.len();
+                            if oracle_injected_this_gen > 0 {
+                                ga.inject_genomes(0, result.genomes);
+                                oracle_injected_total += oracle_injected_this_gen;
+                            }
+                            oracle_invocations += 1;
+                            last_oracle_gen = gen;
+                            last_oracle_time = std::time::Instant::now();
+                            info!(
+                                "[{}:{}:{}] LLM oracle: {}/{} valid genomes injected into L0 (invocation #{}, total injected: {})",
+                                exchange, symbol, mode_str,
+                                oracle_injected_this_gen, result.raw_count,
+                                oracle_invocations, oracle_injected_total
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[{}:{}:{}] LLM oracle failed: {}",
+                                exchange, symbol, mode_str, e
+                            );
+                            // Update cooldown to avoid hammering a broken API
+                            last_oracle_gen = gen;
+                            last_oracle_time = std::time::Instant::now();
+                        }
+                    }
+                }
+            }
+
             let strategy_id = format!("{}_{}_{}_gen_{}", exchange_lower, symbol, mode_str, gen);
             let payload = serde_json::json!({
                 "strategy_id": &strategy_id,
@@ -741,6 +900,14 @@ async fn run_symbol_evolution(
                     "rolling_window": promo_tracker.history.len().min(promo_tracker.window),
                     "rolling_total_promoted": promo_tracker.total_promoted_in_window(),
                     "rolling_total_discarded": promo_tracker.total_discarded_in_window(),
+                },
+                "llm_oracle": {
+                    "enabled": oracle_config.enabled,
+                    "invocations": oracle_invocations,
+                    "total_injected": oracle_injected_total,
+                    "injected_this_gen": oracle_injected_this_gen,
+                    "last_oracle_gen": last_oracle_gen,
+                    "tft_rate_50gen": tft_tracker.rate(),
                 },
                 "meta": {
                     "name": format!("{}-{}-Gen{}-PSR{:.2}", symbol, mode_str, gen, best.fitness),
@@ -859,4 +1026,49 @@ async fn run_symbol_evolution(
 
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
+}
+
+/// Determine whether the LLM oracle should be invoked this generation.
+///
+/// Two trigger conditions (either activates):
+/// 1. **Primary**: L0→L1 promotion rate drops below threshold (random exploration failing)
+/// 2. **Secondary**: too_few_trades rate exceeds threshold (stuck in non-trading genome space)
+///
+/// Both are gated by minimum generation warmup and cooldown periods.
+fn should_trigger_oracle(
+    gen: usize,
+    promo_tracker: &PromotionRateTracker,
+    tft_tracker: &TftTracker,
+    last_oracle_gen: usize,
+    last_oracle_time: std::time::Instant,
+    config: &LlmOracleConfig,
+) -> bool {
+    // Minimum generation warmup
+    if gen < config.min_generation {
+        return false;
+    }
+
+    // Generation-based cooldown (skip on first invocation when last_oracle_gen == 0)
+    if last_oracle_gen > 0 && gen.saturating_sub(last_oracle_gen) < config.cooldown_gens {
+        return false;
+    }
+
+    // Time-based cooldown (skip on first invocation)
+    if last_oracle_gen > 0 && last_oracle_time.elapsed().as_secs() < config.cooldown_seconds {
+        return false;
+    }
+
+    // Primary trigger: L0→L1 promotion rate drop
+    if let Some(rate) = promo_tracker.avg_rate(0) {
+        if rate < config.promotion_rate_threshold {
+            return true;
+        }
+    }
+
+    // Secondary trigger: high too_few_trades rate
+    if gen >= config.tft_min_generation && tft_tracker.rate() > config.tft_rate_threshold {
+        return true;
+    }
+
+    false
 }

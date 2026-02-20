@@ -162,6 +162,7 @@ impl std::fmt::Display for StackError {
 
 /// Build the list of operator names that the GA actively generates.
 /// Used in LLM prompts to tell the model which operators are available.
+#[allow(dead_code)]
 pub fn active_operator_names() -> Vec<&'static str> {
     vec![
         "ADD", "SUB", "MUL", "DIV", // binary

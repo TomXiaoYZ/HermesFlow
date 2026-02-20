@@ -30,6 +30,24 @@ pub struct LlmOracleConfig {
     /// Maximum tokens in the LLM response.
     #[serde(default = "default_max_response_tokens")]
     pub max_response_tokens: usize,
+    /// Minimum generation before oracle can trigger.
+    #[serde(default = "default_min_generation")]
+    pub min_generation: usize,
+    /// L0→L1 promotion rate below this triggers oracle.
+    #[serde(default = "default_promotion_rate_threshold")]
+    pub promotion_rate_threshold: f64,
+    /// TFT rate above this triggers oracle (requires tft_min_generation).
+    #[serde(default = "default_tft_rate_threshold")]
+    pub tft_rate_threshold: f64,
+    /// Minimum generation for TFT trigger (secondary, higher than min_generation).
+    #[serde(default = "default_tft_min_generation")]
+    pub tft_min_generation: usize,
+    /// Minimum generations between invocations.
+    #[serde(default = "default_cooldown_gens")]
+    pub cooldown_gens: usize,
+    /// Minimum seconds between invocations.
+    #[serde(default = "default_cooldown_seconds")]
+    pub cooldown_seconds: u64,
 }
 
 fn default_region() -> String {
@@ -40,6 +58,24 @@ fn default_genomes_per_invocation() -> usize {
 }
 fn default_max_response_tokens() -> usize {
     1024
+}
+fn default_min_generation() -> usize {
+    100
+}
+fn default_promotion_rate_threshold() -> f64 {
+    0.70
+}
+fn default_tft_rate_threshold() -> f64 {
+    0.40
+}
+fn default_tft_min_generation() -> usize {
+    200
+}
+fn default_cooldown_gens() -> usize {
+    50
+}
+fn default_cooldown_seconds() -> u64 {
+    600
 }
 
 impl Default for LlmOracleConfig {
@@ -53,6 +89,12 @@ impl Default for LlmOracleConfig {
             region: "us-east-1".to_string(),
             genomes_per_invocation: 10,
             max_response_tokens: 1024,
+            min_generation: 100,
+            promotion_rate_threshold: 0.70,
+            tft_rate_threshold: 0.40,
+            tft_min_generation: 200,
+            cooldown_gens: 50,
+            cooldown_seconds: 600,
         }
     }
 }
@@ -78,6 +120,7 @@ pub struct OracleContext {
     pub best_oos_psr: f64,
     pub tft_rate: f64,
     pub elites: Vec<EliteContext>,
+    pub genomes_requested: usize,
 }
 
 /// Result of a single oracle invocation.
@@ -144,11 +187,10 @@ pub fn build_prompt(ctx: &OracleContext) -> String {
         prompt.push_str("## Current Elite Formulas (by OOS PSR)\n");
         for (i, elite) in ctx.elites.iter().enumerate() {
             prompt.push_str(&format!(
-                "{}. `{}` → IS: {:.3}, OOS: {:.3} (L{}, age {})\n",
+                "{}. `{}` → PSR: {:.3} (L{}, age {})\n",
                 i + 1,
                 elite.formula,
                 elite.fitness,
-                elite.oos_psr,
                 elite.layer,
                 elite.age,
             ));
@@ -160,7 +202,7 @@ pub fn build_prompt(ctx: &OracleContext) -> String {
     prompt.push_str("## Task\n");
     prompt.push_str(&format!(
         "Generate {} new alpha factor formulas that:\n",
-        10
+        ctx.genomes_requested
     ));
     prompt.push_str("1. Are DIFFERENT from the elites above\n");
     prompt.push_str("2. Combine features in financially meaningful ways\n");
@@ -577,6 +619,7 @@ mod tests {
                 layer: 3,
                 age: 45,
             }],
+            genomes_requested: 10,
         };
 
         let prompt = build_prompt(&ctx);

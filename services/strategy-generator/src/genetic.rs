@@ -276,7 +276,6 @@ impl AlpsGA {
     /// Inject externally-generated genomes into a specific layer.
     /// Used by the LLM mutation oracle to insert guided genomes into Layer 0.
     /// Replaces the worst genomes if the layer is at capacity.
-    #[allow(dead_code)]
     pub fn inject_genomes(&mut self, layer_idx: usize, genomes: Vec<Genome>) {
         if layer_idx >= self.layers.len() || genomes.is_empty() {
             return;
@@ -295,7 +294,6 @@ impl AlpsGA {
     }
 
     /// Collect top-N genomes from each layer (for LLM oracle context).
-    #[allow(dead_code)]
     pub fn collect_elites(&self, per_layer: usize) -> Vec<(usize, &Genome)> {
         let mut elites = Vec::new();
         for (layer_idx, layer) in self.layers.iter().enumerate() {
