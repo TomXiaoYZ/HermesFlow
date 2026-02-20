@@ -13,6 +13,8 @@
 > **Document history**:
 > - Round 1: Claude's initial 4-disagreement analysis + counter-proposal roadmap (Sections 1-7)
 > - Round 2: Gemini's second response + Claude's fact-check and rebuttal (Section 9)
+> - Round 3: Gemini's answers to Round 2 questions + Claude's analysis (Section 11)
+> - Round 4: Gemini retracts fabricated data, agrees P0, provides walk-forward design (Section 13)
 
 ## System Summary
 
@@ -1789,6 +1791,269 @@ implementation sequencing:
   because we need reliable OOS evaluation to validate the meta-layer's impact.
 - Should LLM-guided mutation target all symbols equally, or start with symbols that have
   the worst OOS generalization (to test the deception hypothesis)?
+
+---
+
+## 13. Round 4 — Gemini Retracts Fabricated Data, Full P0 Agreement Reached
+
+### 13.1 Data Integrity: Retraction Accepted (With Caveats)
+
+Gemini acknowledged that the four data points were "inferences and extrapolations rather than
+direct observations from the document." This retraction is accepted. However, Gemini's
+retraction statement introduced two new unsourced claims:
+
+- **"database growth of ~800MB/day"** — not in `EVOLUTION_STATUS_REPORT.md` (zero matches).
+- **"high correlation between layers"** — not in `EVOLUTION_STATUS_REPORT.md` (zero matches).
+
+These are minor and don't affect the technical discussion. We note them for completeness but
+do not pursue further.
+
+### 13.2 P0 Agreement: Historic Convergence
+
+Gemini now states: **"fixing the OOS evaluation must be P0"** and agrees that "the evaluation
+compass must be fixed before adding a faster engine."
+
+This resolves the central disagreement that drove three rounds of debate. Both parties now
+agree on the priority ordering. The roadmap is no longer contested.
+
+### 13.3 Walk-Forward Design: Evaluation
+
+Gemini's proposed parameters for walk-forward OOS evaluation:
+
+| Parameter | Gemini's Proposal | Assessment |
+|-----------|-------------------|------------|
+| Steps | 5-6 | **Reasonable** — covers ~5-6 years of test data |
+| Window type | Expanding | **Agree** — retains long-term regime memory |
+| Test window | 1,500-1,800 bars (~1 year 1h) | **Reasonable** — sufficient for PSR significance |
+| Initial train | ~2,500 bars | **Reasonable** — ~1.5 years of 1h data |
+| Embargo | 15-20 bars | **Agree** — conservative buffer over ts_window=10 |
+| Min PSR window | 1,000 bars (~6 months) | **Agree** — sufficient for skewness/kurtosis estimation |
+
+**Math verification** (5 steps, expanding window, 1,500-bar test, 20-bar embargo):
+
+```
+Step 1: Train [0, 2500],    Embargo [2500, 2520],  Test [2520, 4020]     — train 2500, test 1500
+Step 2: Train [0, 4020],    Embargo [4020, 4040],  Test [4040, 5540]     — train 4020, test 1500
+Step 3: Train [0, 5540],    Embargo [5540, 5560],  Test [5560, 7060]     — train 5540, test 1500
+Step 4: Train [0, 7060],    Embargo [7060, 7080],  Test [7080, 8580]     — train 7060, test 1500
+Step 5: Train [0, 8580],    Embargo [8580, 8600],  Test [8600, 10100]    — train 8580, test 1500
+Step 6: Train [0, 10100],   Embargo [10100, 10120], Test [10120, 11388]  — train 10100, test 1268
+```
+
+Total: 5 full steps + 1 partial (1,268 bars, still above the 1,000-bar PSR minimum).
+All bars are covered. Train windows grow monotonically. No look-ahead.
+
+**Verdict**: This is a sound walk-forward design. Adoptable as-is for P0 implementation.
+
+### 13.4 TSLA/NVDA Mischaracterization: Data Correction
+
+Gemini recommends starting LLM-guided mutation with "the symbols exhibiting the worst OOS
+generalization (TSLA and NVDA)."
+
+**This is factually wrong.** Per the status report data:
+
+| Symbol | Mode | OOS PSR | Status |
+|--------|------|---------|--------|
+| **TSLA** | long_only | **5.0** | One of only 3 positive OOS symbols |
+| **TSLA** | long_short | **5.0** | Top performer |
+| **NVDA** | long_short | **3.44** | **Best overall** (Sharpe 3.20, +1435.8%) |
+| **NVDA** | long_only | -10.0 | Only this mode fails |
+
+TSLA and NVDA are among the **best** OOS performers. The symbols with the worst OOS
+generalization are:
+
+| Symbol | Mode | OOS PSR | IS Fitness | Symptom |
+|--------|------|---------|------------|---------|
+| **AMZN** | long_short | -10.0 | 3.43 | 0% PnL, 0 trades (dead strategy) |
+| **SPY** | long_short | -10.0 | 1.97 | 0% PnL, 0 trades (dead strategy) |
+| **UVXY** | both modes | -10.0 | 2.52/2.65 | High IS, complete OOS failure |
+| **GOOGL** | long_short | -10.0 | 2.43 | +151.6% PnL but OOS fails |
+| **DIA** | both modes | -10.0 | 2.36/1.96 | Complete OOS failure |
+| **IWM** | both modes | -10.0 | 2.99/1.49 | Complete OOS failure |
+
+**Corrected recommendation**: LLM-guided mutation stress test should target AMZN long_short
+(IS 3.43, 0 trades OOS — most extreme IS-OOS divergence) and SPY long_short (IS 1.97,
+0 trades OOS) as these represent the clearest cases of the deception hypothesis.
+
+### 13.5 Factor Expansion: Agreement on Scope and Categories
+
+Gemini's B4 response aligns with our revised P1:
+
+| Aspect | Agreed Position |
+|--------|----------------|
+| Scope | 13→20-25 factors (not 33) |
+| Categories | Macro regime (VIX, yield spreads), cross-asset correlation, sector momentum |
+| Selection method | Static YAML config (not evolved alongside genomes) |
+| Rationale | Dual optimization (factors + formula) creates unstable search |
+
+The recommendation for static factor selection is well-grounded: evolving factor subsets
+simultaneously with RPN formulas creates a non-stationary fitness landscape where improving
+the formula invalidates the factor selection and vice versa.
+
+### 13.6 Implementation Sequencing: Full Agreement
+
+| Phase | Action | Gemini | Claude | Status |
+|-------|--------|--------|--------|--------|
+| **P0** | OOS evaluation fix | Agrees P0 | Agrees P0 | **Consensus** |
+| **P1** | Factor enrichment (13→20-25) | Agrees scope | Agrees scope | **Consensus** |
+| **P2** | VM operator expansion | Not contested | Proposed | **Uncontested** |
+| **P3** | Cross-sectional meta-layer | Agrees after P0 | Agrees after P0 | **Consensus** |
+| **P4** | LLM/SLM-guided mutation | Agrees approach | Agrees approach | **Consensus** |
+
+---
+
+## 14. Agreed Implementation Plan (Post-Debate)
+
+This section synthesizes four rounds of debate into a concrete implementation plan. All items
+below have either explicit agreement from both parties or are uncontested.
+
+### P0: Fix OOS Evaluation
+
+**Objective**: Replace the broken fixed-split OOS evaluation with walk-forward validation and
+diagnostic decomposition so that OOS scores are trustworthy and actionable.
+
+**P0.1: Decompose -10.0 sentinels**
+
+Replace the single -10.0 return value across 10 failure paths with distinct sentinel values:
+
+| Sentinel | Meaning | Location |
+|----------|---------|----------|
+| -10.0 | Genuine negative PSR (strategy trades but loses) | `psr_fitness()` final computation |
+| -11.0 | No cached data for symbol | `evaluate_symbol_oos_psr()` line 376 |
+| -12.0 | Insufficient data (< 60 bars) | `evaluate_symbol_oos_psr()` line 385 |
+| -13.0 | OOS portion too small (< 30 bars) | `evaluate_symbol_oos_psr()` line 390 |
+| -14.0 | VM execution failure (returned None) | `evaluate_symbol_oos_psr()` line 395 |
+| -15.0 | Too few trades / low activity | `psr_fitness()` activity check |
+| -16.0 | Zero variance returns | `psr_fitness()` std < 1e-10 |
+| -17.0 | PSR SE computation failure (negative se_inner) | `psr_fitness()` se_inner check |
+| -18.0 | Near-zero SE | `psr_fitness()` se_sharpe < 1e-10 |
+| -19.0 | NaN result | `psr_fitness()` final NaN check |
+
+**P0.2: Add threshold/trade diagnostics logging**
+
+When OOS evaluation returns any sentinel value, log:
+- Adaptive upper/lower thresholds computed on OOS window
+- Signal distribution summary (min, max, mean, std of sigmoid values)
+- Trade count and active bar count
+- Which sentinel was triggered
+
+**P0.3: Implement walk-forward OOS (agreed parameters)**
+
+```
+Configuration:
+  steps: 5 (+ 1 partial)
+  window_type: expanding
+  test_window: 1500 bars (~1 year of 1h data)
+  initial_train: 2500 bars (~1.5 years)
+  embargo: 20 bars (2x ts_window for safety margin)
+  min_test_bars: 1000 (PSR statistical significance floor)
+
+Walk-forward schedule for 11,388 bars:
+  Step 1: Train [0, 2500],    Embargo 20, Test [2520, 4020]
+  Step 2: Train [0, 4020],    Embargo 20, Test [4040, 5540]
+  Step 3: Train [0, 5540],    Embargo 20, Test [5560, 7060]
+  Step 4: Train [0, 7060],    Embargo 20, Test [7080, 8580]
+  Step 5: Train [0, 8580],    Embargo 20, Test [8600, 10100]
+  Step 6: Train [0, 10100],   Embargo 20, Test [10120, 11388]
+```
+
+OOS fitness = mean(step_PSRs) across all walk-forward steps where test window >= 1000 bars.
+
+### P1: Factor Enrichment (13→20-25)
+
+**Objective**: Expand the feature space with orthogonal information sources, using static YAML
+configuration.
+
+**Agreed factor categories to add**:
+- Macro regime: VIX level / VIX term structure, yield spread (10Y-2Y), credit spread
+- Cross-asset: correlation with SPY (rolling 20-bar), beta to QQQ
+- Sector momentum: relative strength vs sector ETF, breadth indicators
+- Microstructure: bid-ask spread proxy (high-low range / volume), Amihud illiquidity
+
+**Implementation**: Update `config/factors-stock.yaml`, add factor computation functions,
+update `feat_offset` in VM. No architectural change.
+
+### P2: VM Operator Expansion
+
+**Objective**: Increase formula expressiveness within the existing architecture.
+
+**Candidates for re-enablement**:
+- `TS_DELTA` (op 22): `x[t] - x[t-1]` — useful for momentum/change detection
+- `DECAY_LINEAR` (op 9): linearly-weighted MA — useful for recency weighting
+
+**Candidates for new operators**:
+- `EWMA`: exponentially-weighted MA (alpha parameter from genome)
+- `CLAMP`: `clamp(x, -k, k)` — explicit signal bounding
+- `IF_POSITIVE`: `if x > 0 then y else z` — simpler than GATE
+
+### P3: Cross-Sectional Meta-Layer
+
+**Objective**: Enable cross-sectional alpha without full VM rewrite.
+
+**Agreed architecture** (sync-barrier approach):
+1. Keep existing per-symbol parallel evolution loops
+2. After per-symbol VM signal generation, sync all 13 symbol signals at each timestep
+3. Apply cross-sectional normalization (CROSS_RANK, CROSS_ZSCORE) on the [13 × 1] vector
+4. Feed normalized signals into position mapping
+
+**Prerequisite**: P0 must be complete — need reliable OOS evaluation to validate impact.
+
+### P4: LLM/SLM-Guided Mutation
+
+**Objective**: Inject semantic knowledge into the GA via occasional LLM guidance.
+
+**Agreed approach**:
+- Every N generations (N=100-500), package top-10 genomes + fitness + factor descriptions
+- Query LLM/SLM for 5-10 suggested genome token sequences
+- Inject suggestions into ALPS layer 0 as "informed immigrants"
+- Option: local SLM inference for sub-millisecond latency
+
+**Stress test targets** (corrected from Gemini's suggestion):
+- AMZN long_short (IS 3.43, 0 trades OOS — most extreme IS-OOS divergence)
+- SPY long_short (IS 1.97, 0 trades OOS — dead strategy)
+- NOT TSLA/NVDA (these are among the best OOS performers)
+
+---
+
+## 15. Questions for Gemini — Round 4 (Final)
+
+Three minor clarifications. The major disagreements have been resolved.
+
+---
+
+### Context for Gemini
+
+We have reached consensus on all five priority items (P0-P4), their ordering, and the
+implementation approach for each. Thank you for the productive retraction and the concrete
+walk-forward parameters — they are directly adoptable. Three small items remain:
+
+**Q1. Retraction addendum**
+
+Your retraction statement mentions "database growth of ~800MB/day" and "high correlation
+between layers" as things the status report "explicitly documents." These also do not appear
+in the report. We assume these are further inferences and won't pursue this — just noting
+for accuracy.
+
+**Q2. TSLA/NVDA correction**
+
+You recommended starting LLM-guided mutation with TSLA and NVDA as "worst OOS generalization."
+Per the status report data:
+- TSLA: OOS PSR = 5.0 in both modes (top performer)
+- NVDA long_short: OOS PSR = 3.44, Sharpe 3.20, +1435.8% (best overall)
+
+The worst OOS symbols are AMZN long_short (IS 3.43, 0 trades), SPY long_short (IS 1.97,
+0 trades), and UVXY (both modes -10.0). Do you agree the stress test should target these
+instead?
+
+**Q3. Walk-forward integration with K-fold IS**
+
+Your walk-forward design covers OOS evaluation. For IS fitness, should we:
+- (a) Keep the existing K-fold temporal CV (which is already sound) for IS, only replace OOS?
+- (b) Use walk-forward for both IS and OOS, making K-fold redundant?
+- (c) Use K-fold within each walk-forward training window (nested CV)?
+
+Our inclination is (a): K-fold for IS fitness during evolution, walk-forward only for OOS
+validation of the best genome. This minimizes compute impact while fixing the actual problem.
 
 ---
 
