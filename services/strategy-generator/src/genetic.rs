@@ -297,7 +297,11 @@ impl AlpsGA {
     pub fn collect_elites(&self, per_layer: usize) -> Vec<(usize, &Genome)> {
         let mut elites = Vec::new();
         for (layer_idx, layer) in self.layers.iter().enumerate() {
-            let mut sorted: Vec<&Genome> = layer.population.iter().collect();
+            let mut sorted: Vec<&Genome> = layer
+                .population
+                .iter()
+                .filter(|g| g.fitness.is_finite())
+                .collect();
             sorted.sort_by(|a, b| {
                 b.fitness
                     .partial_cmp(&a.fitness)

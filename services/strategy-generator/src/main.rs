@@ -1229,7 +1229,16 @@ async fn fetch_cross_symbol_elites(
 
         let best_genome: Option<Vec<i32>> = row.try_get("best_genome").ok();
         let tokens = match best_genome {
-            Some(ref genome) => genome.iter().map(|&x| x as usize).collect::<Vec<usize>>(),
+            Some(ref genome) => {
+                if genome.iter().any(|&x| x < 0) {
+                    warn!(
+                        "[{}] Skipping cross-symbol elite with negative token values",
+                        other_symbol
+                    );
+                    continue;
+                }
+                genome.iter().map(|&x| x as usize).collect::<Vec<usize>>()
+            }
             None => continue,
         };
 

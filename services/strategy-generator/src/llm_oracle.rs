@@ -512,8 +512,12 @@ async fn call_bedrock(config: &LlmOracleConfig, prompt: &str) -> Result<String, 
         .build()
         .map_err(|e| LlmError::Request(format!("failed to build message: {}", e)))?;
 
+    let max_tokens: i32 = config
+        .max_response_tokens
+        .try_into()
+        .map_err(|_| LlmError::Request("max_response_tokens exceeds i32::MAX".to_string()))?;
     let inference_config = InferenceConfiguration::builder()
-        .max_tokens(config.max_response_tokens as i32)
+        .max_tokens(max_tokens)
         .build();
 
     let response = client
