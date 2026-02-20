@@ -6,3 +6,8 @@ exchanges:
     resolution: "1h"
     lookback_days: 730
     factor_config: "config/factors-stock.yaml"
+    walk_forward:
+      initial_train: 2500
+      target_test_window: 1000
+      min_test_window: 400
+      target_steps: 3

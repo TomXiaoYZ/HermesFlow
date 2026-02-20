@@ -11,10 +11,19 @@ mod api;
 mod backtest;
 mod genetic;
 
-use backtest::Backtester;
 use backtest::StrategyMode;
+use backtest::{is_sentinel, sentinel_label, Backtester, WalkForwardConfig};
 use backtest_engine::config::FactorConfig;
 use genetic::AlpsGA;
+
+/// Optional walk-forward configuration, loaded from generator.yaml.
+#[derive(Debug, Deserialize, Clone)]
+pub struct WalkForwardYamlConfig {
+    pub initial_train: Option<usize>,
+    pub target_test_window: Option<usize>,
+    pub min_test_window: Option<usize>,
+    pub target_steps: Option<usize>,
+}
 
 /// Per-exchange evolution config, loaded from config/generator.yaml.
 #[derive(Debug, Deserialize, Clone)]
@@ -23,6 +32,7 @@ pub struct ExchangeConfig {
     pub resolution: String,
     pub lookback_days: i64,
     pub factor_config: String,
+    pub walk_forward: Option<WalkForwardYamlConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +171,7 @@ fn load_exchange_configs(path: &str) -> Vec<ExchangeConfig> {
                 resolution,
                 lookback_days,
                 factor_config,
+                walk_forward: None,
             }]
         }
     }
@@ -173,12 +184,14 @@ fn default_exchange_configs() -> Vec<ExchangeConfig> {
             resolution: "15m".to_string(),
             lookback_days: 7,
             factor_config: "config/factors.yaml".to_string(),
+            walk_forward: None,
         },
         ExchangeConfig {
             exchange: "Polygon".to_string(),
             resolution: "1d".to_string(),
             lookback_days: 365,
             factor_config: "config/factors-stock.yaml".to_string(),
+            walk_forward: None,
         },
     ]
 }
@@ -320,6 +333,27 @@ async fn run_symbol_evolution(
         resolution.clone(),
     );
     let mut ga = AlpsGA::new(feat_offset);
+
+    // Build walk-forward config from YAML or use defaults
+    let wf_config = match &config.walk_forward {
+        Some(wf) => WalkForwardConfig {
+            initial_train: wf.initial_train.unwrap_or(2500),
+            target_test_window: wf.target_test_window.unwrap_or(1000),
+            min_test_window: wf.min_test_window.unwrap_or(400),
+            embargo: backtester.embargo_size(),
+            target_steps: wf.target_steps.unwrap_or(3),
+        },
+        None => WalkForwardConfig {
+            embargo: backtester.embargo_size(),
+            ..WalkForwardConfig::default_1h()
+        },
+    };
+    info!(
+        "[{}:{}:{}] Walk-forward config: initial_train={}, test_window={}, min_test={}, embargo={}, steps={}",
+        exchange, symbol, mode_str,
+        wf_config.initial_train, wf_config.target_test_window,
+        wf_config.min_test_window, wf_config.embargo, wf_config.target_steps
+    );
 
     // Load data for this single symbol
     info!(
@@ -493,10 +527,12 @@ async fn run_symbol_evolution(
         }
 
         if let Some(best) = ga.best_genome.clone() {
-            let oos_psr = backtester.evaluate_symbol_oos_psr(&best, &symbol, mode);
+            let wf_result =
+                backtester.evaluate_walk_forward_oos_with_config(&best, &symbol, mode, &wf_config);
+            let oos_psr = wf_result.aggregate_psr;
             let fold_psrs = backtester.evaluate_symbol_fold_psr_detail(&best, &symbol, k, mode);
             info!(
-                "[{}:{}:{}] Gen {} IS: {:.4} OOS: {:.4} tokens: {} age: {} K: {} folds: {:?}",
+                "[{}:{}:{}] Gen {} IS: {:.4} OOS: {:.4} tokens: {} age: {} K: {} folds: {:?} wf_steps: {}/{}",
                 exchange,
                 symbol,
                 mode_str,
@@ -506,15 +542,28 @@ async fn run_symbol_evolution(
                 best.tokens.len(),
                 best.age,
                 k,
-                fold_psrs
+                fold_psrs,
+                wf_result.num_valid_steps,
+                wf_result.num_steps
             );
 
-            // IS-OOS gap monitoring (same PSR scale, apples-to-apples comparison)
+            // IS-OOS gap monitoring with sentinel awareness
             let is_oos_gap = best.fitness - oos_psr;
-            if best.fitness > 1.0 && oos_psr < 0.0 && is_oos_gap > 2.0 {
+            if best.fitness > 1.0 && is_sentinel(oos_psr) {
                 warn!(
-                    "[{}:{}:{}] Gen {} — IS-OOS divergence (IS={:.3}, OOS={:.3}, gap={:.3})",
-                    exchange, symbol, mode_str, gen, best.fitness, oos_psr, is_oos_gap
+                    "[{}:{}:{}] Gen {} — OOS sentinel: {} (IS={:.3})",
+                    exchange,
+                    symbol,
+                    mode_str,
+                    gen,
+                    sentinel_label(oos_psr),
+                    best.fitness
+                );
+            } else if best.fitness > 1.0 && oos_psr < 0.0 && is_oos_gap > 2.0 {
+                warn!(
+                    "[{}:{}:{}] Gen {} — IS-OOS divergence (IS={:.3}, OOS={:.3}, gap={:.3}, wf_steps={})",
+                    exchange, symbol, mode_str, gen, best.fitness, oos_psr, is_oos_gap,
+                    wf_result.num_valid_steps
                 );
             }
 
@@ -533,6 +582,14 @@ async fn run_symbol_evolution(
                 "symbol": symbol,
                 "mode": mode_str,
                 "resolution": resolution,
+                "walk_forward": {
+                    "num_steps": wf_result.num_steps,
+                    "num_valid": wf_result.num_valid_steps,
+                    "mean_psr": wf_result.mean_psr,
+                    "std_psr": wf_result.std_psr,
+                    "steps": wf_result.steps,
+                    "failure_mode": wf_result.failure_mode,
+                },
                 "meta": {
                     "name": format!("{}-{}-Gen{}-PSR{:.2}", symbol, mode_str, gen, best.fitness),
                     "description": format!("{} {} Evolved Strategy. IS PSR: {:.4}, OOS PSR: {:.4}", symbol, mode_str, best.fitness, oos_psr)
