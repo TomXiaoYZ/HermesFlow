@@ -2,28 +2,20 @@ use common::events::{OrderSide, TradeSignal};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct RiskConfig {
     pub min_liquidity_usd: f64,
-    pub max_position_size_portion: f64,        // e.g., 0.1 (10%)
-    pub max_drawdown_limit: f64,               // e.g. 0.05 (5% daily)
-    pub entry_amount_sol: f64,                 // Default entry size in SOL (e.g. 0.1)
+    pub max_position_size_portion: f64,        // e.g., 0.1 (10%) — crypto
+    pub max_drawdown_limit: f64,               // e.g. 0.20 (20% daily)
+    pub entry_amount_sol: f64,                 // Default entry size in SOL (crypto)
     pub check_honeypot: bool,                  // Toggle for honeypot check
-    pub trade_size_usd: f64,                   // USD amount per stock trade
-    pub max_stock_position_usd: f64,           // Max single stock position value
-    pub max_stock_positions: usize,            // Default max open stock positions per mode
-    pub max_stock_positions_long_only: usize,  // Max open stock positions for long_only mode
-    pub max_stock_positions_long_short: usize, // Max open stock positions for long_short mode
+    pub trade_size_pct: f64,                   // % of equity per stock trade (e.g. 0.005 = 0.5%)
 }
 
 impl Default for RiskConfig {
     fn default() -> Self {
-        let default_max = env::var("MAX_STOCK_POSITIONS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(10);
         Self {
             min_liquidity_usd: 1.0,
             max_position_size_portion: 0.5,
@@ -33,23 +25,10 @@ impl Default for RiskConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(false),
-            trade_size_usd: env::var("TRADE_SIZE_USD")
+            trade_size_pct: env::var("TRADE_SIZE_PCT")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(500.0),
-            max_stock_position_usd: env::var("MAX_STOCK_POSITION_USD")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5000.0),
-            max_stock_positions: default_max,
-            max_stock_positions_long_only: env::var("MAX_STOCK_POSITIONS_LONG_ONLY")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(default_max),
-            max_stock_positions_long_short: env::var("MAX_STOCK_POSITIONS_LONG_SHORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(default_max),
+                .unwrap_or(0.005),
         }
     }
 }
@@ -59,8 +38,6 @@ pub struct RiskEngine {
     current_equity: f64,
     daily_start_equity: f64,
     http_client: Client,
-    open_stock_positions_long_only: usize,
-    open_stock_positions_long_short: usize,
 }
 
 #[derive(Deserialize, Debug)]
@@ -119,8 +96,6 @@ impl RiskEngine {
             current_equity: 0.0,
             daily_start_equity: 0.0,
             http_client: Client::new(),
-            open_stock_positions_long_only: 0,
-            open_stock_positions_long_short: 0,
         }
     }
 
@@ -130,13 +105,6 @@ impl RiskEngine {
 
     pub fn set_check_honeypot(&mut self, enabled: bool) {
         self.config.check_honeypot = enabled;
-    }
-
-    pub fn set_open_stock_positions(&mut self, mode: &str, count: usize) {
-        match mode {
-            "long_short" => self.open_stock_positions_long_short = count,
-            _ => self.open_stock_positions_long_only = count,
-        }
     }
 
     /// Calculate safe position size in SOL based on rules (for crypto)
@@ -150,12 +118,15 @@ impl RiskEngine {
         size
     }
 
-    /// Calculate stock position size in shares based on USD trade size
+    /// Calculate stock position size in shares as a percentage of account equity.
+    /// trade_size_pct (e.g. 0.005 = 0.5%) determines the USD value per trade,
+    /// then we floor-divide by price to get whole shares.
     pub fn calculate_stock_entry_shares(&self, current_price: f64) -> f64 {
-        if current_price <= 0.0 {
+        if current_price <= 0.0 || self.current_equity <= 0.0 {
             return 0.0;
         }
-        (self.config.trade_size_usd / current_price).floor()
+        let trade_value = self.current_equity * self.config.trade_size_pct;
+        (trade_value / current_price).floor()
     }
 
     /// Async check for signal validity
@@ -184,42 +155,7 @@ impl RiskEngine {
             }
         }
 
-        // 3. Stock-specific checks (entries: Buy for long, Sell for short)
-        if is_stock && (signal.side == OrderSide::Buy || signal.side == OrderSide::Sell) {
-            // Max position value check
-            if let Some(price) = signal.price {
-                let position_value = signal.quantity * price;
-                if position_value > self.config.max_stock_position_usd {
-                    warn!(
-                        "Risk Reject: Stock position value ${:.2} > max ${:.2}",
-                        position_value, self.config.max_stock_position_usd
-                    );
-                    return false;
-                }
-            }
-
-            // Max open positions check — per mode
-            let mode = signal.mode.as_deref().unwrap_or("long_only");
-            let (open_count, max_allowed) = match mode {
-                "long_short" => (
-                    self.open_stock_positions_long_short,
-                    self.config.max_stock_positions_long_short,
-                ),
-                _ => (
-                    self.open_stock_positions_long_only,
-                    self.config.max_stock_positions_long_only,
-                ),
-            };
-            if open_count >= max_allowed {
-                debug!(
-                    "Risk Reject: Already holding {} stock positions in {} mode (max {})",
-                    open_count, mode, max_allowed
-                );
-                return false;
-            }
-        }
-
-        // 4. Honeypot Check — skip for stocks (only relevant for crypto tokens)
+        // 3. Honeypot Check — skip for stocks (only relevant for crypto tokens)
         if self.config.check_honeypot
             && signal.side == OrderSide::Buy
             && !is_stock
@@ -373,12 +309,26 @@ mod tests {
     }
 
     #[test]
-    fn test_stock_entry_shares() {
-        let engine = RiskEngine::new();
-        // Default trade_size_usd = 500.0
+    fn test_stock_entry_shares_pct_based() {
+        let mut engine = RiskEngine::new();
+        // Default trade_size_pct = 0.005 (0.5%)
+        // Equity = $1,000,000 → trade_value = $5,000
+        engine.update_equity(1_000_000.0);
+        let shares = engine.calculate_stock_entry_shares(180.0);
+        assert_eq!(shares, 27.0); // floor(5000/180) = 27
+
+        // Equity = $100,000 → trade_value = $500
+        engine.update_equity(100_000.0);
         let shares = engine.calculate_stock_entry_shares(180.0);
         assert_eq!(shares, 2.0); // floor(500/180) = 2
 
+        // Zero equity → 0 shares
+        engine.update_equity(0.0);
+        let shares = engine.calculate_stock_entry_shares(180.0);
+        assert_eq!(shares, 0.0);
+
+        // Zero price → 0 shares
+        engine.update_equity(1_000_000.0);
         let shares = engine.calculate_stock_entry_shares(0.0);
         assert_eq!(shares, 0.0);
     }
@@ -410,6 +360,7 @@ mod tests {
     async fn test_stock_risk_checks() {
         let mut engine = RiskEngine::new();
         engine.set_check_honeypot(false);
+        engine.update_equity(1_000_000.0);
 
         // Stock signal — should skip liquidity & honeypot checks
         let signal = TradeSignal {
@@ -426,18 +377,7 @@ mod tests {
             mode: Some("long_only".to_string()),
         };
 
-        // Position value = 10 * 180 = 1800 < 5000 max → OK
+        // Stock entry with equity → approved (no fixed limits)
         assert!(engine.check(&signal, None).await);
-
-        // Max position value exceeded
-        let big_signal = TradeSignal {
-            quantity: 100.0, // 100 * 180 = 18000 > 5000
-            ..signal.clone()
-        };
-        assert!(!engine.check(&big_signal, None).await);
-
-        // Max open positions exceeded
-        engine.set_open_stock_positions("long_only", 10);
-        assert!(!engine.check(&signal, None).await);
     }
 }

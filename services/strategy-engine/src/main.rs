@@ -579,11 +579,6 @@ async fn try_entry(
         mode: Some(mode_str.to_string()),
     };
 
-    // Update open stock position count for risk engine
-    if is_stock {
-        risk_engine.set_open_stock_positions(mode_str, portfolio.positions.len());
-    }
-
     let risk_approved = risk_engine.check(&signal, Some(10000.0)).await;
     strategy_engine::metrics::RISK_CHECKS_TOTAL
         .with_label_values(&[if risk_approved {
