@@ -1,6 +1,6 @@
--- Fix initial_capital to match IBKR paper account starting balance ($1M)
-UPDATE trading_accounts SET initial_capital = 1000000
-WHERE account_id IN ('ibkr_long_only', 'ibkr_long_short');
+-- Fix initial_capital to match IBKR paper account starting balance
+UPDATE trading_accounts SET initial_capital = 8731903 WHERE account_id = 'ibkr_long_only';
+UPDATE trading_accounts SET initial_capital = 1000000 WHERE account_id = 'ibkr_long_short';
 
 -- Daily net-liquidation snapshots for day-over-day PnL comparison
 CREATE TABLE IF NOT EXISTS account_daily_snapshots (
