@@ -87,7 +87,7 @@ interface AccountSummary {
     net_liquidation: string;
     total_commissions: string;
     total_trades: number;
-    realized_pnl: string;
+    prev_day_net_liq: string;
     cache_updated_at: string | null;
 }
 
@@ -509,9 +509,11 @@ function AccountOverview({ account }: { account: AccountSummary }) {
     const costBasis = parseFloat(account.total_cost_basis);
     const commissions = parseFloat(account.total_commissions);
 
-    const realizedPnl = parseFloat(account.realized_pnl);
-    const totalReturn = unrealizedPnl + realizedPnl;
+    const totalReturn = netLiq - initialCapital;
     const returnPct = initialCapital > 0 ? (totalReturn / initialCapital) * 100 : 0;
+    const prevDayNetLiq = parseFloat(account.prev_day_net_liq);
+    const dailyPnl = netLiq - prevDayNetLiq;
+    const dailyPnlPct = prevDayNetLiq > 0 ? (dailyPnl / prevDayNetLiq) * 100 : 0;
     const deployedPct = netLiq > 0 ? (costBasis / netLiq) * 100 : 0;
 
     return (
@@ -557,14 +559,14 @@ function AccountOverview({ account }: { account: AccountSummary }) {
                     valueColor={totalReturn >= 0 ? "text-emerald-400" : "text-red-400"}
                 />
                 <OverviewCard
-                    label="Capital Deployed"
-                    value={`${deployedPct.toFixed(1)}%`}
-                    subtitle={`${formatDollar(costBasis)} of net liq`}
+                    label="Daily PnL"
+                    value={`${dailyPnl >= 0 ? "+" : ""}${formatDollar(dailyPnl)} (${dailyPnl >= 0 ? "+" : ""}${dailyPnlPct.toFixed(2)}%)`}
+                    valueColor={dailyPnl >= 0 ? "text-emerald-400" : "text-red-400"}
                 />
                 <OverviewCard
                     label="Commissions"
                     value={formatDollar(commissions)}
-                    subtitle={`${account.total_trades} trade${account.total_trades !== 1 ? "s" : ""}`}
+                    subtitle={`${account.total_trades} trade${account.total_trades !== 1 ? "s" : ""} | ${deployedPct.toFixed(1)}% deployed`}
                 />
                 <OverviewCard
                     label="Positions"

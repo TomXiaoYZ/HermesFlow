@@ -1106,15 +1106,6 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
             ) c ON true \
             WHERE p.quantity != 0 \
             GROUP BY p.account_id \
-        ), \
-        realized_pnl AS ( \
-            SELECT o.account_id, \
-                   SUM(CASE WHEN o.side = 'Sell' THEN e.quantity * e.price \
-                            ELSE -e.quantity * e.price END) - SUM(COALESCE(e.commission, 0)) as realized_pnl \
-            FROM trade_executions e \
-            JOIN trade_orders o ON e.order_id = o.order_id \
-            WHERE o.account_id IS NOT NULL AND o.status = 'Filled' \
-            GROUP BY o.account_id \
         ) \
         SELECT ta.account_id, ta.label, ta.broker_account, ta.mode, ta.is_enabled, \
                ta.max_order_value, ta.max_positions, ta.max_daily_loss, \
@@ -1129,11 +1120,16 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
                ta.cache_updated_at, \
                COALESCE(tc.total_commissions, 0) as total_commissions, \
                COALESCE(tc.total_trades, 0) as total_trades, \
-               COALESCE(rp.realized_pnl, 0) as realized_pnl \
+               COALESCE(snap.prev_net_liq, ta.initial_capital) as prev_day_net_liq \
         FROM trading_accounts ta \
         LEFT JOIN trade_cash tc ON tc.account_id = ta.account_id \
         LEFT JOIN position_stats ps ON ps.account_id = ta.account_id \
-        LEFT JOIN realized_pnl rp ON rp.account_id = ta.account_id \
+        LEFT JOIN LATERAL ( \
+            SELECT net_liquidation as prev_net_liq \
+            FROM account_daily_snapshots \
+            WHERE account_id = ta.account_id AND snapshot_date < CURRENT_DATE \
+            ORDER BY snapshot_date DESC LIMIT 1 \
+        ) snap ON true \
         ORDER BY ta.account_id";
 
     match sqlx::query(query).fetch_all(&state.pg_pool).await {
@@ -1161,7 +1157,7 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
                         "cache_updated_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("cache_updated_at").map(|t| t.to_rfc3339()),
                         "total_commissions": row.get::<sqlx::types::Decimal, _>("total_commissions").to_string(),
                         "total_trades": row.get::<i32, _>("total_trades"),
-                        "realized_pnl": row.get::<sqlx::types::Decimal, _>("realized_pnl").to_string(),
+                        "prev_day_net_liq": row.get::<sqlx::types::Decimal, _>("prev_day_net_liq").to_string(),
                     })
                 })
                 .collect();

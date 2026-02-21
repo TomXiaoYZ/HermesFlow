@@ -170,6 +170,8 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
+      - TRADE_SIZE_USD=5000
+      - MAX_STOCK_POSITION_USD=25000
     depends_on:
       redis:
         condition: service_healthy

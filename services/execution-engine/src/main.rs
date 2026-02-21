@@ -358,6 +358,29 @@ async fn main() -> anyhow::Result<()> {
                             if let Err(e) = res {
                                 warn!("Failed to update cached broker data for {}: {}", acct_id, e);
                             }
+
+                            // Upsert daily net-liq snapshot for day-over-day PnL
+                            let snap_res = db_client
+                                .execute(
+                                    "INSERT INTO account_daily_snapshots \
+                                         (account_id, snapshot_date, net_liquidation, cash_balance, buying_power) \
+                                     SELECT account_id, CURRENT_DATE, $1::float8, $2::float8, $3::float8 \
+                                     FROM trading_accounts WHERE broker_account = $4 \
+                                     ON CONFLICT (account_id, snapshot_date) \
+                                     DO UPDATE SET net_liquidation = EXCLUDED.net_liquidation, \
+                                                   cash_balance = EXCLUDED.cash_balance, \
+                                                   buying_power = EXCLUDED.buying_power",
+                                    &[
+                                        &summary.net_liquidation,
+                                        &summary.cash,
+                                        &summary.buying_power,
+                                        acct_id,
+                                    ],
+                                )
+                                .await;
+                            if let Err(e) = snap_res {
+                                warn!("Failed to upsert daily snapshot for {}: {}", acct_id, e);
+                            }
                         }
                     }
 
