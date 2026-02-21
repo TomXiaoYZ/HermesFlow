@@ -87,6 +87,8 @@ interface AccountSummary {
     net_liquidation: string;
     total_commissions: string;
     total_trades: number;
+    realized_pnl: string;
+    cache_updated_at: string | null;
 }
 
 interface LiveTradingProps {
@@ -273,7 +275,7 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                             {filteredPositions.length === 0 && (
                                 <tr>
                                     <td colSpan={9} className="px-6 py-8 text-center text-slate-500">
-                                        No positions found
+                                        No open positions
                                     </td>
                                 </tr>
                             )}
@@ -297,7 +299,6 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                                 <th className="text-right px-6 py-3">Qty</th>
                                 <th className="text-right px-6 py-3">Price</th>
                                 <th className="text-left px-6 py-3">Status</th>
-                                <th className="text-left px-6 py-3">Mode</th>
                                 <th className="text-left px-6 py-3">Strategy</th>
                             </tr>
                         </thead>
@@ -309,7 +310,7 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                                     onClick={() => order.strategy_id && openDrilldown(order.strategy_id)}
                                 >
                                     <td className="px-6 py-3 text-slate-400 font-mono text-xs">
-                                        {order.created_at ? new Date(order.created_at).toLocaleTimeString() : "—"}
+                                        {order.created_at ? new Date(order.created_at).toLocaleString() : "—"}
                                     </td>
                                     <td className="px-6 py-3 font-medium text-white">{order.symbol}</td>
                                     <td className="px-6 py-3">
@@ -331,15 +332,6 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                                     <td className="px-6 py-3">
                                         <StatusBadge status={order.status} />
                                     </td>
-                                    <td className="px-6 py-3">
-                                        {order.mode ? (
-                                            <span className="text-xs font-medium px-2 py-0.5 rounded bg-slate-700/50 text-slate-300 capitalize">
-                                                {order.mode.replace("_", " ")}
-                                            </span>
-                                        ) : (
-                                            <span className="text-slate-500">—</span>
-                                        )}
-                                    </td>
                                     <td className="px-6 py-3 text-xs text-slate-400 max-w-[200px] truncate" title={order.strategy_id || ""}>
                                         {order.strategy_id || "—"}
                                     </td>
@@ -347,7 +339,7 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                             ))}
                             {tradeHistory.length === 0 && (
                                 <tr>
-                                    <td colSpan={8} className="px-6 py-8 text-center text-slate-500">
+                                    <td colSpan={7} className="px-6 py-8 text-center text-slate-500">
                                         No trade history found
                                     </td>
                                 </tr>
@@ -390,7 +382,32 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
                             </span>
                         </div>
                     ))}
-                    {signals.length === 0 && (
+                    {signals.length === 0 && tradeHistory.filter(o => o.status === "Filled").length > 0 && (
+                        <>
+                            <div className="px-6 py-2 text-xs text-slate-500 bg-slate-800/30">
+                                Recent Activity (from trade history)
+                            </div>
+                            {tradeHistory.filter(o => o.status === "Filled").slice(0, 10).map((order) => (
+                                <div key={order.order_id} className="px-6 py-3 flex items-center gap-4">
+                                    <span className="relative flex h-2 w-2">
+                                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                                    </span>
+                                    <span className={cn("text-xs font-bold", order.side === "Buy" || order.side === "BUY" ? "text-emerald-400" : "text-red-400")}>
+                                        {order.side}
+                                    </span>
+                                    <span className="text-sm font-medium text-white">{order.symbol}</span>
+                                    <span className="text-sm text-slate-400">x{order.quantity}</span>
+                                    <span className="text-sm text-slate-400">
+                                        {order.avg_price ? `@ $${parseFloat(order.avg_price).toFixed(2)}` : ""}
+                                    </span>
+                                    <span className="text-xs text-slate-500 ml-auto">
+                                        {order.created_at ? new Date(order.created_at).toLocaleString() : ""}
+                                    </span>
+                                </div>
+                            ))}
+                        </>
+                    )}
+                    {signals.length === 0 && tradeHistory.filter(o => o.status === "Filled").length === 0 && (
                         <div className="px-6 py-8 text-center text-slate-500">No recent signals</div>
                     )}
                 </div>
@@ -492,7 +509,8 @@ function AccountOverview({ account }: { account: AccountSummary }) {
     const costBasis = parseFloat(account.total_cost_basis);
     const commissions = parseFloat(account.total_commissions);
 
-    const totalReturn = netLiq - initialCapital;
+    const realizedPnl = parseFloat(account.realized_pnl);
+    const totalReturn = unrealizedPnl + realizedPnl;
     const returnPct = initialCapital > 0 ? (totalReturn / initialCapital) * 100 : 0;
     const deployedPct = netLiq > 0 ? (costBasis / netLiq) * 100 : 0;
 
@@ -512,6 +530,11 @@ function AccountOverview({ account }: { account: AccountSummary }) {
                 >
                     {account.is_enabled ? "Enabled" : "Disabled"}
                 </span>
+                {account.cache_updated_at && (
+                    <span className="text-xs text-slate-500 ml-auto">
+                        IBKR sync: {new Date(account.cache_updated_at).toLocaleString()}
+                    </span>
+                )}
             </div>
 
             {/* Row 1: Portfolio Overview */}
