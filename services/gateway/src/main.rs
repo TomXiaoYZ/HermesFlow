@@ -1109,8 +1109,8 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
         ), \
         realized_pnl AS ( \
             SELECT o.account_id, \
-                   SUM(CASE WHEN o.side = 'Sell' THEN e.filled_qty * e.avg_price \
-                            ELSE -e.filled_qty * e.avg_price END) - SUM(COALESCE(e.commission, 0)) as realized_pnl \
+                   SUM(CASE WHEN o.side = 'Sell' THEN e.quantity * e.price \
+                            ELSE -e.quantity * e.price END) - SUM(COALESCE(e.commission, 0)) as realized_pnl \
             FROM trade_executions e \
             JOIN trade_orders o ON e.order_id = o.order_id \
             WHERE o.account_id IS NOT NULL AND o.status = 'Filled' \
