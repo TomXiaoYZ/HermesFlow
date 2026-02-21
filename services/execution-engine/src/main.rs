@@ -282,6 +282,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
 
+                let mut sync_count: u32 = 0;
                 loop {
                     // Query each trader for its account summary (each sees its own sub-account)
                     let mut all_summaries = std::collections::HashMap::new();
@@ -298,8 +299,14 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // Positions from any one trader (all see the same positions across accounts)
-                    let positions = traders[0].get_positions().await.unwrap_or_default();
+                    // Positions from ALL traders (each gateway only sees its own sub-account)
+                    let mut positions = Vec::new();
+                    for trader in &traders {
+                        match trader.get_positions().await {
+                            Ok(pos) => positions.extend(pos),
+                            Err(e) => warn!("IBKR get_positions failed: {}", e),
+                        }
+                    }
 
                     // Aggregate for Redis portfolio update
                     let (total_cash, total_equity) = all_summaries
@@ -382,8 +389,21 @@ async fn main() -> anyhow::Result<()> {
                                 warn!("Failed to upsert daily snapshot for {}: {}", acct_id, e);
                             }
                         }
+
+                        // ── Position sync: write IBKR positions → trade_positions DB ──
+                        reconciliation::sync_positions(&positions, db_client).await;
+
+                        // Mark stale orders every ~5 min (10 cycles × 30s)
+                        if sync_count.is_multiple_of(10) {
+                            reconciliation::mark_stale_orders(
+                                db_client,
+                                Duration::from_secs(300),
+                            )
+                            .await;
+                        }
                     }
 
+                    sync_count += 1;
                     tokio::time::sleep(Duration::from_secs(30)).await;
                 }
             });
@@ -438,18 +458,6 @@ async fn main() -> anyhow::Result<()> {
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
         });
-    }
-
-    // ========================================
-    // 6c. Background: IBKR Position Reconciliation (either trader sees all positions)
-    // ========================================
-    let ibkr_for_recon = ibkr_long_only.clone().or_else(|| ibkr_long_short.clone());
-    if let (Some(trader), Some(ref db_client)) = (ibkr_for_recon, &db) {
-        reconciliation::spawn_reconciliation_task(
-            trader,
-            Arc::clone(db_client),
-            Duration::from_secs(60),
-        );
     }
 
     // ========================================
