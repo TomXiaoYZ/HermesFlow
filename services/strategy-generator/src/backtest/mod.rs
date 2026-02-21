@@ -1439,7 +1439,7 @@ fn sigmoid(x: f64) -> f64 {
 }
 
 /// Compute an adaptive sigmoid threshold as the 70th percentile of sigmoid(signal),
-/// clamped to [0.52, 0.80]. Goes long on top ~30% of signals.
+/// clamped to [0.52, 0.70]. Goes long on top ~30% of signals.
 fn adaptive_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
     let mut vals: Vec<f64> = (start..end).map(|i| sigmoid(sig[i])).collect();
     vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1447,7 +1447,7 @@ fn adaptive_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
         return 0.65;
     }
     let idx = ((vals.len() as f64) * 0.70) as usize;
-    vals[idx.min(vals.len() - 1)].clamp(0.52, 0.80)
+    vals[idx.min(vals.len() - 1)].clamp(0.52, 0.70)
 }
 
 /// Compute an adaptive lower sigmoid threshold as the 30th percentile of sigmoid(signal),
