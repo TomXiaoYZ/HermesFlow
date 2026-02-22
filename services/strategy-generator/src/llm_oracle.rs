@@ -172,7 +172,26 @@ pub fn build_prompt(ctx: &OracleContext) -> String {
     prompt.push('\n');
 
     // Available features
+    let is_mtf = ctx
+        .factor_names
+        .first()
+        .map(|n| n.ends_with("_1h") || n.ends_with("_4h") || n.ends_with("_1d"))
+        .unwrap_or(false);
+
     prompt.push_str("## Available Features\n");
+    if is_mtf {
+        prompt.push_str("Features are organized by timeframe:\n");
+        prompt.push_str(
+            "- `_1h` suffix: hourly factors (high-frequency, captures intraday patterns)\n",
+        );
+        prompt.push_str(
+            "- `_4h` suffix: 4-hour factors (medium-frequency, captures session trends)\n",
+        );
+        prompt.push_str(
+            "- `_1d` suffix: daily factors (low-frequency, captures multi-day regimes)\n",
+        );
+        prompt.push_str("Cross-timeframe combinations (e.g., `momentum_1h momentum_1d SUB`) can capture timeframe divergences.\n\n");
+    }
     for (i, name) in ctx.factor_names.iter().enumerate() {
         prompt.push_str(&format!("- {} (id: {})\n", name, i));
     }
@@ -193,11 +212,20 @@ pub fn build_prompt(ctx: &OracleContext) -> String {
     prompt.push_str("- Binary ops consume 2 values, push 1 result\n");
     prompt.push_str("- A valid formula ends with exactly 1 value on the stack\n");
     prompt.push_str("Examples:\n");
-    prompt.push_str("- `return ABS` → absolute return (unary on 1 feature)\n");
-    prompt.push_str(
-        "- `momentum volume_ratio MUL` → momentum × volume_ratio (binary on 2 features)\n",
-    );
-    prompt.push_str("- `return TS_MEAN return SUB` → return - TS_MEAN(return) (mean reversion)\n");
+    if is_mtf {
+        prompt.push_str("- `return_1h ABS` → absolute hourly return\n");
+        prompt
+            .push_str("- `momentum_1h momentum_1d SUB` → intraday vs daily momentum divergence\n");
+        prompt.push_str("- `volatility_4h TS_MEAN volatility_1h DIV` → 4h vol trend / 1h vol (regime detection)\n");
+    } else {
+        prompt.push_str("- `return ABS` → absolute return (unary on 1 feature)\n");
+        prompt.push_str(
+            "- `momentum volume_ratio MUL` → momentum × volume_ratio (binary on 2 features)\n",
+        );
+        prompt.push_str(
+            "- `return TS_MEAN return SUB` → return - TS_MEAN(return) (mean reversion)\n",
+        );
+    }
     prompt.push('\n');
 
     // Current elites

@@ -350,4 +350,59 @@ mod tests {
         assert!(names.contains(&"TS_CORR"));
         assert!(!names.contains(&"GATE")); // legacy, not active
     }
+
+    // ── P3 Multi-Timeframe Tests ──
+
+    fn test_mtf_factors() -> Vec<String> {
+        let base = test_factors();
+        let resolutions = ["1h", "4h", "1d"];
+        let mut names = Vec::with_capacity(base.len() * resolutions.len());
+        for res in resolutions {
+            for f in &base {
+                names.push(format!("{}_{}", f, res));
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn test_mtf_decode_cross_timeframe() {
+        let factors = test_mtf_factors();
+        let feat_offset = 75; // 25 * 3
+                              // return_1h (id 0), return_1d (id 50), SUB (op 1 → token 76)
+        let tokens = vec![0, 50, feat_offset + 1];
+        let decoded = decode_genome(&tokens, feat_offset, &factors);
+        assert_eq!(decoded, "return_1h return_1d SUB");
+    }
+
+    #[test]
+    fn test_mtf_encode_round_trip() {
+        let factors = test_mtf_factors();
+        let feat_offset = 75;
+        let formula = "momentum_1h momentum_1d SUB ABS";
+        let tokens = encode_formula(formula, feat_offset, &factors).unwrap();
+        assert!(validate_stack(&tokens, feat_offset).is_ok());
+        let decoded = decode_genome(&tokens, feat_offset, &factors);
+        assert_eq!(decoded, formula);
+    }
+
+    #[test]
+    fn test_mtf_validate_stack_with_75_offset() {
+        let feat_offset = 75;
+        // Token 74 = last feature (spy_rel_strength_1d), valid feature push
+        // Token 75 = ADD operator (op_idx 0), needs 2 on stack
+        let tokens = vec![0, 74, feat_offset + 0]; // return_1h spy_rel_strength_1d ADD
+        assert!(validate_stack(&tokens, feat_offset).is_ok());
+    }
+
+    #[test]
+    fn test_mtf_4h_factor_decode() {
+        let factors = test_mtf_factors();
+        let feat_offset = 75;
+        // Token 25 = return_4h, token 31 = momentum_4h, ADD (binary) collapses to 1
+        let tokens = vec![25, 31, feat_offset + 0]; // return_4h momentum_4h ADD
+        let decoded = decode_genome(&tokens, feat_offset, &factors);
+        assert_eq!(decoded, "return_4h momentum_4h ADD");
+        assert!(validate_stack(&tokens, feat_offset).is_ok());
+    }
 }

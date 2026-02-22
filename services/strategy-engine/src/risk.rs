@@ -7,11 +7,11 @@ use tracing::{info, warn};
 #[derive(Debug, Clone)]
 pub struct RiskConfig {
     pub min_liquidity_usd: f64,
-    pub max_position_size_portion: f64,        // e.g., 0.1 (10%) — crypto
-    pub max_drawdown_limit: f64,               // e.g. 0.20 (20% daily)
-    pub entry_amount_sol: f64,                 // Default entry size in SOL (crypto)
-    pub check_honeypot: bool,                  // Toggle for honeypot check
-    pub trade_size_pct: f64,                   // % of equity per stock trade (e.g. 0.005 = 0.5%)
+    pub max_position_size_portion: f64, // e.g., 0.1 (10%) — crypto
+    pub max_drawdown_limit: f64,        // e.g. 0.20 (20% daily)
+    pub entry_amount_sol: f64,          // Default entry size in SOL (crypto)
+    pub check_honeypot: bool,           // Toggle for honeypot check
+    pub trade_size_pct: f64,            // % of equity per stock trade (e.g. 0.005 = 0.5%)
 }
 
 impl Default for RiskConfig {

@@ -15,7 +15,7 @@ mod llm_oracle;
 
 use backtest::StrategyMode;
 use backtest::{is_sentinel, sentinel_label, Backtester, WalkForwardConfig};
-use backtest_engine::config::FactorConfig;
+use backtest_engine::config::{FactorConfig, MultiTimeframeFactorConfig};
 use genetic::{AlpsGA, PromotionStats};
 use llm_oracle::LlmOracleConfig;
 
@@ -148,6 +148,13 @@ pub struct WalkForwardYamlConfig {
     pub target_steps: Option<usize>,
 }
 
+/// P3 multi-timeframe configuration, loaded from generator.yaml.
+#[derive(Debug, Deserialize, Clone)]
+pub struct MultiTimeframeYamlConfig {
+    pub enabled: bool,
+    pub resolutions: Vec<String>,
+}
+
 /// Per-exchange evolution config, loaded from config/generator.yaml.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ExchangeConfig {
@@ -155,6 +162,7 @@ pub struct ExchangeConfig {
     pub resolution: String,
     pub lookback_days: i64,
     pub factor_config: String,
+    pub multi_timeframe: Option<MultiTimeframeYamlConfig>,
     pub walk_forward: Option<WalkForwardYamlConfig>,
 }
 
@@ -311,6 +319,7 @@ fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig) {
                     resolution,
                     lookback_days,
                     factor_config,
+                    multi_timeframe: None,
                     walk_forward: None,
                 }],
                 LlmOracleConfig::default(),
@@ -326,6 +335,7 @@ fn default_exchange_configs() -> Vec<ExchangeConfig> {
             resolution: "15m".to_string(),
             lookback_days: 7,
             factor_config: "config/factors.yaml".to_string(),
+            multi_timeframe: None,
             walk_forward: None,
         },
         ExchangeConfig {
@@ -333,6 +343,7 @@ fn default_exchange_configs() -> Vec<ExchangeConfig> {
             resolution: "1d".to_string(),
             lookback_days: 365,
             factor_config: "config/factors-stock.yaml".to_string(),
+            multi_timeframe: None,
             walk_forward: None,
         },
     ]
@@ -458,12 +469,47 @@ async fn run_symbol_evolution(
     );
 
     let factor_config = load_factor_config(&config.factor_config);
-    let feat_offset = factor_config.feat_offset();
-    let factor_names: Vec<String> = factor_config
-        .active_factors
-        .iter()
-        .map(|f| f.name.clone())
-        .collect();
+
+    // P3: Multi-timeframe factor stacking
+    let mtf_enabled = config
+        .multi_timeframe
+        .as_ref()
+        .map(|m| m.enabled)
+        .unwrap_or(false);
+    let mtf_resolutions: Vec<String> = config
+        .multi_timeframe
+        .as_ref()
+        .filter(|m| m.enabled)
+        .map(|m| m.resolutions.clone())
+        .unwrap_or_default();
+
+    let mtf_config = if mtf_enabled {
+        Some(MultiTimeframeFactorConfig::new(
+            factor_config.clone(),
+            mtf_resolutions.clone(),
+        ))
+    } else {
+        None
+    };
+
+    let (feat_offset, factor_names) =
+        if let Some(ref mtf) = mtf_config {
+            let names = mtf.factor_names();
+            info!(
+            "[{}:{}:{}] P3 MTF enabled: {} factors x {} resolutions = {} features (feat_offset={})",
+            exchange, symbol, mode_str,
+            mtf.base_feat_count(), mtf.resolutions.len(),
+            mtf.feat_count(), mtf.feat_offset()
+        );
+            (mtf.feat_offset(), names)
+        } else {
+            let names: Vec<String> = factor_config
+                .active_factors
+                .iter()
+                .map(|f| f.name.clone())
+                .collect();
+            (factor_config.feat_offset(), names)
+        };
 
     let client = redis::Client::open(redis_url.to_string())?;
     let mut redis_conn = client.get_async_connection().await?;
@@ -505,29 +551,56 @@ async fn run_symbol_evolution(
 
     // Load data for this single symbol
     info!(
-        "[{}:{}:{}] Loading {} days of data...",
-        exchange, symbol, mode_str, config.lookback_days
+        "[{}:{}:{}] Loading {} days of data{}...",
+        exchange,
+        symbol,
+        mode_str,
+        config.lookback_days,
+        if mtf_enabled {
+            " (multi-timeframe)"
+        } else {
+            ""
+        }
     );
-    if let Err(e) = backtester
-        .load_data(std::slice::from_ref(&symbol), config.lookback_days)
-        .await
-    {
-        error!(
-            "[{}:{}:{}] Failed to load data: {}",
-            exchange, symbol, mode_str, e
-        );
-    }
-
-    // Load SPY reference data for cross-asset factors (Polygon only)
-    if exchange == "Polygon" && symbol != "SPY" {
+    if mtf_enabled {
+        // P3: Load SPY reference first (MTF loads per-resolution internally)
+        // then load multi-timeframe data
         if let Err(e) = backtester
-            .load_reference_data("SPY", config.lookback_days)
+            .load_data_multi_timeframe(
+                std::slice::from_ref(&symbol),
+                config.lookback_days,
+                mtf_config.as_ref().unwrap(),
+            )
             .await
         {
-            warn!(
-                "[{}:{}:{}] Failed to load SPY reference: {}",
+            error!(
+                "[{}:{}:{}] Failed to load MTF data: {}",
                 exchange, symbol, mode_str, e
             );
+        }
+    } else {
+        // P2: Single-resolution data loading
+        if let Err(e) = backtester
+            .load_data(std::slice::from_ref(&symbol), config.lookback_days)
+            .await
+        {
+            error!(
+                "[{}:{}:{}] Failed to load data: {}",
+                exchange, symbol, mode_str, e
+            );
+        }
+
+        // Load SPY reference data for cross-asset factors (Polygon only)
+        if exchange == "Polygon" && symbol != "SPY" {
+            if let Err(e) = backtester
+                .load_reference_data("SPY", config.lookback_days)
+                .await
+            {
+                warn!(
+                    "[{}:{}:{}] Failed to load SPY reference: {}",
+                    exchange, symbol, mode_str, e
+                );
+            }
         }
     }
 

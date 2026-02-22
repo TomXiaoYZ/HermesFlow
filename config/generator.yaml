@@ -6,6 +6,12 @@ exchanges:
     resolution: "1h"
     lookback_days: 730
     factor_config: "config/factors-stock.yaml"
+    # P3: Multi-timeframe factor stacking
+    # Computes 25 factors per resolution, stacks to 75 features (feat_offset=75).
+    # Set enabled: false to revert to P2 single-resolution mode (25 features).
+    multi_timeframe:
+      enabled: true
+      resolutions: ["1h", "4h", "1d"]
     walk_forward:
       initial_train: 2500
       target_test_window: 1000

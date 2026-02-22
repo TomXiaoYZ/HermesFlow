@@ -1,9 +1,9 @@
 use crate::genetic::Genome;
-use backtest_engine::config::FactorConfig;
+use backtest_engine::config::{FactorConfig, MultiTimeframeFactorConfig};
 use backtest_engine::factors::engineer::FeatureEngineer;
 use backtest_engine::vm::vm::StackVM;
 use chrono::{DateTime, Utc};
-use ndarray::{Array2, Array3};
+use ndarray::{Array2, Array3, Axis};
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
@@ -169,6 +169,47 @@ pub struct WalkForwardResult {
     pub steps: Vec<WalkForwardStep>,
     /// If aggregate_psr is a sentinel, this explains which failure dominated.
     pub failure_mode: Option<String>,
+}
+
+/// Forward-fill lower-frequency features to align with higher-frequency timestamps.
+///
+/// For each target (high-frequency) timestamp `t`, finds the most recent low-frequency
+/// bar where `lf_timestamps[j] <= t` and copies its feature row. Bars before the first
+/// low-frequency timestamp are filled with zeros.
+///
+/// Uses binary search for O(T_hf * log(T_lf)) complexity.
+pub fn forward_fill_align(
+    lf_features: &Array3<f64>,
+    lf_timestamps: &[i64],
+    hf_timestamps: &[i64],
+) -> Array3<f64> {
+    let n_factors = lf_features.shape()[1];
+    let hf_len = hf_timestamps.len();
+    let mut out = Array3::<f64>::zeros((1, n_factors, hf_len));
+
+    for (i, &t) in hf_timestamps.iter().enumerate() {
+        // Binary search: find rightmost lf index where lf_timestamps[j] <= t
+        let idx = match lf_timestamps.binary_search(&t) {
+            Ok(exact) => Some(exact),
+            Err(insert_pos) => {
+                if insert_pos > 0 {
+                    Some(insert_pos - 1)
+                } else {
+                    None // t is before the first lf timestamp
+                }
+            }
+        };
+
+        if let Some(j) = idx {
+            // Copy all factors from lf bar j to output bar i
+            for f in 0..n_factors {
+                out[[0, f, i]] = lf_features[[0, f, j]];
+            }
+        }
+        // else: zeros (default from Array3::zeros)
+    }
+
+    out
 }
 
 pub struct Backtester {
@@ -435,6 +476,289 @@ impl Backtester {
 
         tracing::info!("Loaded {} bars of reference data for {}", len, symbol);
         self.ref_cache.insert(symbol.to_string(), close);
+        Ok(())
+    }
+
+    /// Load reference asset close prices at a specific resolution (for MTF).
+    async fn load_reference_close(
+        &self,
+        symbol: &str,
+        resolution: &str,
+        days: i64,
+    ) -> anyhow::Result<(Array2<f64>, usize)> {
+        let rows = sqlx::query_as::<_, Candle>(
+            r#"
+            SELECT time, open, high, low, close,
+                   COALESCE(volume, 0) as volume,
+                   COALESCE(liquidity, 0) as liquidity,
+                   COALESCE(fdv, 0) as fdv,
+                   COALESCE(amount, 0) as amount
+            FROM mkt_equity_candles
+            WHERE exchange = $2 AND symbol = $1 AND resolution = $3
+            AND time > NOW() - make_interval(days := $4)
+            ORDER BY time ASC
+            "#,
+        )
+        .bind(symbol)
+        .bind(&self.exchange)
+        .bind(resolution)
+        .bind(days as i32)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let len = rows.len();
+        let mut close = Array2::<f64>::zeros((1, len));
+        for (i, c) in rows.iter().enumerate() {
+            close[[0, i]] = c.close.to_f64().unwrap_or(0.0);
+        }
+        Ok((close, len))
+    }
+
+    /// Fetch candles at a specific resolution and return OHLCV arrays + timestamps.
+    async fn fetch_candles_for_resolution(
+        &self,
+        symbol: &str,
+        resolution: &str,
+        days: i64,
+    ) -> anyhow::Result<
+        Option<(
+            Array2<f64>,
+            Array2<f64>,
+            Array2<f64>,
+            Array2<f64>,
+            Array2<f64>,
+            Array2<f64>,
+            Array2<f64>,
+            Array2<f64>,
+            Vec<i64>,
+        )>,
+    > {
+        let rows = sqlx::query_as::<_, Candle>(
+            r#"
+            SELECT time, open, high, low, close,
+                   COALESCE(volume, 0) as volume,
+                   COALESCE(liquidity, 0) as liquidity,
+                   COALESCE(fdv, 0) as fdv,
+                   COALESCE(amount, 0) as amount
+            FROM mkt_equity_candles
+            WHERE exchange = $2 AND symbol = $1 AND resolution = $3
+            AND time > NOW() - make_interval(days := $4)
+            ORDER BY time ASC
+            "#,
+        )
+        .bind(symbol)
+        .bind(&self.exchange)
+        .bind(resolution)
+        .bind(days as i32)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if rows.len() < 50 {
+            tracing::warn!(
+                "Insufficient {} data for {}: {} rows",
+                resolution,
+                symbol,
+                rows.len()
+            );
+            return Ok(None);
+        }
+
+        let len = rows.len();
+        let mut close = Array2::<f64>::zeros((1, len));
+        let mut open = Array2::<f64>::zeros((1, len));
+        let mut high = Array2::<f64>::zeros((1, len));
+        let mut low = Array2::<f64>::zeros((1, len));
+        let mut volume = Array2::<f64>::zeros((1, len));
+        let mut liq = Array2::<f64>::zeros((1, len));
+        let mut fdv = Array2::<f64>::zeros((1, len));
+        let mut amount = Array2::<f64>::zeros((1, len));
+        let mut timestamps = Vec::with_capacity(len);
+
+        for (i, c) in rows.iter().enumerate() {
+            close[[0, i]] = c.close.to_f64().unwrap_or(0.0);
+            open[[0, i]] = c.open.to_f64().unwrap_or(0.0);
+            high[[0, i]] = c.high.to_f64().unwrap_or(0.0);
+            low[[0, i]] = c.low.to_f64().unwrap_or(0.0);
+            volume[[0, i]] = c.volume.to_f64().unwrap_or(0.0);
+            liq[[0, i]] = c.liquidity.to_f64().unwrap_or(0.0);
+            fdv[[0, i]] = c.fdv.to_f64().unwrap_or(0.0);
+            amount[[0, i]] = c.amount.to_f64().unwrap_or(0.0);
+            timestamps.push(c.time.timestamp());
+        }
+
+        Ok(Some((
+            close, open, high, low, volume, liq, fdv, amount, timestamps,
+        )))
+    }
+
+    /// Load candle data at multiple resolutions, compute features per resolution,
+    /// forward-fill align to the base (1h) time axis, and concatenate into a
+    /// stacked feature tensor of shape (1, n_factors * n_resolutions, T_base).
+    pub async fn load_data_multi_timeframe(
+        &mut self,
+        symbols: &[String],
+        days: i64,
+        mtf_config: &MultiTimeframeFactorConfig,
+    ) -> anyhow::Result<()> {
+        let resolutions = &mtf_config.resolutions;
+        let _base_resolution = &resolutions[0]; // "1h" = highest frequency
+        let mut loaded_count = 0;
+
+        for symbol in symbols {
+            // Fetch candles for each resolution
+            let mut res_data: Vec<(Array3<f64>, Vec<i64>)> = Vec::new();
+            let mut base_timestamps: Option<Vec<i64>> = None;
+            let mut base_open: Option<Array2<f64>> = None;
+            let mut base_close: Option<Array2<f64>> = None;
+            let mut base_liq: Option<Array2<f64>> = None;
+            let mut base_amount: Option<Array2<f64>> = None;
+
+            let mut skip_symbol = false;
+            for (res_idx, resolution) in resolutions.iter().enumerate() {
+                let candle_data = self
+                    .fetch_candles_for_resolution(symbol, resolution, days)
+                    .await?;
+
+                let (close, open, high, low, volume, liq, fdv, amount, timestamps) =
+                    match candle_data {
+                        Some(d) => d,
+                        None => {
+                            tracing::warn!(
+                                "Skipping {} for MTF: insufficient {} data",
+                                symbol,
+                                resolution
+                            );
+                            skip_symbol = true;
+                            break;
+                        }
+                    };
+
+                // Load SPY reference for this resolution
+                let ref_close_aligned = if self.exchange == "Polygon" && symbol != "SPY" {
+                    match self.load_reference_close("SPY", resolution, days).await {
+                        Ok((spy_close, spy_len)) => {
+                            let sym_len = close.shape()[1];
+                            if spy_len >= sym_len {
+                                Some(
+                                    spy_close
+                                        .slice(ndarray::s![.., (spy_len - sym_len)..])
+                                        .to_owned(),
+                                )
+                            } else {
+                                None
+                            }
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+
+                let ohlcv = backtest_engine::factors::traits::OhlcvData {
+                    close: &close,
+                    open: &open,
+                    high: &high,
+                    low: &low,
+                    volume: &volume,
+                    liquidity: &liq,
+                    fdv: &fdv,
+                    ref_close: ref_close_aligned.as_ref(),
+                };
+                let features =
+                    FeatureEngineer::compute_features_from_config(&self.factor_config, &ohlcv);
+
+                tracing::info!(
+                    "[{}:{}] {} features: {} factors x {} bars",
+                    symbol,
+                    resolution,
+                    resolution,
+                    features.shape()[1],
+                    features.shape()[2]
+                );
+
+                // Save base resolution data for returns computation
+                if res_idx == 0 {
+                    base_timestamps = Some(timestamps.clone());
+                    base_open = Some(open);
+                    base_close = Some(close);
+                    base_liq = Some(liq);
+                    base_amount = Some(amount);
+                }
+
+                res_data.push((features, timestamps));
+            }
+
+            if skip_symbol {
+                continue;
+            }
+
+            let hf_timestamps = base_timestamps.as_ref().unwrap();
+            let hf_len = hf_timestamps.len();
+            let n_factors_per_res = mtf_config.base_feat_count();
+            let total_factors = mtf_config.feat_count();
+
+            // Stack features: base resolution directly, others via forward-fill
+            let mut stacked = Array3::<f64>::zeros((1, total_factors, hf_len));
+
+            for (res_idx, (features, timestamps)) in res_data.iter().enumerate() {
+                let offset = res_idx * n_factors_per_res;
+                let aligned = if res_idx == 0 {
+                    features.clone()
+                } else {
+                    forward_fill_align(features, timestamps, hf_timestamps)
+                };
+
+                for f in 0..n_factors_per_res {
+                    stacked
+                        .index_axis_mut(Axis(1), offset + f)
+                        .assign(&aligned.index_axis(Axis(1), f));
+                }
+            }
+
+            // Compute future returns from base resolution open prices
+            let open = base_open.unwrap();
+            let close = base_close.unwrap();
+
+            let mut future_ret = Array2::<f64>::zeros((1, hf_len));
+            for i in 0..hf_len.saturating_sub(2) {
+                let exec_price = open[[0, i + 1]];
+                let exit_price = open[[0, i + 2]];
+                let r = if exec_price.abs() > 1e-9 {
+                    (exit_price / exec_price - 1.0).clamp(-0.99, 10.0)
+                } else {
+                    0.0
+                };
+                future_ret[[0, i]] = r;
+            }
+
+            tracing::info!(
+                "[{}] MTF stacked: {} factors x {} bars (resolutions: {:?})",
+                symbol,
+                total_factors,
+                hf_len,
+                resolutions
+            );
+
+            self.cache.insert(
+                symbol.clone(),
+                CachedData {
+                    features: stacked,
+                    returns: future_ret,
+                    open,
+                    close,
+                    liquidity: base_liq.unwrap(),
+                    amount: base_amount.unwrap(),
+                    timestamps: hf_timestamps.clone(),
+                },
+            );
+            loaded_count += 1;
+        }
+
+        tracing::info!(
+            "Loaded MTF data for {} symbols ({} resolutions)",
+            loaded_count,
+            resolutions.len()
+        );
         Ok(())
     }
 
@@ -2044,5 +2368,55 @@ mod tests {
             available < config.min_test_window + config.embargo,
             "small data should trigger oos_too_small path"
         );
+    }
+
+    #[test]
+    fn forward_fill_exact_match() {
+        // LF and HF timestamps are identical → output equals input
+        let lf = Array3::from_shape_vec((1, 2, 3), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+        let ts = vec![100, 200, 300];
+        let out = forward_fill_align(&lf, &ts, &ts);
+        assert_eq!(out, lf);
+    }
+
+    #[test]
+    fn forward_fill_4h_to_1h() {
+        // 4h bars at t=0, t=400. 1h bars at t=0,100,200,300,400,500.
+        // Expected: bars 0-3 use 4h[0], bars 4-5 use 4h[1].
+        let lf = Array3::from_shape_vec((1, 1, 2), vec![10.0, 20.0]).unwrap();
+        let lf_ts = vec![0, 400];
+        let hf_ts = vec![0, 100, 200, 300, 400, 500];
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts);
+        let expected = vec![10.0, 10.0, 10.0, 10.0, 20.0, 20.0];
+        assert_eq!(out.as_slice().unwrap(), &expected);
+    }
+
+    #[test]
+    fn forward_fill_hf_before_first_lf() {
+        // HF bar at t=50 is before first LF bar at t=100 → zeros
+        let lf = Array3::from_shape_vec((1, 1, 2), vec![5.0, 9.0]).unwrap();
+        let lf_ts = vec![100, 200];
+        let hf_ts = vec![50, 100, 150, 200, 250];
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts);
+        let expected = vec![0.0, 5.0, 5.0, 9.0, 9.0];
+        assert_eq!(out.as_slice().unwrap(), &expected);
+    }
+
+    #[test]
+    fn forward_fill_multi_factor() {
+        // 2 factors, 2 LF bars, 4 HF bars
+        let lf = Array3::from_shape_vec((1, 2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let lf_ts = vec![0, 200];
+        let hf_ts = vec![0, 100, 200, 300];
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts);
+        // factor 0: [1, 1, 2, 2], factor 1: [3, 3, 4, 4]
+        assert_eq!(out[[0, 0, 0]], 1.0);
+        assert_eq!(out[[0, 0, 1]], 1.0);
+        assert_eq!(out[[0, 0, 2]], 2.0);
+        assert_eq!(out[[0, 0, 3]], 2.0);
+        assert_eq!(out[[0, 1, 0]], 3.0);
+        assert_eq!(out[[0, 1, 1]], 3.0);
+        assert_eq!(out[[0, 1, 2]], 4.0);
+        assert_eq!(out[[0, 1, 3]], 4.0);
     }
 }
