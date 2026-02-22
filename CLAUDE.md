@@ -58,7 +58,7 @@ docs/
 config/
   factors.yaml         # Factor definitions for crypto backtest/strategy engines
   factors-stock.yaml   # Factor definitions for stock (Polygon) evolution
-  generator.yaml       # Strategy generator config (population, resolution, lookback, symbols)
+  generator.yaml       # Strategy generator config (exchanges, threshold_config, llm_oracle)
 ```
 
 ## Architecture Patterns
@@ -79,6 +79,8 @@ config/
 - **Dual-mode**: Long Only + Long Short evolution per (exchange, symbol).
 - **LLM Oracle** (P2): On stagnation (low promotion rate or high TFT rate), invokes LLM (Bedrock/Anthropic/OpenAI) to generate semantically meaningful RPN formulas → validates → injects into Layer 0. Config in `config/generator.yaml` → `llm_oracle`. Code: `llm_oracle.rs`, `genome_decoder.rs`.
 - **Cross-Symbol Learning** (P2e): Oracle prompt includes top OOS-PSR formulas from other symbols (same exchange+mode), enabling knowledge transfer across tickers.
+- **Multi-Timeframe Stacking** (P3): 25 factors × 3 resolutions (1h/4h/1d) = 75 features. Token layout: 0–24 = 1h, 25–49 = 4h, 50–74 = 1d. Config in `config/generator.yaml` → `multi_timeframe`.
+- **Adaptive Threshold Tuning** (P4): Per-symbol `ThresholdConfig` with percentile/clamp overrides. `UtilizationTracker` monitors long/short ratios per generation; `adjust_threshold_params` runs every 50 gens to relax/tighten thresholds based on utilization feedback. Config in `config/generator.yaml` → `threshold_config`.
 
 ### IBKR Dual-Gateway
 - Two IB Gateway containers: `ib-gateway` (long_only account) and `ib-gateway-ls` (long_short account).
