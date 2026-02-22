@@ -588,3 +588,451 @@ fn valid_cut_points(tokens: &[usize], feat_offset: usize) -> Vec<usize> {
 
     cuts
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FEAT_OFFSET_25: usize = 25;
+    const FEAT_OFFSET_75: usize = 75;
+
+    // ── build_ops ──────────────────────────────────────────────────────
+
+    #[test]
+    fn build_ops_unary_count() {
+        let (ops_1, _) = build_ops(FEAT_OFFSET_25);
+        // 9 unary: ABS(5), SIGN(6), DELAY1(10), DELAY5(11), TS_MEAN(12),
+        //          TS_STD(13), TS_RANK(14), TS_MIN(17), TS_MAX(18)
+        assert_eq!(ops_1.len(), 9);
+    }
+
+    #[test]
+    fn build_ops_binary_count() {
+        let (_, ops_2) = build_ops(FEAT_OFFSET_25);
+        // 5 binary: ADD(0), SUB(1), MUL(2), DIV(3), TS_CORR(16)
+        assert_eq!(ops_2.len(), 5);
+    }
+
+    #[test]
+    fn build_ops_offset_applied() {
+        let (ops_1, ops_2) = build_ops(FEAT_OFFSET_25);
+        // All tokens must be >= feat_offset
+        for &t in &ops_1 {
+            assert!(t >= FEAT_OFFSET_25, "unary token {} < feat_offset", t);
+        }
+        for &t in &ops_2 {
+            assert!(t >= FEAT_OFFSET_25, "binary token {} < feat_offset", t);
+        }
+        // ADD should be feat_offset + 0
+        assert!(ops_2.contains(&FEAT_OFFSET_25));
+        // ABS should be feat_offset + 5
+        assert!(ops_1.contains(&(FEAT_OFFSET_25 + 5)));
+    }
+
+    #[test]
+    fn build_ops_neg_excluded() {
+        let (ops_1, ops_2) = build_ops(FEAT_OFFSET_25);
+        // NEG(4) should NOT be in the generation pool
+        let neg_token = FEAT_OFFSET_25 + 4;
+        assert!(!ops_1.contains(&neg_token), "NEG should be excluded");
+        assert!(!ops_2.contains(&neg_token), "NEG should be excluded");
+    }
+
+    #[test]
+    fn build_ops_mtf_75_offset() {
+        let (ops_1, ops_2) = build_ops(FEAT_OFFSET_75);
+        assert_eq!(ops_1.len(), 9);
+        assert_eq!(ops_2.len(), 5);
+        // ADD at offset 75
+        assert!(ops_2.contains(&(FEAT_OFFSET_75)));
+        assert!(*ops_1.iter().min().unwrap() >= FEAT_OFFSET_75);
+    }
+
+    // ── token_arity ────────────────────────────────────────────────────
+
+    #[test]
+    fn token_arity_features_are_zero() {
+        for t in 0..FEAT_OFFSET_25 {
+            assert_eq!(token_arity(t, FEAT_OFFSET_25), 0, "feature {} arity != 0", t);
+        }
+    }
+
+    #[test]
+    fn token_arity_binary_ops() {
+        let binary_indices = [0, 1, 2, 3, 16]; // ADD, SUB, MUL, DIV, TS_CORR
+        for &idx in &binary_indices {
+            assert_eq!(
+                token_arity(FEAT_OFFSET_25 + idx, FEAT_OFFSET_25),
+                2,
+                "op {} should be binary",
+                idx
+            );
+        }
+    }
+
+    #[test]
+    fn token_arity_unary_ops() {
+        let unary_indices = [5, 6, 10, 11, 12, 13, 14, 17, 18];
+        for &idx in &unary_indices {
+            assert_eq!(
+                token_arity(FEAT_OFFSET_25 + idx, FEAT_OFFSET_25),
+                1,
+                "op {} should be unary",
+                idx
+            );
+        }
+    }
+
+    #[test]
+    fn token_arity_gate_is_ternary() {
+        assert_eq!(token_arity(FEAT_OFFSET_25 + 7, FEAT_OFFSET_25), 3);
+    }
+
+    // ── generate_random_rpn ────────────────────────────────────────────
+
+    #[test]
+    fn random_rpn_nonempty() {
+        for _ in 0..50 {
+            let tokens = generate_random_rpn(5, FEAT_OFFSET_25);
+            assert!(!tokens.is_empty(), "random RPN should not be empty");
+        }
+    }
+
+    #[test]
+    fn random_rpn_starts_with_feature() {
+        for _ in 0..50 {
+            let tokens = generate_random_rpn(5, FEAT_OFFSET_25);
+            assert!(
+                tokens[0] < FEAT_OFFSET_25,
+                "first token should be a feature, got {}",
+                tokens[0]
+            );
+        }
+    }
+
+    #[test]
+    fn random_rpn_valid_stack_depth() {
+        // Every generated RPN should resolve to stack depth 1
+        for _ in 0..100 {
+            let tokens = generate_random_rpn(5, FEAT_OFFSET_25);
+            let mut depth: i32 = 0;
+            for &t in &tokens {
+                if t < FEAT_OFFSET_25 {
+                    depth += 1;
+                } else {
+                    let arity = token_arity(t, FEAT_OFFSET_25) as i32;
+                    depth = depth - arity + 1;
+                }
+            }
+            assert_eq!(depth, 1, "stack depth should be 1, tokens: {:?}", tokens);
+        }
+    }
+
+    #[test]
+    fn random_rpn_length_bounded() {
+        for _ in 0..100 {
+            let tokens = generate_random_rpn(5, FEAT_OFFSET_25);
+            assert!(tokens.len() >= 1, "minimum 1 token");
+            assert!(tokens.len() <= 25, "max ~20 tokens + collapse overhead");
+        }
+    }
+
+    #[test]
+    fn random_rpn_tokens_in_range() {
+        let (ops_1, ops_2) = build_ops(FEAT_OFFSET_25);
+        let valid_ops: std::collections::HashSet<usize> =
+            ops_1.iter().chain(ops_2.iter()).copied().collect();
+        for _ in 0..50 {
+            let tokens = generate_random_rpn(5, FEAT_OFFSET_25);
+            for &t in &tokens {
+                if t >= FEAT_OFFSET_25 {
+                    assert!(
+                        valid_ops.contains(&t),
+                        "op token {} not in active ops set",
+                        t
+                    );
+                }
+            }
+        }
+    }
+
+    // ── valid_cut_points ───────────────────────────────────────────────
+
+    #[test]
+    fn cut_points_simple_formula() {
+        // feat0 feat1 ADD → stack depths: [1, 2, 1]
+        // Cut point at index 2 (after ADD) → cut = 3
+        let tokens = vec![0, 1, FEAT_OFFSET_25]; // ADD = offset+0
+        let cuts = valid_cut_points(&tokens, FEAT_OFFSET_25);
+        assert_eq!(cuts, vec![3]);
+    }
+
+    #[test]
+    fn cut_points_chained() {
+        // feat0 ABS feat1 ADD → depths: [1, 1, 2, 1]
+        // ABS is unary: pops 1, pushes 1 → depth stays 1 at index 1
+        // feat1 pushes → depth 2
+        // ADD pops 2, pushes 1 → depth 1 at index 3
+        let abs_token = FEAT_OFFSET_25 + 5;
+        let add_token = FEAT_OFFSET_25 + 0;
+        let tokens = vec![0, abs_token, 1, add_token];
+        let cuts = valid_cut_points(&tokens, FEAT_OFFSET_25);
+        // depth=1 at index 1 (after ABS) → cut=2
+        // depth=1 at index 3 (after ADD) → cut=4
+        assert_eq!(cuts, vec![2, 4]);
+    }
+
+    #[test]
+    fn cut_points_single_feature_no_cuts() {
+        // Single feature → depth 1 at index 0, but we skip position 0
+        let tokens = vec![5];
+        let cuts = valid_cut_points(&tokens, FEAT_OFFSET_25);
+        assert!(cuts.is_empty());
+    }
+
+    // ── Genome ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn genome_new_random_fields() {
+        let g = Genome::new_random(FEAT_OFFSET_25);
+        assert_eq!(g.fitness, 0.0);
+        assert_eq!(g.age, 0);
+        assert!(!g.tokens.is_empty());
+    }
+
+    // ── PromotionStats ─────────────────────────────────────────────────
+
+    #[test]
+    fn promotion_stats_total() {
+        let mut stats = PromotionStats::default();
+        stats.promoted = [3, 2, 1, 0];
+        assert_eq!(stats.total_promoted(), 6);
+    }
+
+    #[test]
+    fn promotion_stats_rate() {
+        let mut stats = PromotionStats::default();
+        stats.promoted = [7, 0, 0, 0];
+        stats.discarded = [3, 0, 0, 0];
+        assert!((stats.rate(0).unwrap() - 0.7).abs() < 1e-10);
+        assert!(stats.rate(1).is_none()); // no activity
+    }
+
+    // ── AlpsGA ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn alps_ga_initial_state() {
+        let ga = AlpsGA::new(FEAT_OFFSET_25);
+        assert_eq!(ga.generation, 0);
+        assert!(ga.best_genome.is_none());
+        assert_eq!(ga.feat_offset, FEAT_OFFSET_25);
+        assert_eq!(ga.total_population(), 500); // 5 layers × 100
+    }
+
+    #[test]
+    fn alps_ga_layer_summary() {
+        let ga = AlpsGA::new(FEAT_OFFSET_25);
+        let summary = ga.layer_summary();
+        assert_eq!(summary.len(), 5);
+        for (i, size, _best) in &summary {
+            assert_eq!(*size, 100, "layer {} should have 100 genomes", i);
+        }
+    }
+
+    #[test]
+    fn alps_ga_all_genomes_mut_count() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        let all = ga.all_genomes_mut();
+        assert_eq!(all.len(), 500);
+    }
+
+    #[test]
+    fn alps_ga_evolve_increments_generation() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        assert_eq!(ga.generation, 0);
+        ga.evolve();
+        assert_eq!(ga.generation, 1);
+        ga.evolve();
+        assert_eq!(ga.generation, 2);
+    }
+
+    #[test]
+    fn alps_ga_evolve_preserves_population() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        ga.evolve();
+        // Population should stay at 500 (replenished)
+        assert_eq!(ga.total_population(), 500);
+    }
+
+    #[test]
+    fn alps_ga_evolve_ages_genomes() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        // After one evolve, all initial genomes get age+1
+        ga.evolve();
+        let all = ga.all_genomes_mut();
+        // Not all will be age 1 (some are new immigrants with age 0),
+        // but at least some should have age > 0
+        let aged = all.iter().filter(|g| g.age > 0).count();
+        assert!(aged > 0, "some genomes should have aged");
+    }
+
+    #[test]
+    fn alps_ga_promotion_after_many_generations() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        // Set fitness on layer 0 genomes so promotion can work
+        for g in ga.all_genomes_mut() {
+            g.fitness = 1.0;
+        }
+        // Evolve past layer 0 max_age (5 generations)
+        let mut total_promoted = 0;
+        for _ in 0..10 {
+            let stats = ga.evolve();
+            total_promoted += stats.total_promoted();
+        }
+        // After 10 generations, layer 0 genomes (age > 5) should be promoted
+        assert!(
+            total_promoted > 0,
+            "should have promotions after 10 generations"
+        );
+    }
+
+    #[test]
+    fn alps_ga_inject_genomes() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        let injected = vec![
+            Genome {
+                tokens: vec![0, 1, FEAT_OFFSET_25],
+                fitness: 999.0,
+                age: 0,
+            },
+        ];
+        ga.inject_genomes(0, injected);
+        // Should still be 100 (replaced worst, not added)
+        assert_eq!(ga.layers[0].population.len(), 100);
+        // The injected genome should be in layer 0
+        let has_999 = ga.layers[0].population.iter().any(|g| g.fitness == 999.0);
+        assert!(has_999, "injected genome should be in layer 0");
+    }
+
+    #[test]
+    fn alps_ga_inject_out_of_bounds() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        ga.inject_genomes(99, vec![Genome::new_random(FEAT_OFFSET_25)]);
+        // Should be a no-op
+        assert_eq!(ga.total_population(), 500);
+    }
+
+    #[test]
+    fn alps_ga_collect_elites() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        // Set some fitness values
+        ga.layers[0].population[0].fitness = 5.0;
+        ga.layers[1].population[0].fitness = 10.0;
+        let elites = ga.collect_elites(2);
+        // Should have up to 2 per layer × 5 layers = 10
+        assert!(elites.len() <= 10);
+        assert!(elites.len() >= 2); // at least 2 (from layers with finite fitness)
+    }
+
+    #[test]
+    fn alps_ga_best_genome_updated() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        // Set a genome with high fitness
+        ga.layers[2].population[0].fitness = 100.0;
+        ga.evolve();
+        assert!(ga.best_genome.is_some());
+        assert!(ga.best_genome.as_ref().unwrap().fitness >= 100.0);
+    }
+
+    // ── Crossover ──────────────────────────────────────────────────────
+
+    #[test]
+    fn crossover_produces_valid_genome() {
+        let p1 = Genome {
+            tokens: vec![0, 1, FEAT_OFFSET_25], // f0 f1 ADD
+            fitness: 1.0,
+            age: 5,
+        };
+        let p2 = Genome {
+            tokens: vec![2, FEAT_OFFSET_25 + 5, 3, FEAT_OFFSET_25 + 1], // f2 ABS f3 SUB
+            fitness: 2.0,
+            age: 10,
+        };
+        // Run crossover multiple times (stochastic)
+        for _ in 0..20 {
+            let child = AlpsGA::crossover(&p1, &p2, FEAT_OFFSET_25);
+            assert!(!child.tokens.is_empty());
+            assert_eq!(child.fitness, 0.0); // reset
+            assert_eq!(child.age, 0); // reset
+            assert!(child.tokens.len() <= 20); // truncation limit
+        }
+    }
+
+    // ── Mutation ───────────────────────────────────────────────────────
+
+    #[test]
+    fn mutate_does_not_crash() {
+        for _ in 0..100 {
+            let mut g = Genome::new_random(FEAT_OFFSET_25);
+            AlpsGA::mutate(&mut g, FEAT_OFFSET_25);
+            assert!(!g.tokens.is_empty());
+        }
+    }
+
+    #[test]
+    fn mutate_tokens_stay_in_range() {
+        let (ops_1, ops_2) = build_ops(FEAT_OFFSET_25);
+        let valid_ops: std::collections::HashSet<usize> =
+            ops_1.iter().chain(ops_2.iter()).copied().collect();
+
+        for _ in 0..100 {
+            let mut g = Genome::new_random(FEAT_OFFSET_25);
+            AlpsGA::mutate(&mut g, FEAT_OFFSET_25);
+            for &t in &g.tokens {
+                if t >= FEAT_OFFSET_25 {
+                    // Mutation should only produce tokens from the active op set
+                    // (except subtree replacement which uses generate_random_rpn)
+                    assert!(
+                        valid_ops.contains(&t),
+                        "mutated token {} not in active ops",
+                        t
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mutate_growth_respects_max_length() {
+        let mut g = Genome {
+            tokens: vec![0; 19], // just under limit
+            fitness: 0.0,
+            age: 0,
+        };
+        for _ in 0..50 {
+            AlpsGA::mutate(&mut g, FEAT_OFFSET_25);
+        }
+        // Growth mutation adds 2 tokens but only if len < 20
+        // Subtree replacement could reset. Just verify no crash.
+        assert!(g.tokens.len() <= 25); // reasonable bound
+    }
+
+    // ── ALPS layer aging constants ─────────────────────────────────────
+
+    #[test]
+    fn alps_layers_fibonacci_like() {
+        assert_eq!(ALPS_LAYER_MAX_AGES, [5, 13, 34, 89, 500]);
+        assert_eq!(ALPS_NUM_LAYERS, 5);
+        assert_eq!(ALPS_LAYER_POP_SIZE, 100);
+    }
+
+    #[test]
+    fn alps_layer_max_ages_increasing() {
+        for i in 1..ALPS_LAYER_MAX_AGES.len() {
+            assert!(
+                ALPS_LAYER_MAX_AGES[i] > ALPS_LAYER_MAX_AGES[i - 1],
+                "layer ages should be strictly increasing"
+            );
+        }
+    }
+}
