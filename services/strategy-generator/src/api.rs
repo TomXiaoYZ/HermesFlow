@@ -138,6 +138,14 @@ async fn handle_backtest(
             let metrics = result.get("metrics").cloned().unwrap_or(json!({}));
             let equity = result.get("equity_curve").cloned().unwrap_or(json!([]));
 
+            // Keep only the latest backtest per (token_address, mode)
+            let _ =
+                sqlx::query("DELETE FROM backtest_results WHERE token_address = $1 AND mode = $2")
+                    .bind(&payload.token_address)
+                    .bind(mode_str)
+                    .execute(&state.pool)
+                    .await;
+
             let _ = sqlx::query(
                 r#"INSERT INTO backtest_results
                    (genome, token_address, mode, metrics, equity_curve, pnl_percent, win_rate, total_trades, sharpe_ratio, max_drawdown)
