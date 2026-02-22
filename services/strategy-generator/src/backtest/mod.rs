@@ -969,17 +969,29 @@ impl Backtester {
             }
 
             // Compute thresholds from TRAIN window (fixing look-ahead bias)
-            let upper = adaptive_threshold(sig_slice, train_start, train_end);
-            let lower = match mode {
+            // LongShort: z-score thresholds; LongOnly: sigmoid thresholds
+            let (upper, lower, train_zs) = match mode {
                 StrategyMode::LongShort => {
-                    adaptive_lower_threshold(sig_slice, train_start, train_end)
+                    let (mean, std) = zscore_params(sig_slice, train_start, train_end);
+                    let u = adaptive_threshold_zscore(sig_slice, train_start, train_end, mean, std);
+                    let l = adaptive_lower_threshold_zscore(
+                        sig_slice,
+                        train_start,
+                        train_end,
+                        mean,
+                        std,
+                    );
+                    (u, l, Some((mean, std)))
                 }
-                StrategyMode::LongOnly => 0.0,
+                StrategyMode::LongOnly => {
+                    let u = adaptive_threshold(sig_slice, train_start, train_end);
+                    (u, 0.0, None)
+                }
             };
 
             // Evaluate PSR on TEST window using train-derived thresholds
             let (psr, trade_count, active_count) = self.psr_fitness_oos(
-                sig_slice, ret_slice, test_start, test_end, mode, upper, lower,
+                sig_slice, ret_slice, test_start, test_end, mode, upper, lower, train_zs,
             );
 
             if is_sentinel(psr) {
@@ -1295,10 +1307,19 @@ impl Backtester {
         }
 
         // Collect per-bar returns using the same position logic as pnl_fitness
-        let upper = adaptive_threshold(sig, start, end);
-        let lower = match mode {
-            StrategyMode::LongShort => adaptive_lower_threshold(sig, start, end),
-            StrategyMode::LongOnly => 0.0,
+        // LongShort: z-score normalization (de-mean + scale by std)
+        // LongOnly:  sigmoid normalization (legacy, unchanged)
+        let (upper, lower, z_mean, z_std) = match mode {
+            StrategyMode::LongShort => {
+                let (mean, std) = zscore_params(sig, start, end);
+                let u = adaptive_threshold_zscore(sig, start, end, mean, std);
+                let l = adaptive_lower_threshold_zscore(sig, start, end, mean, std);
+                (u, l, mean, std)
+            }
+            StrategyMode::LongOnly => {
+                let u = adaptive_threshold(sig, start, end);
+                (u, 0.0, 0.0, 1.0)
+            }
         };
         let fee = self.base_fee();
         let mut prev_pos = 0.0_f64;
@@ -1307,8 +1328,10 @@ impl Backtester {
         let mut active_bars = 0_u32;
 
         for i in start..end {
-            let raw = sig[i];
-            let sig_val = sigmoid(raw);
+            let sig_val = match mode {
+                StrategyMode::LongShort => (sig[i] - z_mean) / z_std,
+                StrategyMode::LongOnly => sigmoid(sig[i]),
+            };
             let pos = match mode {
                 StrategyMode::LongOnly => {
                     if sig_val > upper {
@@ -1436,6 +1459,7 @@ impl Backtester {
         mode: StrategyMode,
         upper_threshold: f64,
         lower_threshold: f64,
+        train_zscore: Option<(f64, f64)>,
     ) -> (f64, u32, u32) {
         let n = end - start;
         if n < 30 {
@@ -1449,8 +1473,10 @@ impl Backtester {
         let mut active_bars = 0_u32;
 
         for i in start..end {
-            let raw = sig[i];
-            let sig_val = sigmoid(raw);
+            let sig_val = match (mode, train_zscore) {
+                (StrategyMode::LongShort, Some((mean, std))) => (sig[i] - mean) / std,
+                _ => sigmoid(sig[i]),
+            };
             let pos = match mode {
                 StrategyMode::LongOnly => {
                     if sig_val > upper_threshold {
@@ -1578,10 +1604,18 @@ impl Backtester {
             return -10.0;
         }
 
-        let upper = adaptive_threshold(sig, start, end);
-        let lower = match mode {
-            StrategyMode::LongShort => adaptive_lower_threshold(sig, start, end),
-            StrategyMode::LongOnly => 0.0, // unused
+        // LongShort: z-score thresholds on raw signal; LongOnly: sigmoid thresholds
+        let (upper, lower, z_mean, z_std) = match mode {
+            StrategyMode::LongShort => {
+                let (mean, std) = zscore_params(sig, start, end);
+                let u = adaptive_threshold_zscore(sig, start, end, mean, std);
+                let l = adaptive_lower_threshold_zscore(sig, start, end, mean, std);
+                (u, l, mean, std)
+            }
+            StrategyMode::LongOnly => {
+                let u = adaptive_threshold(sig, start, end);
+                (u, 0.0, 0.0, 1.0)
+            }
         };
         let fee = self.base_fee();
         let mut prev_pos = 0.0_f64;
@@ -1591,8 +1625,10 @@ impl Backtester {
         let mut big_loss_count = 0_u32;
 
         for i in start..end {
-            let raw = sig[i];
-            let sig_val = sigmoid(raw);
+            let sig_val = match mode {
+                StrategyMode::LongShort => (sig[i] - z_mean) / z_std,
+                StrategyMode::LongOnly => sigmoid(sig[i]),
+            };
             let pos = match mode {
                 StrategyMode::LongOnly => {
                     if sig_val > upper {
@@ -1775,7 +1811,9 @@ fn adaptive_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
 }
 
 /// Compute an adaptive lower sigmoid threshold as the 30th percentile of sigmoid(signal),
-/// clamped to [0.20, 0.48]. Goes short on bottom ~30% of signals.
+/// clamped to [0.20, 0.48]. Superseded by z-score thresholds for LongShort (P3.5).
+/// Retained for LongOnly backward compatibility and test comparison.
+#[allow(dead_code)]
 fn adaptive_lower_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
     let mut vals: Vec<f64> = (start..end).map(|i| sigmoid(sig[i])).collect();
     vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1784,6 +1822,51 @@ fn adaptive_lower_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
     }
     let idx = ((vals.len() as f64) * 0.30) as usize;
     vals[idx.min(vals.len() - 1)].clamp(0.20, 0.48)
+}
+
+// ── Z-Score / De-mean signal normalization (P3.5 LongShort fix) ──────────
+
+/// Compute mean and standard deviation of raw signal over [start, end).
+/// Returns (mean, std) with std floored at 1e-10 to avoid division by zero.
+fn zscore_params(sig: &[f64], start: usize, end: usize) -> (f64, f64) {
+    let n = (end - start) as f64;
+    if n < 2.0 {
+        return (0.0, 1.0);
+    }
+    let mean = (start..end).map(|i| sig[i]).sum::<f64>() / n;
+    let var = (start..end).map(|i| (sig[i] - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    let std = var.sqrt().max(1e-10);
+    (mean, std)
+}
+
+/// Compute adaptive upper threshold as 70th percentile of z-scored signal,
+/// clamped to [0.1, 2.0]. For LongShort mode (raw signal, no sigmoid).
+fn adaptive_threshold_zscore(sig: &[f64], start: usize, end: usize, mean: f64, std: f64) -> f64 {
+    let mut zvals: Vec<f64> = (start..end).map(|i| (sig[i] - mean) / std).collect();
+    zvals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if zvals.is_empty() {
+        return 0.5;
+    }
+    let idx = ((zvals.len() as f64) * 0.70) as usize;
+    zvals[idx.min(zvals.len() - 1)].clamp(0.1, 2.0)
+}
+
+/// Compute adaptive lower threshold as 30th percentile of z-scored signal,
+/// clamped to [-2.0, -0.1]. For LongShort mode (raw signal, no sigmoid).
+fn adaptive_lower_threshold_zscore(
+    sig: &[f64],
+    start: usize,
+    end: usize,
+    mean: f64,
+    std: f64,
+) -> f64 {
+    let mut zvals: Vec<f64> = (start..end).map(|i| (sig[i] - mean) / std).collect();
+    zvals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if zvals.is_empty() {
+        return -0.5;
+    }
+    let idx = ((zvals.len() as f64) * 0.30) as usize;
+    zvals[idx.min(zvals.len() - 1)].clamp(-2.0, -0.1)
 }
 
 #[allow(dead_code)]
@@ -1863,10 +1946,18 @@ impl Backtester {
                 .min(ret_slice.len())
                 .min(features.shape()[2]);
 
-            let upper = adaptive_threshold(sig_slice, 0, len);
-            let lower = match mode {
-                StrategyMode::LongShort => adaptive_lower_threshold(sig_slice, 0, len),
-                StrategyMode::LongOnly => 0.0,
+            // LongShort: z-score thresholds; LongOnly: sigmoid thresholds
+            let (upper, lower, z_mean, z_std) = match mode {
+                StrategyMode::LongShort => {
+                    let (mean, std) = zscore_params(sig_slice, 0, len);
+                    let u = adaptive_threshold_zscore(sig_slice, 0, len, mean, std);
+                    let l = adaptive_lower_threshold_zscore(sig_slice, 0, len, mean, std);
+                    (u, l, mean, std)
+                }
+                StrategyMode::LongOnly => {
+                    let u = adaptive_threshold(sig_slice, 0, len);
+                    (u, 0.0, 0.0, 1.0)
+                }
             };
             let fee = self.base_fee();
             let mut equity_curve = Vec::with_capacity(len);
@@ -1882,7 +1973,10 @@ impl Backtester {
             let mut trade_direction: &str = "long";
 
             for i in 0..len {
-                let sig_val = sigmoid(sig_slice[i]);
+                let sig_val = match mode {
+                    StrategyMode::LongShort => (sig_slice[i] - z_mean) / z_std,
+                    StrategyMode::LongOnly => sigmoid(sig_slice[i]),
+                };
                 let pos = match mode {
                     StrategyMode::LongOnly => {
                         if sig_val > upper {
@@ -2418,5 +2512,153 @@ mod tests {
         assert_eq!(out[[0, 1, 1]], 3.0);
         assert_eq!(out[[0, 1, 2]], 4.0);
         assert_eq!(out[[0, 1, 3]], 4.0);
+    }
+
+    // ── Z-Score / LongShort fix tests ──────────────────────────────────────
+
+    #[test]
+    fn zscore_params_basic() {
+        // Signal: [-2, -1, 0, 1, 2] → mean=0, std=sqrt(10/4)=~1.5811
+        let sig = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
+        let (mean, std) = zscore_params(&sig, 0, 5);
+        assert!((mean - 0.0).abs() < 1e-10, "mean should be 0, got {}", mean);
+        let expected_std = (10.0_f64 / 4.0).sqrt(); // sample std
+        assert!(
+            (std - expected_std).abs() < 1e-10,
+            "std should be {}, got {}",
+            expected_std,
+            std
+        );
+    }
+
+    #[test]
+    fn zscore_params_constant_signal() {
+        // All same values → std floored at 1e-10
+        let sig = vec![5.0, 5.0, 5.0, 5.0];
+        let (mean, std) = zscore_params(&sig, 0, 4);
+        assert!((mean - 5.0).abs() < 1e-10);
+        assert!(std >= 1e-10, "std should be floored, got {}", std);
+    }
+
+    #[test]
+    fn zscore_thresholds_symmetric_signal() {
+        // Symmetric signal centered at 0 → upper > 0, lower < 0
+        let sig: Vec<f64> = (-50..=50).map(|i| i as f64 * 0.1).collect(); // -5.0 to 5.0
+        let (mean, std) = zscore_params(&sig, 0, sig.len());
+        let upper = adaptive_threshold_zscore(&sig, 0, sig.len(), mean, std);
+        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std);
+
+        assert!(
+            upper > 0.0,
+            "upper z-threshold should be positive: {}",
+            upper
+        );
+        assert!(
+            lower < 0.0,
+            "lower z-threshold should be negative: {}",
+            lower
+        );
+        assert!(
+            (upper + lower).abs() < 0.5,
+            "thresholds should be roughly symmetric: upper={}, lower={}",
+            upper,
+            lower
+        );
+    }
+
+    #[test]
+    fn zscore_longshort_produces_short_positions() {
+        // Simulate a realistic signal: typical formula output resembles
+        // financial returns in [-0.05, 0.05]. After sigmoid, these values
+        // cluster tightly around 0.5, making the lower threshold unreachable.
+        // This is the exact bug we're fixing: sigmoid compression kills shorts.
+        let n = 200;
+        let mut sig = Vec::with_capacity(n);
+        for i in 0..n {
+            // Sinusoidal signal with return-like amplitude: [-0.03, 0.03]
+            let t = i as f64 / n as f64 * 4.0 * std::f64::consts::PI;
+            sig.push(0.03 * t.sin());
+        }
+
+        // Z-score path: should produce both longs and shorts
+        let (mean, std) = zscore_params(&sig, 0, sig.len());
+        let upper = adaptive_threshold_zscore(&sig, 0, sig.len(), mean, std);
+        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std);
+
+        let mut zs_long = 0;
+        let mut zs_short = 0;
+        for i in 0..sig.len() {
+            let z = (sig[i] - mean) / std;
+            if z > upper {
+                zs_long += 1;
+            } else if z < lower {
+                zs_short += 1;
+            }
+        }
+
+        assert!(zs_long > 0, "z-score: should have longs (upper={})", upper);
+        assert!(
+            zs_short > 0,
+            "z-score: should have shorts (lower={})",
+            lower
+        );
+
+        // Sigmoid path: all sigmoid values cluster near 0.5 for small inputs.
+        // sigmoid(0.03) ≈ 0.50750, sigmoid(-0.03) ≈ 0.49250
+        // 30th percentile of [0.4925..0.5075] ≈ 0.496, clamped to max 0.48
+        // → need sigmoid < 0.48, i.e. raw < -0.08, but max|raw| = 0.03 → zero shorts
+        let sig_lower = adaptive_lower_threshold(&sig, 0, sig.len());
+        let mut sigmoid_short = 0;
+        for &s in &sig {
+            if sigmoid(s) < sig_lower {
+                sigmoid_short += 1;
+            }
+        }
+
+        assert!(
+            zs_short > sigmoid_short,
+            "z-score should produce more shorts ({}) than sigmoid ({})",
+            zs_short,
+            sigmoid_short
+        );
+    }
+
+    #[test]
+    fn zscore_longonly_unchanged() {
+        // Verify that long_only path still uses sigmoid (not z-score)
+        let sig = vec![0.5, -0.3, 1.2, -0.8, 0.1];
+        let upper_sigmoid = adaptive_threshold(&sig, 0, sig.len());
+
+        // sigmoid(0.5) ≈ 0.622, sigmoid(-0.3) ≈ 0.426, etc.
+        // Verify sigmoid values are in (0, 1)
+        for &s in &sig {
+            let sv = sigmoid(s);
+            assert!(sv > 0.0 && sv < 1.0, "sigmoid({}) = {} not in (0,1)", s, sv);
+        }
+
+        // Upper threshold should be in sigmoid range
+        assert!(
+            upper_sigmoid >= 0.52 && upper_sigmoid <= 0.70,
+            "sigmoid upper should be in [0.52, 0.70], got {}",
+            upper_sigmoid
+        );
+    }
+
+    #[test]
+    fn zscore_lower_clamp_prevents_extreme() {
+        // Very skewed signal (all positive) → lower z-threshold should clamp to -0.1
+        let sig: Vec<f64> = (1..=100).map(|i| i as f64).collect(); // 1.0 to 100.0
+        let (mean, std) = zscore_params(&sig, 0, sig.len());
+        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std);
+
+        // 30th percentile of z-scores for uniform-ish positive data:
+        // z-scores range from (1-50.5)/29.01 ≈ -1.71 to (100-50.5)/29.01 ≈ 1.71
+        // 30th percentile ≈ z-score at index 30 → (30-50.5)/29.01 ≈ -0.71
+        // Should be clamped to [-2.0, -0.1]
+        assert!(
+            lower >= -2.0 && lower <= -0.1,
+            "lower should be clamped to [-2.0, -0.1], got {}",
+            lower
+        );
     }
 }
