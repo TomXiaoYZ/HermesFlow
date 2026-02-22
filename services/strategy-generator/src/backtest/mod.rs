@@ -14,6 +14,9 @@ use std::fmt;
 use std::str::FromStr;
 
 pub mod data_frame;
+pub mod ensemble;
+pub mod ensemble_weights;
+pub mod hrp;
 pub mod portfolio;
 
 // ── OOS Sentinel Values ──────────────────────────────────────────────
@@ -699,8 +702,8 @@ async fn fetch_reference_close_parallel(
 
 pub struct Backtester {
     pool: PgPool,
-    vm: StackVM,
-    cache: HashMap<String, CachedData>,
+    pub(crate) vm: StackVM,
+    pub cache: HashMap<String, CachedData>,
     /// Reference asset close prices for cross-asset factors (e.g. "SPY" -> close array).
     ref_cache: HashMap<String, Array2<f64>>,
     factor_config: FactorConfig,
@@ -2306,13 +2309,13 @@ impl Backtester {
     }
 }
 
-fn sigmoid(x: f64) -> f64 {
+pub(crate) fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 
 /// Compute an adaptive sigmoid threshold as a percentile of sigmoid(signal),
 /// clamped to the configured range.
-fn adaptive_threshold(
+pub(crate) fn adaptive_threshold(
     sig: &[f64],
     start: usize,
     end: usize,
@@ -2345,7 +2348,7 @@ fn adaptive_lower_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
 
 /// Compute mean and standard deviation of raw signal over [start, end).
 /// Returns (mean, std) with std floored at 1e-10 to avoid division by zero.
-fn zscore_params(sig: &[f64], start: usize, end: usize) -> (f64, f64) {
+pub(crate) fn zscore_params(sig: &[f64], start: usize, end: usize) -> (f64, f64) {
     let n = (end - start) as f64;
     if n < 2.0 {
         return (0.0, 1.0);
@@ -2358,7 +2361,7 @@ fn zscore_params(sig: &[f64], start: usize, end: usize) -> (f64, f64) {
 
 /// Compute adaptive upper threshold as a configurable percentile of z-scored signal,
 /// clamped to the configured range. For LongShort mode (raw signal, no sigmoid).
-fn adaptive_threshold_zscore(
+pub(crate) fn adaptive_threshold_zscore(
     sig: &[f64],
     start: usize,
     end: usize,
@@ -2377,7 +2380,7 @@ fn adaptive_threshold_zscore(
 
 /// Compute adaptive lower threshold as a configurable percentile of z-scored signal,
 /// clamped to the configured range. For LongShort mode (raw signal, no sigmoid).
-fn adaptive_lower_threshold_zscore(
+pub(crate) fn adaptive_lower_threshold_zscore(
     sig: &[f64],
     start: usize,
     end: usize,

@@ -176,6 +176,8 @@ struct GeneratorConfig {
     llm_oracle: LlmOracleConfig,
     #[serde(default)]
     threshold_config: ThresholdConfig,
+    #[serde(default)]
+    ensemble: backtest::ensemble::EnsembleConfig,
 }
 
 #[tokio::main]
@@ -204,7 +206,8 @@ async fn main() -> anyhow::Result<()> {
     // Load generator config
     let config_path =
         env::var("GENERATOR_CONFIG").unwrap_or_else(|_| "config/generator.yaml".to_string());
-    let (exchange_configs, oracle_config, threshold_config) = load_exchange_configs(&config_path);
+    let (exchange_configs, oracle_config, threshold_config, ensemble_config) =
+        load_exchange_configs(&config_path);
     info!(
         "Loaded {} exchange configs: {:?}",
         exchange_configs.len(),
@@ -240,7 +243,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn two evolution tasks per (exchange, symbol) pair: long_only + long_short
     let mut handles = Vec::new();
-    for ec in exchange_configs {
+    for ec in &exchange_configs {
         let pool_sym = pool.clone();
         let symbols = load_symbols(&pool_sym, &ec.exchange).await;
         let modes = StrategyMode::all();
@@ -283,6 +286,39 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // P5: Spawn ensemble rebalance loop per exchange (if enabled)
+    if ensemble_config.enabled {
+        for ec in &exchange_configs {
+            let pool_ens = pool.clone();
+            let redis_url_ens = redis_url.clone();
+            let ens_cfg = ensemble_config.clone();
+            let thresh_cfg = threshold_config.clone();
+            let exchange = ec.exchange.clone();
+            let resolution = ec.resolution.clone();
+            let factor_config_path = ec.factor_config.clone();
+            let lookback_days = ec.lookback_days;
+            let handle = tokio::spawn(async move {
+                if let Err(e) = run_ensemble_loop(
+                    pool_ens,
+                    &redis_url_ens,
+                    &exchange,
+                    &resolution,
+                    &factor_config_path,
+                    lookback_days,
+                    thresh_cfg,
+                    ens_cfg,
+                )
+                .await
+                {
+                    error!("[{}] Ensemble rebalance loop failed: {}", exchange, e);
+                }
+            });
+            handles.push(handle);
+        }
+    } else {
+        info!("Ensemble rebalance loop disabled by config");
+    }
+
     // Wait for all evolution tasks (they run forever unless errored)
     for h in handles {
         let _ = h.await;
@@ -291,7 +327,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig, ThresholdConfig) {
+fn load_exchange_configs(
+    path: &str,
+) -> (
+    Vec<ExchangeConfig>,
+    LlmOracleConfig,
+    ThresholdConfig,
+    backtest::ensemble::EnsembleConfig,
+) {
     match std::fs::read_to_string(path) {
         Ok(content) => match serde_yaml::from_str::<GeneratorConfig>(&content) {
             Ok(cfg) => {
@@ -306,7 +349,18 @@ fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig, T
                     cfg.threshold_config.long_short.percentile_lower,
                     cfg.threshold_config.overrides.len()
                 );
-                (cfg.exchanges, cfg.llm_oracle, cfg.threshold_config)
+                info!(
+                    "Ensemble config: enabled={}, max_strategies={}, rebalance_interval={}min",
+                    cfg.ensemble.enabled,
+                    cfg.ensemble.max_total_strategies,
+                    cfg.ensemble.rebalance_interval_minutes
+                );
+                (
+                    cfg.exchanges,
+                    cfg.llm_oracle,
+                    cfg.threshold_config,
+                    cfg.ensemble,
+                )
             }
             Err(e) => {
                 warn!("Failed to parse {}: {}. Falling back to default.", path, e);
@@ -314,6 +368,7 @@ fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig, T
                     default_exchange_configs(),
                     LlmOracleConfig::default(),
                     ThresholdConfig::default(),
+                    backtest::ensemble::EnsembleConfig::default(),
                 )
             }
         },
@@ -342,6 +397,7 @@ fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig, T
                 }],
                 LlmOracleConfig::default(),
                 ThresholdConfig::default(),
+                backtest::ensemble::EnsembleConfig::default(),
             )
         }
     }
@@ -1386,4 +1442,411 @@ async fn fetch_cross_symbol_elites(
     }
 
     elites
+}
+
+// ── P5: Ensemble Rebalance Loop ──────────────────────────────────────────
+
+use backtest::ensemble::{self, EnsembleConfig, StrategyCandidate};
+use backtest::ensemble_weights::{self, DynamicWeightConfig};
+use backtest::hrp;
+
+/// Periodic ensemble rebalance loop for one exchange.
+///
+/// Loads top strategies, computes HRP weights with dynamic adjustments,
+/// persists to DB, and publishes to Redis.
+#[allow(clippy::too_many_arguments)]
+async fn run_ensemble_loop(
+    pool: PgPool,
+    redis_url: &str,
+    exchange: &str,
+    resolution: &str,
+    factor_config_path: &str,
+    lookback_days: i64,
+    threshold_config: ThresholdConfig,
+    ensemble_cfg: EnsembleConfig,
+) -> anyhow::Result<()> {
+    info!(
+        "[{}] Starting ensemble rebalance loop (interval={}min)",
+        exchange, ensemble_cfg.rebalance_interval_minutes
+    );
+
+    let interval = Duration::from_secs(ensemble_cfg.rebalance_interval_minutes * 60);
+    let dw_config = DynamicWeightConfig::from_yaml(&ensemble_cfg.dynamic_weights);
+    let factor_config = load_factor_config(factor_config_path);
+
+    // Wait for evolution to produce initial generations before first rebalance
+    tokio::time::sleep(Duration::from_secs(120)).await;
+
+    let mut version = 0_i32;
+
+    // Determine next version from DB
+    let row = sqlx::query(
+        "SELECT COALESCE(MAX(version), 0) as max_version FROM portfolio_ensembles WHERE exchange = $1",
+    )
+    .bind(exchange)
+    .fetch_optional(&pool)
+    .await;
+    if let Ok(Some(r)) = row {
+        version = sqlx::Row::get::<i32, _>(&r, "max_version");
+    }
+
+    loop {
+        match run_ensemble_rebalance(
+            &pool,
+            redis_url,
+            exchange,
+            resolution,
+            lookback_days,
+            &threshold_config,
+            &ensemble_cfg,
+            &dw_config,
+            &factor_config,
+            &mut version,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(e) => {
+                error!("[{}] Ensemble rebalance error: {}", exchange, e);
+            }
+        }
+
+        tokio::time::sleep(interval).await;
+    }
+}
+
+/// Execute a single ensemble rebalance cycle.
+#[allow(clippy::too_many_arguments)]
+async fn run_ensemble_rebalance(
+    pool: &PgPool,
+    redis_url: &str,
+    exchange: &str,
+    resolution: &str,
+    lookback_days: i64,
+    threshold_config: &ThresholdConfig,
+    ensemble_cfg: &EnsembleConfig,
+    dw_config: &DynamicWeightConfig,
+    factor_config: &backtest_engine::config::FactorConfig,
+    version: &mut i32,
+) -> anyhow::Result<()> {
+    // 1. Load candidates
+    let candidates = ensemble::load_candidates_from_db(pool, exchange).await?;
+    if candidates.is_empty() {
+        info!(
+            "[{}] No strategy candidates found, skipping rebalance",
+            exchange
+        );
+        return Ok(());
+    }
+
+    // 2. Select eligible strategies
+    let selected = ensemble::select_candidates(candidates, ensemble_cfg);
+    if selected.is_empty() {
+        info!(
+            "[{}] No candidates meet ensemble thresholds, skipping rebalance",
+            exchange
+        );
+        return Ok(());
+    }
+
+    let n = selected.len();
+    info!(
+        "[{}] Ensemble rebalance: {} strategies selected",
+        exchange, n
+    );
+
+    // 3. Load market data and extract returns for each selected strategy
+    let mut backtester = backtest::Backtester::with_threshold_config(
+        pool.clone(),
+        factor_config.clone(),
+        exchange.to_string(),
+        resolution.to_string(),
+        threshold_config.clone(),
+    );
+
+    let symbols: Vec<String> = selected.iter().map(|c| c.id.symbol.clone()).collect();
+    backtester.load_data(&symbols, lookback_days).await?;
+
+    let mut return_series: Vec<Vec<f64>> = Vec::with_capacity(n);
+    let mut valid_candidates: Vec<&StrategyCandidate> = Vec::with_capacity(n);
+
+    for candidate in &selected {
+        let cache = match backtester.cache.get(&candidate.id.symbol) {
+            Some(c) => c,
+            None => {
+                warn!(
+                    "[{}] No cached data for {}, skipping",
+                    exchange, candidate.id.symbol
+                );
+                continue;
+            }
+        };
+
+        let mode: StrategyMode = candidate.id.mode.parse().unwrap_or(StrategyMode::LongOnly);
+
+        match ensemble::extract_strategy_returns(
+            &backtester.vm,
+            &candidate.genome,
+            cache,
+            mode,
+            &backtester.threshold_config,
+            &candidate.id.symbol,
+            exchange,
+            ensemble_cfg.correlation_lookback_bars,
+        ) {
+            Some(returns) => {
+                return_series.push(returns);
+                valid_candidates.push(candidate);
+            }
+            None => {
+                warn!(
+                    "[{}] Failed to extract returns for {}, skipping",
+                    exchange, candidate.id
+                );
+            }
+        }
+    }
+
+    if valid_candidates.len() < 2 {
+        if valid_candidates.len() == 1 {
+            info!(
+                "[{}] Only 1 valid strategy — trivial 100% allocation",
+                exchange
+            );
+        } else {
+            info!(
+                "[{}] No valid strategies with returns, skipping rebalance",
+                exchange
+            );
+            return Ok(());
+        }
+    }
+
+    // 4. Build T x N return matrix (align to shortest length)
+    let min_len = return_series.iter().map(|r| r.len()).min().unwrap_or(0);
+    if min_len < 30 {
+        warn!(
+            "[{}] Return series too short ({} bars), skipping",
+            exchange, min_len
+        );
+        return Ok(());
+    }
+
+    let n_valid = valid_candidates.len();
+    let mut return_matrix = ndarray::Array2::<f64>::zeros((min_len, n_valid));
+    for (j, series) in return_series.iter().enumerate() {
+        let offset = series.len() - min_len;
+        for i in 0..min_len {
+            return_matrix[[i, j]] = series[offset + i];
+        }
+    }
+
+    // 5. Run HRP allocation
+    let hrp_result = match hrp::allocate_hrp(&return_matrix) {
+        Some(r) => r,
+        None => {
+            warn!("[{}] HRP allocation failed", exchange);
+            return Ok(());
+        }
+    };
+
+    // 6. Apply dynamic weight adjustments
+    let valid_owned: Vec<StrategyCandidate> =
+        valid_candidates.iter().map(|c| (*c).clone()).collect();
+    let adjustments = ensemble_weights::adjust_weights(
+        &hrp_result.weights,
+        &valid_owned,
+        &hrp_result.correlation_matrix,
+        dw_config,
+    );
+
+    // 7. Compute portfolio-level metrics
+    let crowding_pairs = ensemble_weights::detect_crowding(
+        &hrp_result.correlation_matrix,
+        dw_config.crowding_corr_threshold,
+    );
+
+    // Average pairwise correlation
+    let avg_corr = if n_valid > 1 {
+        let mut sum = 0.0_f64;
+        let mut count = 0;
+        for i in 0..n_valid {
+            for j in (i + 1)..n_valid {
+                sum += hrp_result.correlation_matrix[[i, j]];
+                count += 1;
+            }
+        }
+        if count > 0 {
+            sum / count as f64
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    // Portfolio-level metrics from weighted returns
+    let mut portfolio_returns = vec![0.0_f64; min_len];
+    for i in 0..min_len {
+        for (j, adj) in adjustments.iter().enumerate() {
+            portfolio_returns[i] += return_matrix[[i, j]] * adj.final_weight;
+        }
+    }
+
+    let port_mean = portfolio_returns.iter().sum::<f64>() / min_len as f64;
+    let port_var = portfolio_returns
+        .iter()
+        .map(|r| (r - port_mean).powi(2))
+        .sum::<f64>()
+        / (min_len as f64 - 1.0);
+    let port_std = port_var.sqrt();
+    let port_sharpe = if port_std > 1e-10 {
+        port_mean / port_std
+    } else {
+        0.0
+    };
+
+    // Max drawdown
+    let mut equity = 1.0_f64;
+    let mut peak = 1.0_f64;
+    let mut max_dd = 0.0_f64;
+    for &r in &portfolio_returns {
+        equity *= 1.0 + r;
+        if equity > peak {
+            peak = equity;
+        }
+        let dd = (peak - equity) / peak;
+        if dd > max_dd {
+            max_dd = dd;
+        }
+    }
+
+    // 8. Persist to DB
+    *version += 1;
+    let weights_json: serde_json::Value = adjustments
+        .iter()
+        .enumerate()
+        .map(|(i, adj)| {
+            serde_json::json!({
+                "symbol": valid_candidates[i].id.symbol,
+                "mode": valid_candidates[i].id.mode,
+                "weight": adj.final_weight,
+            })
+        })
+        .collect();
+
+    let hrp_diagnostics = serde_json::json!({
+        "leaf_order": hrp_result.leaf_order,
+        "linkage_steps": hrp_result.linkage.len(),
+        "return_bars": min_len,
+    });
+
+    let ensemble_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO portfolio_ensembles \
+         (exchange, version, strategy_count, portfolio_oos_psr, portfolio_sharpe, \
+          portfolio_max_drawdown, avg_pairwise_correlation, crowded_pair_count, \
+          weights, hrp_diagnostics) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         RETURNING id",
+    )
+    .bind(exchange)
+    .bind(*version)
+    .bind(n_valid as i32)
+    .bind(port_sharpe) // Using Sharpe as proxy for portfolio PSR
+    .bind(port_sharpe)
+    .bind(max_dd)
+    .bind(avg_corr)
+    .bind(crowding_pairs.len() as i32)
+    .bind(&weights_json)
+    .bind(&hrp_diagnostics)
+    .fetch_one(pool)
+    .await?;
+
+    // Per-strategy detail rows
+    for (i, adj) in adjustments.iter().enumerate() {
+        let c = &valid_candidates[i];
+        let strategy_id = format!(
+            "{}_{}_gen{}",
+            exchange.to_lowercase(),
+            c.id.symbol.to_lowercase(),
+            c.id.generation
+        );
+
+        let _ = sqlx::query(
+            "INSERT INTO portfolio_ensemble_strategies \
+             (ensemble_id, exchange, symbol, mode, generation, strategy_id, \
+              hrp_weight, psr_factor, utilization_factor, crowding_penalty, final_weight, \
+              oos_psr, is_fitness, utilization, genome) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+        )
+        .bind(ensemble_id)
+        .bind(exchange)
+        .bind(&c.id.symbol)
+        .bind(&c.id.mode)
+        .bind(c.id.generation)
+        .bind(&strategy_id)
+        .bind(adj.hrp_weight)
+        .bind(adj.psr_factor)
+        .bind(adj.utilization_factor)
+        .bind(adj.crowding_penalty)
+        .bind(adj.final_weight)
+        .bind(c.oos_psr)
+        .bind(c.is_fitness)
+        .bind(c.utilization)
+        .bind(&c.genome)
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            error!(
+                "[{}] Failed to persist ensemble strategy {}: {}",
+                exchange, c.id, e
+            )
+        });
+    }
+
+    // Shadow equity point
+    let _ = sqlx::query(
+        "INSERT INTO portfolio_ensemble_equity \
+         (exchange, ensemble_version, timestamp, equity, period_return) \
+         VALUES ($1, $2, NOW(), $3, $4) \
+         ON CONFLICT (exchange, ensemble_version, timestamp) DO NOTHING",
+    )
+    .bind(exchange)
+    .bind(*version)
+    .bind(equity)
+    .bind(port_mean * min_len as f64)
+    .execute(pool)
+    .await
+    .map_err(|e| error!("[{}] Failed to persist equity point: {}", exchange, e));
+
+    // 9. Publish to Redis
+    if let Ok(client) = redis::Client::open(redis_url) {
+        if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
+            let channel = format!("portfolio_ensemble:{}", exchange.to_lowercase());
+            let payload = serde_json::json!({
+                "exchange": exchange,
+                "version": version,
+                "strategy_count": n_valid,
+                "sharpe": port_sharpe,
+                "max_drawdown": max_dd,
+                "avg_correlation": avg_corr,
+                "crowded_pairs": crowding_pairs.len(),
+                "weights": weights_json,
+            });
+            let _: Result<(), _> = conn.publish(&channel, payload.to_string()).await;
+        }
+    }
+
+    info!(
+        "[{}] Ensemble v{}: {} strategies, Sharpe={:.3}, MaxDD={:.3}, AvgCorr={:.3}, Crowded={}",
+        exchange,
+        version,
+        n_valid,
+        port_sharpe,
+        max_dd,
+        avg_corr,
+        crowding_pairs.len()
+    );
+
+    Ok(())
 }

@@ -42,6 +42,26 @@ threshold_config:
         percentile_upper: 65         # QQQ has asymmetric distribution
         percentile_lower: 35
 
+# P5: Portfolio Ensemble & HRP Allocation
+# Runs a periodic rebalance loop that selects top strategies per exchange,
+# computes HRP weights, applies dynamic adjustments, and tracks shadow equity.
+ensemble:
+  enabled: true
+  min_oos_psr: 0.5
+  min_wf_steps: 2
+  min_utilization: 0.10
+  max_strategies_per_symbol: 1
+  max_total_strategies: 20
+  correlation_lookback_bars: 500
+  rebalance_interval_minutes: 30
+  dynamic_weights:
+    psr_reward_scale: 0.2
+    psr_max_reward: 3.0
+    utilization_floor: 0.3
+    crowding_corr_threshold: 0.7
+    crowding_penalty_rate: 0.3
+    crowding_max_penalty: 0.8
+
 # LLM-guided mutation oracle (P2)
 # Invoked when GA stalls (promotion rate drop or high TFT rate).
 # Generates semantically meaningful formulas via LLM, injects into Layer 0.

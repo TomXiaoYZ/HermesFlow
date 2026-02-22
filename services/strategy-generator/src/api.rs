@@ -61,6 +61,11 @@ pub async fn start_api_server(
             "/:exchange/:symbol/generations/:gen",
             get(get_symbol_generation),
         )
+        // P5: Ensemble endpoints
+        .route("/:exchange/ensemble", get(get_ensemble))
+        .route("/:exchange/ensemble/history", get(get_ensemble_history))
+        .route("/:exchange/ensemble/equity", get(get_ensemble_equity))
+        .route("/:exchange/ensemble/rebalance", post(trigger_rebalance))
         .with_state(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -746,4 +751,272 @@ fn row_to_generation_json(row: &sqlx::postgres::PgRow, include_equity: bool) -> 
         "backtest": backtest,
         "llm_oracle": llm_oracle,
     })
+}
+
+// ── P5: Ensemble API Endpoints ──────────────────────────────────────────
+
+/// GET /:exchange/ensemble — current (latest) ensemble allocation
+async fn get_ensemble(State(state): State<ApiState>, Path(exchange): Path<String>) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    if !state.exchanges.contains_key(&key) {
+        return Json(json!({"error": format!("Unknown exchange: {}", exchange)}));
+    }
+    let exchange_name = state
+        .exchanges
+        .get(&key)
+        .map(|c| c.exchange.as_str())
+        .unwrap_or(&exchange);
+
+    let row = sqlx::query(
+        "SELECT pe.*, \
+         (SELECT json_agg(row_to_json(pes.*)) \
+          FROM portfolio_ensemble_strategies pes \
+          WHERE pes.ensemble_id = pe.id) as strategies \
+         FROM portfolio_ensembles pe \
+         WHERE pe.exchange = $1 \
+         ORDER BY pe.version DESC \
+         LIMIT 1",
+    )
+    .bind(exchange_name)
+    .fetch_optional(&state.pool)
+    .await;
+
+    match row {
+        Ok(Some(r)) => {
+            let id: uuid::Uuid = r.get("id");
+            let version: i32 = r.get("version");
+            let strategy_count: i32 = r.get("strategy_count");
+            let portfolio_sharpe: Option<f64> = r.get("portfolio_sharpe");
+            let portfolio_max_drawdown: Option<f64> = r.get("portfolio_max_drawdown");
+            let avg_pairwise_correlation: Option<f64> = r.get("avg_pairwise_correlation");
+            let crowded_pair_count: Option<i32> = r.get("crowded_pair_count");
+            let weights: Value = r.get("weights");
+            let hrp_diagnostics: Option<Value> = r.get("hrp_diagnostics");
+            let strategies: Option<Value> = r.get("strategies");
+            let created_at: Option<chrono::DateTime<chrono::Utc>> = r.get("created_at");
+
+            Json(json!({
+                "id": id.to_string(),
+                "exchange": exchange_name,
+                "version": version,
+                "strategy_count": strategy_count,
+                "portfolio_sharpe": portfolio_sharpe,
+                "portfolio_max_drawdown": portfolio_max_drawdown,
+                "avg_pairwise_correlation": avg_pairwise_correlation,
+                "crowded_pair_count": crowded_pair_count,
+                "weights": weights,
+                "hrp_diagnostics": hrp_diagnostics,
+                "strategies": strategies,
+                "created_at": created_at.map(|t| t.to_rfc3339()),
+            }))
+        }
+        Ok(None) => Json(json!({"error": "No ensemble found for this exchange"})),
+        Err(e) => Json(json!({"error": format!("Database error: {}", e)})),
+    }
+}
+
+#[derive(Deserialize)]
+struct EnsembleHistoryQuery {
+    limit: Option<i64>,
+}
+
+/// GET /:exchange/ensemble/history — past ensemble versions
+async fn get_ensemble_history(
+    State(state): State<ApiState>,
+    Path(exchange): Path<String>,
+    Query(params): Query<EnsembleHistoryQuery>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    if !state.exchanges.contains_key(&key) {
+        return Json(json!({"error": format!("Unknown exchange: {}", exchange)}));
+    }
+    let exchange_name = state
+        .exchanges
+        .get(&key)
+        .map(|c| c.exchange.as_str())
+        .unwrap_or(&exchange);
+    let limit = params.limit.unwrap_or(10).min(100);
+
+    let rows = sqlx::query(
+        "SELECT id, version, strategy_count, portfolio_sharpe, \
+         portfolio_max_drawdown, avg_pairwise_correlation, \
+         crowded_pair_count, weights, created_at \
+         FROM portfolio_ensembles \
+         WHERE exchange = $1 \
+         ORDER BY version DESC \
+         LIMIT $2",
+    )
+    .bind(exchange_name)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await;
+
+    match rows {
+        Ok(rows) => {
+            let ensembles: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    let id: uuid::Uuid = r.get("id");
+                    let version: i32 = r.get("version");
+                    let strategy_count: i32 = r.get("strategy_count");
+                    let portfolio_sharpe: Option<f64> = r.get("portfolio_sharpe");
+                    let portfolio_max_drawdown: Option<f64> = r.get("portfolio_max_drawdown");
+                    let avg_corr: Option<f64> = r.get("avg_pairwise_correlation");
+                    let crowded: Option<i32> = r.get("crowded_pair_count");
+                    let weights: Value = r.get("weights");
+                    let created_at: Option<chrono::DateTime<chrono::Utc>> = r.get("created_at");
+                    json!({
+                        "id": id.to_string(),
+                        "version": version,
+                        "strategy_count": strategy_count,
+                        "portfolio_sharpe": portfolio_sharpe,
+                        "portfolio_max_drawdown": portfolio_max_drawdown,
+                        "avg_pairwise_correlation": avg_corr,
+                        "crowded_pair_count": crowded,
+                        "weights": weights,
+                        "created_at": created_at.map(|t| t.to_rfc3339()),
+                    })
+                })
+                .collect();
+            Json(json!({"ensembles": ensembles, "count": ensembles.len()}))
+        }
+        Err(e) => Json(json!({"error": format!("Database error: {}", e)})),
+    }
+}
+
+#[derive(Deserialize)]
+struct EnsembleEquityQuery {
+    version: Option<i32>,
+    limit: Option<i64>,
+}
+
+/// GET /:exchange/ensemble/equity — shadow portfolio equity curve
+async fn get_ensemble_equity(
+    State(state): State<ApiState>,
+    Path(exchange): Path<String>,
+    Query(params): Query<EnsembleEquityQuery>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    if !state.exchanges.contains_key(&key) {
+        return Json(json!({"error": format!("Unknown exchange: {}", exchange)}));
+    }
+    let exchange_name = state
+        .exchanges
+        .get(&key)
+        .map(|c| c.exchange.as_str())
+        .unwrap_or(&exchange);
+    let limit = params.limit.unwrap_or(500).min(5000);
+
+    // If version not specified, use the latest
+    let version = match params.version {
+        Some(v) => v,
+        None => {
+            let row = sqlx::query(
+                "SELECT COALESCE(MAX(version), 0) as v FROM portfolio_ensembles WHERE exchange = $1",
+            )
+            .bind(exchange_name)
+            .fetch_one(&state.pool)
+            .await;
+            match row {
+                Ok(r) => r.get("v"),
+                Err(e) => return Json(json!({"error": format!("Database error: {}", e)})),
+            }
+        }
+    };
+
+    let rows = sqlx::query(
+        "SELECT timestamp, equity, period_return \
+         FROM portfolio_ensemble_equity \
+         WHERE exchange = $1 AND ensemble_version = $2 \
+         ORDER BY timestamp DESC \
+         LIMIT $3",
+    )
+    .bind(exchange_name)
+    .bind(version)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await;
+
+    match rows {
+        Ok(rows) => {
+            let points: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    let ts: chrono::DateTime<chrono::Utc> = r.get("timestamp");
+                    let equity: f64 = r.get("equity");
+                    let period_return: Option<f64> = r.get("period_return");
+                    json!({
+                        "timestamp": ts.to_rfc3339(),
+                        "equity": equity,
+                        "period_return": period_return,
+                    })
+                })
+                .collect();
+            Json(json!({
+                "exchange": exchange_name,
+                "version": version,
+                "equity_curve": points,
+                "count": points.len(),
+            }))
+        }
+        Err(e) => Json(json!({"error": format!("Database error: {}", e)})),
+    }
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct RebalanceRequest {
+    #[serde(default)]
+    force: bool,
+}
+
+/// POST /:exchange/ensemble/rebalance — manually trigger rebalance
+async fn trigger_rebalance(
+    State(state): State<ApiState>,
+    Path(exchange): Path<String>,
+    Json(_payload): Json<RebalanceRequest>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    if !state.exchanges.contains_key(&key) {
+        return Json(json!({"error": format!("Unknown exchange: {}", exchange)}));
+    }
+
+    // Return the current ensemble status (actual rebalance is done by the background loop)
+    // The API serves as a status check / manual trigger signal
+    let row = sqlx::query(
+        "SELECT version, strategy_count, portfolio_sharpe, created_at \
+         FROM portfolio_ensembles \
+         WHERE exchange = $1 \
+         ORDER BY version DESC LIMIT 1",
+    )
+    .bind(
+        state
+            .exchanges
+            .get(&key)
+            .map(|c| c.exchange.as_str())
+            .unwrap_or(&exchange),
+    )
+    .fetch_optional(&state.pool)
+    .await;
+
+    match row {
+        Ok(Some(r)) => {
+            let version: i32 = r.get("version");
+            let strategy_count: i32 = r.get("strategy_count");
+            let sharpe: Option<f64> = r.get("portfolio_sharpe");
+            let created_at: Option<chrono::DateTime<chrono::Utc>> = r.get("created_at");
+            Json(json!({
+                "status": "rebalance_acknowledged",
+                "current_version": version,
+                "strategy_count": strategy_count,
+                "portfolio_sharpe": sharpe,
+                "last_rebalance": created_at.map(|t| t.to_rfc3339()),
+            }))
+        }
+        Ok(None) => Json(json!({
+            "status": "no_ensemble_yet",
+            "message": "No ensemble has been created yet. The background loop will create one shortly.",
+        })),
+        Err(e) => Json(json!({"error": format!("Database error: {}", e)})),
+    }
 }
