@@ -4527,6 +4527,7 @@ dependencies = [
  "backtest-engine",
  "chrono",
  "common",
+ "futures",
  "hyper 1.8.1",
  "ndarray",
  "rand 0.8.5",

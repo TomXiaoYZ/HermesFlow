@@ -653,7 +653,12 @@ mod tests {
     #[test]
     fn token_arity_features_are_zero() {
         for t in 0..FEAT_OFFSET_25 {
-            assert_eq!(token_arity(t, FEAT_OFFSET_25), 0, "feature {} arity != 0", t);
+            assert_eq!(
+                token_arity(t, FEAT_OFFSET_25),
+                0,
+                "feature {} arity != 0",
+                t
+            );
         }
     }
 
@@ -899,13 +904,11 @@ mod tests {
     #[test]
     fn alps_ga_inject_genomes() {
         let mut ga = AlpsGA::new(FEAT_OFFSET_25);
-        let injected = vec![
-            Genome {
-                tokens: vec![0, 1, FEAT_OFFSET_25],
-                fitness: 999.0,
-                age: 0,
-            },
-        ];
+        let injected = vec![Genome {
+            tokens: vec![0, 1, FEAT_OFFSET_25],
+            fitness: 999.0,
+            age: 0,
+        }];
         ga.inject_genomes(0, injected);
         // Should still be 100 (replaced worst, not added)
         assert_eq!(ga.layers[0].population.len(), 100);

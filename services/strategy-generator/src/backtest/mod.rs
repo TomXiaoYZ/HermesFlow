@@ -3,6 +3,7 @@ use backtest_engine::config::{FactorConfig, MultiTimeframeFactorConfig};
 use backtest_engine::factors::engineer::FeatureEngineer;
 use backtest_engine::vm::vm::StackVM;
 use chrono::{DateTime, Utc};
+use futures::stream::{self, StreamExt};
 use ndarray::{Array2, Array3, Axis};
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
@@ -210,6 +211,121 @@ pub fn forward_fill_align(
     }
 
     out
+}
+
+/// OHLCV arrays + timestamps returned from a resolution fetch.
+type CandleArrays = (
+    Array2<f64>, // close
+    Array2<f64>, // open
+    Array2<f64>, // high
+    Array2<f64>, // low
+    Array2<f64>, // volume
+    Array2<f64>, // liquidity
+    Array2<f64>, // fdv
+    Array2<f64>, // amount
+    Vec<i64>,    // timestamps
+);
+
+/// Fetch candles for one (symbol, resolution) pair — standalone for parallel use.
+async fn fetch_candles_parallel(
+    pool: &PgPool,
+    exchange: &str,
+    symbol: &str,
+    resolution: &str,
+    days: i64,
+) -> anyhow::Result<Option<CandleArrays>> {
+    let rows = sqlx::query_as::<_, Candle>(
+        r#"
+        SELECT time, open, high, low, close,
+               COALESCE(volume, 0) as volume,
+               COALESCE(liquidity, 0) as liquidity,
+               COALESCE(fdv, 0) as fdv,
+               COALESCE(amount, 0) as amount
+        FROM mkt_equity_candles
+        WHERE exchange = $2 AND symbol = $1 AND resolution = $3
+        AND time > NOW() - make_interval(days := $4)
+        ORDER BY time ASC
+        "#,
+    )
+    .bind(symbol)
+    .bind(exchange)
+    .bind(resolution)
+    .bind(days as i32)
+    .fetch_all(pool)
+    .await?;
+
+    if rows.len() < 50 {
+        tracing::warn!(
+            "Insufficient {} data for {}: {} rows",
+            resolution,
+            symbol,
+            rows.len()
+        );
+        return Ok(None);
+    }
+
+    let len = rows.len();
+    let mut close = Array2::<f64>::zeros((1, len));
+    let mut open = Array2::<f64>::zeros((1, len));
+    let mut high = Array2::<f64>::zeros((1, len));
+    let mut low = Array2::<f64>::zeros((1, len));
+    let mut volume = Array2::<f64>::zeros((1, len));
+    let mut liq = Array2::<f64>::zeros((1, len));
+    let mut fdv = Array2::<f64>::zeros((1, len));
+    let mut amount = Array2::<f64>::zeros((1, len));
+    let mut timestamps = Vec::with_capacity(len);
+
+    for (i, c) in rows.iter().enumerate() {
+        close[[0, i]] = c.close.to_f64().unwrap_or(0.0);
+        open[[0, i]] = c.open.to_f64().unwrap_or(0.0);
+        high[[0, i]] = c.high.to_f64().unwrap_or(0.0);
+        low[[0, i]] = c.low.to_f64().unwrap_or(0.0);
+        volume[[0, i]] = c.volume.to_f64().unwrap_or(0.0);
+        liq[[0, i]] = c.liquidity.to_f64().unwrap_or(0.0);
+        fdv[[0, i]] = c.fdv.to_f64().unwrap_or(0.0);
+        amount[[0, i]] = c.amount.to_f64().unwrap_or(0.0);
+        timestamps.push(c.time.timestamp());
+    }
+
+    Ok(Some((
+        close, open, high, low, volume, liq, fdv, amount, timestamps,
+    )))
+}
+
+/// Fetch reference close prices — standalone for parallel use.
+async fn fetch_reference_close_parallel(
+    pool: &PgPool,
+    exchange: &str,
+    symbol: &str,
+    resolution: &str,
+    days: i64,
+) -> anyhow::Result<(Array2<f64>, usize)> {
+    let rows = sqlx::query_as::<_, Candle>(
+        r#"
+        SELECT time, open, high, low, close,
+               COALESCE(volume, 0) as volume,
+               COALESCE(liquidity, 0) as liquidity,
+               COALESCE(fdv, 0) as fdv,
+               COALESCE(amount, 0) as amount
+        FROM mkt_equity_candles
+        WHERE exchange = $2 AND symbol = $1 AND resolution = $3
+        AND time > NOW() - make_interval(days := $4)
+        ORDER BY time ASC
+        "#,
+    )
+    .bind(symbol)
+    .bind(exchange)
+    .bind(resolution)
+    .bind(days as i32)
+    .fetch_all(pool)
+    .await?;
+
+    let len = rows.len();
+    let mut close = Array2::<f64>::zeros((1, len));
+    for (i, c) in rows.iter().enumerate() {
+        close[[0, i]] = c.close.to_f64().unwrap_or(0.0);
+    }
+    Ok((close, len))
 }
 
 pub struct Backtester {
@@ -479,121 +595,13 @@ impl Backtester {
         Ok(())
     }
 
-    /// Load reference asset close prices at a specific resolution (for MTF).
-    async fn load_reference_close(
-        &self,
-        symbol: &str,
-        resolution: &str,
-        days: i64,
-    ) -> anyhow::Result<(Array2<f64>, usize)> {
-        let rows = sqlx::query_as::<_, Candle>(
-            r#"
-            SELECT time, open, high, low, close,
-                   COALESCE(volume, 0) as volume,
-                   COALESCE(liquidity, 0) as liquidity,
-                   COALESCE(fdv, 0) as fdv,
-                   COALESCE(amount, 0) as amount
-            FROM mkt_equity_candles
-            WHERE exchange = $2 AND symbol = $1 AND resolution = $3
-            AND time > NOW() - make_interval(days := $4)
-            ORDER BY time ASC
-            "#,
-        )
-        .bind(symbol)
-        .bind(&self.exchange)
-        .bind(resolution)
-        .bind(days as i32)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let len = rows.len();
-        let mut close = Array2::<f64>::zeros((1, len));
-        for (i, c) in rows.iter().enumerate() {
-            close[[0, i]] = c.close.to_f64().unwrap_or(0.0);
-        }
-        Ok((close, len))
-    }
-
-    /// Fetch candles at a specific resolution and return OHLCV arrays + timestamps.
-    async fn fetch_candles_for_resolution(
-        &self,
-        symbol: &str,
-        resolution: &str,
-        days: i64,
-    ) -> anyhow::Result<
-        Option<(
-            Array2<f64>,
-            Array2<f64>,
-            Array2<f64>,
-            Array2<f64>,
-            Array2<f64>,
-            Array2<f64>,
-            Array2<f64>,
-            Array2<f64>,
-            Vec<i64>,
-        )>,
-    > {
-        let rows = sqlx::query_as::<_, Candle>(
-            r#"
-            SELECT time, open, high, low, close,
-                   COALESCE(volume, 0) as volume,
-                   COALESCE(liquidity, 0) as liquidity,
-                   COALESCE(fdv, 0) as fdv,
-                   COALESCE(amount, 0) as amount
-            FROM mkt_equity_candles
-            WHERE exchange = $2 AND symbol = $1 AND resolution = $3
-            AND time > NOW() - make_interval(days := $4)
-            ORDER BY time ASC
-            "#,
-        )
-        .bind(symbol)
-        .bind(&self.exchange)
-        .bind(resolution)
-        .bind(days as i32)
-        .fetch_all(&self.pool)
-        .await?;
-
-        if rows.len() < 50 {
-            tracing::warn!(
-                "Insufficient {} data for {}: {} rows",
-                resolution,
-                symbol,
-                rows.len()
-            );
-            return Ok(None);
-        }
-
-        let len = rows.len();
-        let mut close = Array2::<f64>::zeros((1, len));
-        let mut open = Array2::<f64>::zeros((1, len));
-        let mut high = Array2::<f64>::zeros((1, len));
-        let mut low = Array2::<f64>::zeros((1, len));
-        let mut volume = Array2::<f64>::zeros((1, len));
-        let mut liq = Array2::<f64>::zeros((1, len));
-        let mut fdv = Array2::<f64>::zeros((1, len));
-        let mut amount = Array2::<f64>::zeros((1, len));
-        let mut timestamps = Vec::with_capacity(len);
-
-        for (i, c) in rows.iter().enumerate() {
-            close[[0, i]] = c.close.to_f64().unwrap_or(0.0);
-            open[[0, i]] = c.open.to_f64().unwrap_or(0.0);
-            high[[0, i]] = c.high.to_f64().unwrap_or(0.0);
-            low[[0, i]] = c.low.to_f64().unwrap_or(0.0);
-            volume[[0, i]] = c.volume.to_f64().unwrap_or(0.0);
-            liq[[0, i]] = c.liquidity.to_f64().unwrap_or(0.0);
-            fdv[[0, i]] = c.fdv.to_f64().unwrap_or(0.0);
-            amount[[0, i]] = c.amount.to_f64().unwrap_or(0.0);
-            timestamps.push(c.time.timestamp());
-        }
-
-        Ok(Some((
-            close, open, high, low, volume, liq, fdv, amount, timestamps,
-        )))
-    }
-
     /// Load candle data at multiple resolutions, compute features per resolution,
     /// forward-fill align to the base (1h) time axis, and concatenate into a
     /// stacked feature tensor of shape (1, n_factors * n_resolutions, T_base).
+    ///
+    /// Parallelizes DB queries: all resolutions for a symbol are fetched
+    /// concurrently via `tokio::try_join!`, and multiple symbols are processed
+    /// concurrently via `buffer_unordered(8)`.
     pub async fn load_data_multi_timeframe(
         &mut self,
         symbols: &[String],
@@ -601,161 +609,218 @@ impl Backtester {
         mtf_config: &MultiTimeframeFactorConfig,
     ) -> anyhow::Result<()> {
         let resolutions = &mtf_config.resolutions;
-        let _base_resolution = &resolutions[0]; // "1h" = highest frequency
-        let mut loaded_count = 0;
+        let n_factors_per_res = mtf_config.base_feat_count();
+        let total_factors = mtf_config.feat_count();
+        let pool = &self.pool;
+        let exchange = &self.exchange;
+        let factor_config = &self.factor_config;
 
-        for symbol in symbols {
-            // Fetch candles for each resolution
-            let mut res_data: Vec<(Array3<f64>, Vec<i64>)> = Vec::new();
-            let mut base_timestamps: Option<Vec<i64>> = None;
-            let mut base_open: Option<Array2<f64>> = None;
-            let mut base_close: Option<Array2<f64>> = None;
-            let mut base_liq: Option<Array2<f64>> = None;
-            let mut base_amount: Option<Array2<f64>> = None;
+        // Process symbols concurrently (up to 8 at a time to avoid DB pool exhaustion).
+        // Each symbol fetches all resolutions in parallel via tokio::try_join!.
+        let results: Vec<Option<(String, CachedData)>> = stream::iter(symbols.iter().cloned())
+            .map(|symbol| {
+                let pool = pool.clone();
+                let exchange = exchange.clone();
+                let resolutions = resolutions.clone();
+                let factor_config = factor_config.clone();
+                async move {
+                    // Fetch all resolutions in parallel
+                    let mut futures = Vec::with_capacity(resolutions.len());
+                    for resolution in &resolutions {
+                        let pool = pool.clone();
+                        let exchange = exchange.clone();
+                        let symbol = symbol.clone();
+                        let resolution = resolution.clone();
+                        futures.push(tokio::spawn(async move {
+                            fetch_candles_parallel(&pool, &exchange, &symbol, &resolution, days)
+                                .await
+                        }));
+                    }
 
-            let mut skip_symbol = false;
-            for (res_idx, resolution) in resolutions.iter().enumerate() {
-                let candle_data = self
-                    .fetch_candles_for_resolution(symbol, resolution, days)
-                    .await?;
+                    let mut candle_results = Vec::with_capacity(resolutions.len());
+                    for handle in futures {
+                        let result = handle.await.map_err(|e| anyhow::anyhow!("join: {}", e))??;
+                        candle_results.push(result);
+                    }
 
-                let (close, open, high, low, volume, liq, fdv, amount, timestamps) =
-                    match candle_data {
-                        Some(d) => d,
-                        None => {
+                    // Check if any resolution has insufficient data
+                    for (res_idx, data) in candle_results.iter().enumerate() {
+                        if data.is_none() {
                             tracing::warn!(
                                 "Skipping {} for MTF: insufficient {} data",
                                 symbol,
-                                resolution
+                                resolutions[res_idx]
                             );
-                            skip_symbol = true;
-                            break;
+                            return Ok(None);
                         }
-                    };
+                    }
 
-                // Load SPY reference for this resolution
-                let ref_close_aligned = if self.exchange == "Polygon" && symbol != "SPY" {
-                    match self.load_reference_close("SPY", resolution, days).await {
-                        Ok((spy_close, spy_len)) => {
-                            let sym_len = close.shape()[1];
-                            if spy_len >= sym_len {
-                                Some(
-                                    spy_close
-                                        .slice(ndarray::s![.., (spy_len - sym_len)..])
-                                        .to_owned(),
+                    // Fetch SPY reference for all resolutions in parallel (Polygon only)
+                    let need_ref = exchange == "Polygon" && symbol != "SPY";
+                    let ref_closes: Vec<Option<(Array2<f64>, usize)>> = if need_ref {
+                        let mut ref_futures = Vec::with_capacity(resolutions.len());
+                        for resolution in &resolutions {
+                            let pool = pool.clone();
+                            let exchange = exchange.clone();
+                            let resolution = resolution.clone();
+                            ref_futures.push(tokio::spawn(async move {
+                                fetch_reference_close_parallel(
+                                    &pool,
+                                    &exchange,
+                                    "SPY",
+                                    &resolution,
+                                    days,
                                 )
-                            } else {
-                                None
+                                .await
+                            }));
+                        }
+                        let mut results = Vec::with_capacity(resolutions.len());
+                        for handle in ref_futures {
+                            match handle.await {
+                                Ok(Ok(data)) => results.push(Some(data)),
+                                _ => results.push(None),
                             }
                         }
-                        Err(_) => None,
+                        results
+                    } else {
+                        vec![None; resolutions.len()]
+                    };
+
+                    // Compute features per resolution (CPU-bound, sequential)
+                    let mut res_data: Vec<(Array3<f64>, Vec<i64>)> = Vec::new();
+                    let mut base_timestamps: Option<Vec<i64>> = None;
+                    let mut base_open: Option<Array2<f64>> = None;
+                    let mut base_close: Option<Array2<f64>> = None;
+                    let mut base_liq: Option<Array2<f64>> = None;
+                    let mut base_amount: Option<Array2<f64>> = None;
+
+                    for (res_idx, candle_data) in candle_results.into_iter().enumerate() {
+                        let (close, open, high, low, volume, liq, fdv, amount, timestamps) =
+                            candle_data.unwrap(); // safe: checked above
+
+                        // Align SPY reference
+                        let ref_close_aligned =
+                            if let Some(Some((spy_close, spy_len))) = ref_closes.get(res_idx) {
+                                let sym_len = close.shape()[1];
+                                if *spy_len >= sym_len {
+                                    Some(
+                                        spy_close
+                                            .slice(ndarray::s![.., (spy_len - sym_len)..])
+                                            .to_owned(),
+                                    )
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                        let ohlcv = backtest_engine::factors::traits::OhlcvData {
+                            close: &close,
+                            open: &open,
+                            high: &high,
+                            low: &low,
+                            volume: &volume,
+                            liquidity: &liq,
+                            fdv: &fdv,
+                            ref_close: ref_close_aligned.as_ref(),
+                        };
+                        let features =
+                            FeatureEngineer::compute_features_from_config(&factor_config, &ohlcv);
+
+                        tracing::info!(
+                            "[{}:{}] {} features: {} factors x {} bars",
+                            symbol,
+                            resolutions[res_idx],
+                            resolutions[res_idx],
+                            features.shape()[1],
+                            features.shape()[2]
+                        );
+
+                        if res_idx == 0 {
+                            base_timestamps = Some(timestamps.clone());
+                            base_open = Some(open);
+                            base_close = Some(close);
+                            base_liq = Some(liq);
+                            base_amount = Some(amount);
+                        }
+
+                        res_data.push((features, timestamps));
                     }
-                } else {
-                    None
-                };
 
-                let ohlcv = backtest_engine::factors::traits::OhlcvData {
-                    close: &close,
-                    open: &open,
-                    high: &high,
-                    low: &low,
-                    volume: &volume,
-                    liquidity: &liq,
-                    fdv: &fdv,
-                    ref_close: ref_close_aligned.as_ref(),
-                };
-                let features =
-                    FeatureEngineer::compute_features_from_config(&self.factor_config, &ohlcv);
+                    // Stack & align features
+                    let hf_timestamps = base_timestamps.as_ref().unwrap();
+                    let hf_len = hf_timestamps.len();
 
-                tracing::info!(
-                    "[{}:{}] {} features: {} factors x {} bars",
-                    symbol,
-                    resolution,
-                    resolution,
-                    features.shape()[1],
-                    features.shape()[2]
-                );
+                    let mut stacked = Array3::<f64>::zeros((1, total_factors, hf_len));
 
-                // Save base resolution data for returns computation
-                if res_idx == 0 {
-                    base_timestamps = Some(timestamps.clone());
-                    base_open = Some(open);
-                    base_close = Some(close);
-                    base_liq = Some(liq);
-                    base_amount = Some(amount);
+                    for (res_idx, (features, timestamps)) in res_data.iter().enumerate() {
+                        let offset = res_idx * n_factors_per_res;
+                        let aligned = if res_idx == 0 {
+                            features.clone()
+                        } else {
+                            forward_fill_align(features, timestamps, hf_timestamps)
+                        };
+
+                        for f in 0..n_factors_per_res {
+                            stacked
+                                .index_axis_mut(Axis(1), offset + f)
+                                .assign(&aligned.index_axis(Axis(1), f));
+                        }
+                    }
+
+                    // Compute future returns from base resolution open prices
+                    let open = base_open.unwrap();
+                    let close = base_close.unwrap();
+
+                    let mut future_ret = Array2::<f64>::zeros((1, hf_len));
+                    for i in 0..hf_len.saturating_sub(2) {
+                        let exec_price = open[[0, i + 1]];
+                        let exit_price = open[[0, i + 2]];
+                        let r = if exec_price.abs() > 1e-9 {
+                            (exit_price / exec_price - 1.0).clamp(-0.99, 10.0)
+                        } else {
+                            0.0
+                        };
+                        future_ret[[0, i]] = r;
+                    }
+
+                    tracing::info!(
+                        "[{}] MTF stacked: {} factors x {} bars (resolutions: {:?})",
+                        symbol,
+                        total_factors,
+                        hf_len,
+                        resolutions
+                    );
+
+                    let cached = CachedData {
+                        features: stacked,
+                        returns: future_ret,
+                        open,
+                        close,
+                        liquidity: base_liq.unwrap(),
+                        amount: base_amount.unwrap(),
+                        timestamps: hf_timestamps.clone(),
+                    };
+                    Ok::<_, anyhow::Error>(Some((symbol, cached)))
                 }
+            })
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
 
-                res_data.push((features, timestamps));
-            }
-
-            if skip_symbol {
-                continue;
-            }
-
-            let hf_timestamps = base_timestamps.as_ref().unwrap();
-            let hf_len = hf_timestamps.len();
-            let n_factors_per_res = mtf_config.base_feat_count();
-            let total_factors = mtf_config.feat_count();
-
-            // Stack features: base resolution directly, others via forward-fill
-            let mut stacked = Array3::<f64>::zeros((1, total_factors, hf_len));
-
-            for (res_idx, (features, timestamps)) in res_data.iter().enumerate() {
-                let offset = res_idx * n_factors_per_res;
-                let aligned = if res_idx == 0 {
-                    features.clone()
-                } else {
-                    forward_fill_align(features, timestamps, hf_timestamps)
-                };
-
-                for f in 0..n_factors_per_res {
-                    stacked
-                        .index_axis_mut(Axis(1), offset + f)
-                        .assign(&aligned.index_axis(Axis(1), f));
-                }
-            }
-
-            // Compute future returns from base resolution open prices
-            let open = base_open.unwrap();
-            let close = base_close.unwrap();
-
-            let mut future_ret = Array2::<f64>::zeros((1, hf_len));
-            for i in 0..hf_len.saturating_sub(2) {
-                let exec_price = open[[0, i + 1]];
-                let exit_price = open[[0, i + 2]];
-                let r = if exec_price.abs() > 1e-9 {
-                    (exit_price / exec_price - 1.0).clamp(-0.99, 10.0)
-                } else {
-                    0.0
-                };
-                future_ret[[0, i]] = r;
-            }
-
-            tracing::info!(
-                "[{}] MTF stacked: {} factors x {} bars (resolutions: {:?})",
-                symbol,
-                total_factors,
-                hf_len,
-                resolutions
-            );
-
-            self.cache.insert(
-                symbol.clone(),
-                CachedData {
-                    features: stacked,
-                    returns: future_ret,
-                    open,
-                    close,
-                    liquidity: base_liq.unwrap(),
-                    amount: base_amount.unwrap(),
-                    timestamps: hf_timestamps.clone(),
-                },
-            );
+        // Insert results into cache
+        let mut loaded_count = 0;
+        for entry in results.into_iter().flatten() {
+            let (symbol, data) = entry;
+            self.cache.insert(symbol, data);
             loaded_count += 1;
         }
 
         tracing::info!(
-            "Loaded MTF data for {} symbols ({} resolutions)",
+            "Loaded MTF data for {} symbols ({} resolutions, parallel)",
             loaded_count,
             resolutions.len()
         );

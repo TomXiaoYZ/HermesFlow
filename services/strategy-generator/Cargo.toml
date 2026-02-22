@@ -17,6 +17,7 @@ sqlx = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 ndarray = { workspace = true }
+futures = { workspace = true }
 rust_decimal = { workspace = true }
 axum = { workspace = true }
 hyper = { workspace = true }

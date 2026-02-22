@@ -485,11 +485,7 @@ mod tests {
         let returns = vec![0.01, 0.02, -0.01, 0.03, 0.01];
         let n = returns.len() as f64;
         let mean_ret = returns.iter().sum::<f64>() / n; // 0.012
-        let var_ret = returns
-            .iter()
-            .map(|&x| (x - mean_ret).powi(2))
-            .sum::<f64>()
-            / (n - 1.0);
+        let var_ret = returns.iter().map(|&x| (x - mean_ret).powi(2)).sum::<f64>() / (n - 1.0);
         let std_ret = var_ret.sqrt();
 
         // Polygon 1h annualization factor
