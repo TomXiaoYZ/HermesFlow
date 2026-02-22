@@ -9,7 +9,7 @@ use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
 use sqlx::FromRow;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::str::FromStr;
 
@@ -90,6 +90,312 @@ impl FromStr for StrategyMode {
     }
 }
 
+// ── P4: Threshold configuration ──────────────────────────────────────────
+
+/// Resolved threshold parameters for a single direction (upper or lower).
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedThresholdParams {
+    pub percentile: f64, // fractional, e.g. 0.70 for 70th percentile
+    pub clamp_lo: f64,
+    pub clamp_hi: f64,
+}
+
+/// Per-mode threshold configuration (from YAML).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LongOnlyThresholdYaml {
+    #[serde(default = "default_percentile_70")]
+    pub percentile_upper: f64,
+    #[serde(default = "default_lo_clamp_upper")]
+    pub clamp_upper: (f64, f64),
+}
+
+impl Default for LongOnlyThresholdYaml {
+    fn default() -> Self {
+        Self {
+            percentile_upper: 70.0,
+            clamp_upper: (0.52, 0.80),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LongShortThresholdYaml {
+    #[serde(default = "default_percentile_70")]
+    pub percentile_upper: f64,
+    #[serde(default = "default_percentile_30")]
+    pub percentile_lower: f64,
+    #[serde(default = "default_ls_clamp_upper")]
+    pub clamp_upper: (f64, f64),
+    #[serde(default = "default_ls_clamp_lower")]
+    pub clamp_lower: (f64, f64),
+}
+
+impl Default for LongShortThresholdYaml {
+    fn default() -> Self {
+        Self {
+            percentile_upper: 70.0,
+            percentile_lower: 30.0,
+            clamp_upper: (0.1, 2.0),
+            clamp_lower: (-2.0, -0.1),
+        }
+    }
+}
+
+/// Optional per-field overrides for a specific symbol.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LongOnlyThresholdOverride {
+    pub percentile_upper: Option<f64>,
+    pub clamp_upper: Option<(f64, f64)>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LongShortThresholdOverride {
+    pub percentile_upper: Option<f64>,
+    pub percentile_lower: Option<f64>,
+    pub clamp_upper: Option<(f64, f64)>,
+    pub clamp_lower: Option<(f64, f64)>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ThresholdOverride {
+    pub long_only: Option<LongOnlyThresholdOverride>,
+    pub long_short: Option<LongShortThresholdOverride>,
+}
+
+/// Top-level threshold configuration loaded from generator.yaml.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ThresholdConfig {
+    #[serde(default)]
+    pub long_only: LongOnlyThresholdYaml,
+    #[serde(default)]
+    pub long_short: LongShortThresholdYaml,
+    #[serde(default)]
+    pub overrides: HashMap<String, ThresholdOverride>,
+}
+
+impl ThresholdConfig {
+    /// Resolve upper threshold params for a symbol and mode.
+    pub fn resolve_upper(&self, symbol: &str, mode: StrategyMode) -> ResolvedThresholdParams {
+        match mode {
+            StrategyMode::LongOnly => {
+                let base = &self.long_only;
+                let ovr = self
+                    .overrides
+                    .get(symbol)
+                    .and_then(|o| o.long_only.as_ref());
+                ResolvedThresholdParams {
+                    percentile: ovr
+                        .and_then(|o| o.percentile_upper)
+                        .unwrap_or(base.percentile_upper)
+                        / 100.0,
+                    clamp_lo: ovr
+                        .and_then(|o| o.clamp_upper)
+                        .map(|c| c.0)
+                        .unwrap_or(base.clamp_upper.0),
+                    clamp_hi: ovr
+                        .and_then(|o| o.clamp_upper)
+                        .map(|c| c.1)
+                        .unwrap_or(base.clamp_upper.1),
+                }
+            }
+            StrategyMode::LongShort => {
+                let base = &self.long_short;
+                let ovr = self
+                    .overrides
+                    .get(symbol)
+                    .and_then(|o| o.long_short.as_ref());
+                ResolvedThresholdParams {
+                    percentile: ovr
+                        .and_then(|o| o.percentile_upper)
+                        .unwrap_or(base.percentile_upper)
+                        / 100.0,
+                    clamp_lo: ovr
+                        .and_then(|o| o.clamp_upper)
+                        .map(|c| c.0)
+                        .unwrap_or(base.clamp_upper.0),
+                    clamp_hi: ovr
+                        .and_then(|o| o.clamp_upper)
+                        .map(|c| c.1)
+                        .unwrap_or(base.clamp_upper.1),
+                }
+            }
+        }
+    }
+
+    /// Resolve lower threshold params (LongShort only).
+    pub fn resolve_lower(&self, symbol: &str) -> ResolvedThresholdParams {
+        let base = &self.long_short;
+        let ovr = self
+            .overrides
+            .get(symbol)
+            .and_then(|o| o.long_short.as_ref());
+        ResolvedThresholdParams {
+            percentile: ovr
+                .and_then(|o| o.percentile_lower)
+                .unwrap_or(base.percentile_lower)
+                / 100.0,
+            clamp_lo: ovr
+                .and_then(|o| o.clamp_lower)
+                .map(|c| c.0)
+                .unwrap_or(base.clamp_lower.0),
+            clamp_hi: ovr
+                .and_then(|o| o.clamp_lower)
+                .map(|c| c.1)
+                .unwrap_or(base.clamp_lower.1),
+        }
+    }
+}
+
+// Hard bounds for adaptive threshold adjustment (Phase 3 guardrails).
+// Percentile never goes below 55 or above 85 for upper, 15–45 for lower.
+const UPPER_PERCENTILE_FLOOR: f64 = 55.0;
+const UPPER_PERCENTILE_CEILING: f64 = 85.0;
+const LOWER_PERCENTILE_FLOOR: f64 = 15.0;
+const LOWER_PERCENTILE_CEILING: f64 = 45.0;
+
+/// Adjust percentile/clamp based on utilization feedback.
+/// Called periodically (every `adjustment_interval` generations).
+///
+/// Returns true if any adjustment was made.
+pub fn adjust_threshold_params(
+    config: &mut ThresholdConfig,
+    symbol: &str,
+    mode: StrategyMode,
+    tracker: &UtilizationTracker,
+) -> bool {
+    if tracker.len() < 10 {
+        return false; // Not enough data to make informed adjustments
+    }
+
+    let util = tracker.utilization();
+    let mut changed = false;
+
+    match mode {
+        StrategyMode::LongOnly => {
+            let cfg = config
+                .overrides
+                .entry(symbol.to_string())
+                .or_default()
+                .long_only
+                .get_or_insert(LongOnlyThresholdOverride::default());
+
+            let current_pct = cfg
+                .percentile_upper
+                .unwrap_or(config.long_only.percentile_upper);
+
+            // Target utilization band: 40-70%
+            if util < 0.30 {
+                // Too few trades — relax threshold (lower percentile toward 50)
+                let new_pct =
+                    (current_pct - 2.0).clamp(UPPER_PERCENTILE_FLOOR, UPPER_PERCENTILE_CEILING);
+                if (new_pct - current_pct).abs() > 0.01 {
+                    cfg.percentile_upper = Some(new_pct);
+                    // Widen clamp range by 5%
+                    let clamp = cfg.clamp_upper.unwrap_or(config.long_only.clamp_upper);
+                    let range = clamp.1 - clamp.0;
+                    cfg.clamp_upper = Some((clamp.0, (clamp.1 + range * 0.05).min(0.95)));
+                    changed = true;
+                }
+            } else if util > 0.80 {
+                // Too many trades — tighten threshold (raise percentile)
+                let new_pct =
+                    (current_pct + 2.0).clamp(UPPER_PERCENTILE_FLOOR, UPPER_PERCENTILE_CEILING);
+                if (new_pct - current_pct).abs() > 0.01 {
+                    cfg.percentile_upper = Some(new_pct);
+                    // Narrow clamp range by 5%
+                    let clamp = cfg.clamp_upper.unwrap_or(config.long_only.clamp_upper);
+                    let range = clamp.1 - clamp.0;
+                    cfg.clamp_upper = Some((clamp.0, (clamp.1 - range * 0.05).max(clamp.0 + 0.05)));
+                    changed = true;
+                }
+            }
+        }
+        StrategyMode::LongShort => {
+            let cfg = config
+                .overrides
+                .entry(symbol.to_string())
+                .or_default()
+                .long_short
+                .get_or_insert(LongShortThresholdOverride::default());
+
+            let current_upper_pct = cfg
+                .percentile_upper
+                .unwrap_or(config.long_short.percentile_upper);
+            let current_lower_pct = cfg
+                .percentile_lower
+                .unwrap_or(config.long_short.percentile_lower);
+
+            // Target utilization band: 40-70%
+            if util < 0.30 {
+                // Relax both thresholds toward 50
+                let new_upper = (current_upper_pct - 2.0)
+                    .clamp(UPPER_PERCENTILE_FLOOR, UPPER_PERCENTILE_CEILING);
+                let new_lower = (current_lower_pct + 2.0)
+                    .clamp(LOWER_PERCENTILE_FLOOR, LOWER_PERCENTILE_CEILING);
+                if (new_upper - current_upper_pct).abs() > 0.01
+                    || (new_lower - current_lower_pct).abs() > 0.01
+                {
+                    cfg.percentile_upper = Some(new_upper);
+                    cfg.percentile_lower = Some(new_lower);
+                    changed = true;
+                }
+            } else if util > 0.80 {
+                // Tighten both thresholds away from 50
+                let new_upper = (current_upper_pct + 2.0)
+                    .clamp(UPPER_PERCENTILE_FLOOR, UPPER_PERCENTILE_CEILING);
+                let new_lower = (current_lower_pct - 2.0)
+                    .clamp(LOWER_PERCENTILE_FLOOR, LOWER_PERCENTILE_CEILING);
+                if (new_upper - current_upper_pct).abs() > 0.01
+                    || (new_lower - current_lower_pct).abs() > 0.01
+                {
+                    cfg.percentile_upper = Some(new_upper);
+                    cfg.percentile_lower = Some(new_lower);
+                    changed = true;
+                }
+            }
+
+            // Check long/short asymmetry
+            let long_r = tracker.long_ratio();
+            let short_r = tracker.short_ratio();
+            if long_r > 0.80 && util > 0.30 {
+                // Too few shorts — lower the lower threshold percentile (make it easier to short)
+                let new_lower = (current_lower_pct + 1.0)
+                    .clamp(LOWER_PERCENTILE_FLOOR, LOWER_PERCENTILE_CEILING);
+                if (new_lower - current_lower_pct).abs() > 0.01 {
+                    cfg.percentile_lower = Some(new_lower);
+                    changed = true;
+                }
+            } else if short_r > 0.80 && util > 0.30 {
+                // Too few longs — raise the upper threshold percentile (make it easier to go long)
+                let new_upper = (current_upper_pct - 1.0)
+                    .clamp(UPPER_PERCENTILE_FLOOR, UPPER_PERCENTILE_CEILING);
+                if (new_upper - current_upper_pct).abs() > 0.01 {
+                    cfg.percentile_upper = Some(new_upper);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+fn default_percentile_70() -> f64 {
+    70.0
+}
+fn default_percentile_30() -> f64 {
+    30.0
+}
+fn default_lo_clamp_upper() -> (f64, f64) {
+    (0.52, 0.80)
+}
+fn default_ls_clamp_upper() -> (f64, f64) {
+    (0.1, 2.0)
+}
+fn default_ls_clamp_lower() -> (f64, f64) {
+    (-2.0, -0.1)
+}
+
 #[derive(Debug, FromRow)]
 pub struct Candle {
     pub time: DateTime<Utc>,
@@ -155,6 +461,8 @@ pub struct WalkForwardStep {
     pub psr: f64,
     pub trade_count: u32,
     pub active_bars: u32,
+    pub long_bars: u32,
+    pub short_bars: u32,
     pub upper_threshold: f64,
     pub lower_threshold: f64,
 }
@@ -170,6 +478,67 @@ pub struct WalkForwardResult {
     pub steps: Vec<WalkForwardStep>,
     /// If aggregate_psr is a sentinel, this explains which failure dominated.
     pub failure_mode: Option<String>,
+}
+
+/// Rolling-window tracker for trading utilization metrics.
+/// Tracks long/short bar ratios to detect threshold asymmetry and under/over-trading.
+pub struct UtilizationTracker {
+    buffer: VecDeque<(u32, u32, u32, u32)>, // (total_bars, active_bars, long_bars, short_bars)
+    window: usize,
+}
+
+impl UtilizationTracker {
+    pub fn new(window: usize) -> Self {
+        Self {
+            buffer: VecDeque::with_capacity(window),
+            window,
+        }
+    }
+
+    /// Push one generation's aggregated WF utilization metrics.
+    pub fn push(&mut self, total: u32, active: u32, long: u32, short: u32) {
+        if self.buffer.len() >= self.window {
+            self.buffer.pop_front();
+        }
+        self.buffer.push_back((total, active, long, short));
+    }
+
+    /// Fraction of long bars relative to active bars over the rolling window.
+    pub fn long_ratio(&self) -> f64 {
+        let total_long: u64 = self.buffer.iter().map(|&(_, _, l, _)| l as u64).sum();
+        let total_active: u64 = self.buffer.iter().map(|&(_, a, _, _)| a as u64).sum();
+        if total_active == 0 {
+            0.0
+        } else {
+            total_long as f64 / total_active as f64
+        }
+    }
+
+    /// Fraction of short bars relative to active bars over the rolling window.
+    pub fn short_ratio(&self) -> f64 {
+        let total_short: u64 = self.buffer.iter().map(|&(_, _, _, s)| s as u64).sum();
+        let total_active: u64 = self.buffer.iter().map(|&(_, a, _, _)| a as u64).sum();
+        if total_active == 0 {
+            0.0
+        } else {
+            total_short as f64 / total_active as f64
+        }
+    }
+
+    /// Fraction of active bars relative to total bars over the rolling window.
+    pub fn utilization(&self) -> f64 {
+        let total_active: u64 = self.buffer.iter().map(|&(_, a, _, _)| a as u64).sum();
+        let total_bars: u64 = self.buffer.iter().map(|&(t, _, _, _)| t as u64).sum();
+        if total_bars == 0 {
+            0.0
+        } else {
+            total_active as f64 / total_bars as f64
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
 }
 
 /// Forward-fill lower-frequency features to align with higher-frequency timestamps.
@@ -337,6 +706,7 @@ pub struct Backtester {
     factor_config: FactorConfig,
     pub exchange: String,
     pub resolution: String,
+    pub threshold_config: ThresholdConfig,
 }
 
 impl Backtester {
@@ -345,6 +715,22 @@ impl Backtester {
         factor_config: FactorConfig,
         exchange: String,
         resolution: String,
+    ) -> Self {
+        Self::with_threshold_config(
+            pool,
+            factor_config,
+            exchange,
+            resolution,
+            ThresholdConfig::default(),
+        )
+    }
+
+    pub fn with_threshold_config(
+        pool: PgPool,
+        factor_config: FactorConfig,
+        exchange: String,
+        resolution: String,
+        threshold_config: ThresholdConfig,
     ) -> Self {
         let ts_window = StackVM::ts_window_for_resolution(&resolution);
         tracing::info!(
@@ -359,6 +745,7 @@ impl Backtester {
             factor_config,
             exchange,
             resolution,
+            threshold_config,
         }
     }
 
@@ -856,7 +1243,7 @@ impl Backtester {
             }
 
             let split_idx = (len as f64 * 0.7).max(20.0) as usize;
-            let pnl = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx, mode);
+            let pnl = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx, mode, symbol);
 
             // Parsimony pressure: penalize formulas longer than 10 tokens.
             // Shorter formulas are less likely to overfit.
@@ -895,7 +1282,7 @@ impl Backtester {
                 return 0.0;
             }
 
-            self.pnl_fitness(sig_slice, ret_slice, split_idx, len, mode)
+            self.pnl_fitness(sig_slice, ret_slice, split_idx, len, mode, symbol)
         } else {
             0.0
         }
@@ -1035,27 +1422,37 @@ impl Backtester {
 
             // Compute thresholds from TRAIN window (fixing look-ahead bias)
             // LongShort: z-score thresholds; LongOnly: sigmoid thresholds
+            let upper_params = self.threshold_config.resolve_upper(symbol, mode);
+            let lower_params = self.threshold_config.resolve_lower(symbol);
             let (upper, lower, train_zs) = match mode {
                 StrategyMode::LongShort => {
                     let (mean, std) = zscore_params(sig_slice, train_start, train_end);
-                    let u = adaptive_threshold_zscore(sig_slice, train_start, train_end, mean, std);
+                    let u = adaptive_threshold_zscore(
+                        sig_slice,
+                        train_start,
+                        train_end,
+                        mean,
+                        std,
+                        &upper_params,
+                    );
                     let l = adaptive_lower_threshold_zscore(
                         sig_slice,
                         train_start,
                         train_end,
                         mean,
                         std,
+                        &lower_params,
                     );
                     (u, l, Some((mean, std)))
                 }
                 StrategyMode::LongOnly => {
-                    let u = adaptive_threshold(sig_slice, train_start, train_end);
+                    let u = adaptive_threshold(sig_slice, train_start, train_end, &upper_params);
                     (u, 0.0, None)
                 }
             };
 
             // Evaluate PSR on TEST window using train-derived thresholds
-            let (psr, trade_count, active_count) = self.psr_fitness_oos(
+            let (psr, trade_count, active_count, long_count, short_count) = self.psr_fitness_oos(
                 sig_slice, ret_slice, test_start, test_end, mode, upper, lower, train_zs,
             );
 
@@ -1076,6 +1473,8 @@ impl Backtester {
                 psr,
                 trade_count,
                 active_bars: active_count,
+                long_bars: long_count,
+                short_bars: short_count,
                 upper_threshold: upper,
                 lower_threshold: lower,
             };
@@ -1213,7 +1612,7 @@ impl Backtester {
                 continue;
             }
 
-            let psr = self.psr_fitness(sig_slice, ret_slice, start, end, mode);
+            let psr = self.psr_fitness(sig_slice, ret_slice, start, end, mode, symbol);
             if psr > -9.0 {
                 fold_scores.push(psr);
             }
@@ -1295,7 +1694,7 @@ impl Backtester {
             };
             let end = if i == k - 1 { len } else { (i + 1) * fold_size };
             if end > start {
-                fold_pnls.push(self.pnl_fitness(sig_slice, ret_slice, start, end, mode));
+                fold_pnls.push(self.pnl_fitness(sig_slice, ret_slice, start, end, mode, symbol));
             }
         }
         fold_pnls
@@ -1343,7 +1742,7 @@ impl Backtester {
             };
             let end = if i == k - 1 { len } else { (i + 1) * fold_size };
             if end > start && end - start >= 30 {
-                fold_psrs.push(self.psr_fitness(sig_slice, ret_slice, start, end, mode));
+                fold_psrs.push(self.psr_fitness(sig_slice, ret_slice, start, end, mode, symbol));
             } else {
                 fold_psrs.push(-10.0);
             }
@@ -1365,6 +1764,7 @@ impl Backtester {
         start: usize,
         end: usize,
         mode: StrategyMode,
+        symbol: &str,
     ) -> f64 {
         let n = end - start;
         if n < 30 {
@@ -1374,15 +1774,17 @@ impl Backtester {
         // Collect per-bar returns using the same position logic as pnl_fitness
         // LongShort: z-score normalization (de-mean + scale by std)
         // LongOnly:  sigmoid normalization (legacy, unchanged)
+        let upper_params = self.threshold_config.resolve_upper(symbol, mode);
+        let lower_params = self.threshold_config.resolve_lower(symbol);
         let (upper, lower, z_mean, z_std) = match mode {
             StrategyMode::LongShort => {
                 let (mean, std) = zscore_params(sig, start, end);
-                let u = adaptive_threshold_zscore(sig, start, end, mean, std);
-                let l = adaptive_lower_threshold_zscore(sig, start, end, mean, std);
+                let u = adaptive_threshold_zscore(sig, start, end, mean, std, &upper_params);
+                let l = adaptive_lower_threshold_zscore(sig, start, end, mean, std, &lower_params);
                 (u, l, mean, std)
             }
             StrategyMode::LongOnly => {
-                let u = adaptive_threshold(sig, start, end);
+                let u = adaptive_threshold(sig, start, end, &upper_params);
                 (u, 0.0, 0.0, 1.0)
             }
         };
@@ -1525,10 +1927,10 @@ impl Backtester {
         upper_threshold: f64,
         lower_threshold: f64,
         train_zscore: Option<(f64, f64)>,
-    ) -> (f64, u32, u32) {
+    ) -> (f64, u32, u32, u32, u32) {
         let n = end - start;
         if n < 30 {
-            return (SENTINEL_TOO_FEW_BARS, 0, 0);
+            return (SENTINEL_TOO_FEW_BARS, 0, 0, 0, 0);
         }
 
         let fee = self.base_fee();
@@ -1536,6 +1938,8 @@ impl Backtester {
         let mut bar_returns = Vec::with_capacity(n);
         let mut trade_count = 0_u32;
         let mut active_bars = 0_u32;
+        let mut long_bars = 0_u32;
+        let mut short_bars = 0_u32;
 
         for i in start..end {
             let sig_val = match (mode, train_zscore) {
@@ -1575,7 +1979,11 @@ impl Backtester {
             if turnover > 0.5 {
                 trade_count += 1;
             }
-            if pos.abs() > 0.5 {
+            if pos > 0.5 {
+                long_bars += 1;
+                active_bars += 1;
+            } else if pos < -0.5 {
+                short_bars += 1;
                 active_bars += 1;
             }
 
@@ -1604,7 +2012,13 @@ impl Backtester {
         let trading_days = n as f64 / bars_per_day;
         let min_trades = 3_u32.max((trading_days / 10.0) as u32);
         if trade_count < min_trades || (active_bars as f64) < (n as f64 * 0.05) {
-            return (SENTINEL_TOO_FEW_TRADES, trade_count, active_bars);
+            return (
+                SENTINEL_TOO_FEW_TRADES,
+                trade_count,
+                active_bars,
+                long_bars,
+                short_bars,
+            );
         }
 
         // Compute PSR
@@ -1613,7 +2027,13 @@ impl Backtester {
         let var = bar_returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (nf - 1.0);
         let std = var.sqrt();
         if std < 1e-10 {
-            return (SENTINEL_ZERO_VARIANCE, trade_count, active_bars);
+            return (
+                SENTINEL_ZERO_VARIANCE,
+                trade_count,
+                active_bars,
+                long_bars,
+                short_bars,
+            );
         }
 
         let sharpe = mean / std;
@@ -1633,19 +2053,43 @@ impl Backtester {
         let benchmark_sharpe = 0.0;
         let se_inner = (1.0 - skew * sharpe + (kurt - 1.0) / 4.0 * sharpe.powi(2)) / nf;
         if se_inner <= 0.0 {
-            return (SENTINEL_NEGATIVE_SE, trade_count, active_bars);
+            return (
+                SENTINEL_NEGATIVE_SE,
+                trade_count,
+                active_bars,
+                long_bars,
+                short_bars,
+            );
         }
         let se_sharpe = se_inner.sqrt();
         if se_sharpe < 1e-10 {
-            return (SENTINEL_ZERO_SE, trade_count, active_bars);
+            return (
+                SENTINEL_ZERO_SE,
+                trade_count,
+                active_bars,
+                long_bars,
+                short_bars,
+            );
         }
 
         let z = (sharpe - benchmark_sharpe) / se_sharpe;
 
         if z.is_nan() {
-            (SENTINEL_NAN_PSR, trade_count, active_bars)
+            (
+                SENTINEL_NAN_PSR,
+                trade_count,
+                active_bars,
+                long_bars,
+                short_bars,
+            )
         } else {
-            (z.clamp(-5.0, 5.0), trade_count, active_bars)
+            (
+                z.clamp(-5.0, 5.0),
+                trade_count,
+                active_bars,
+                long_bars,
+                short_bars,
+            )
         }
     }
 
@@ -1663,6 +2107,7 @@ impl Backtester {
         start: usize,
         end: usize,
         mode: StrategyMode,
+        symbol: &str,
     ) -> f64 {
         let n = end - start;
         if n < 10 {
@@ -1670,15 +2115,17 @@ impl Backtester {
         }
 
         // LongShort: z-score thresholds on raw signal; LongOnly: sigmoid thresholds
+        let upper_params = self.threshold_config.resolve_upper(symbol, mode);
+        let lower_params = self.threshold_config.resolve_lower(symbol);
         let (upper, lower, z_mean, z_std) = match mode {
             StrategyMode::LongShort => {
                 let (mean, std) = zscore_params(sig, start, end);
-                let u = adaptive_threshold_zscore(sig, start, end, mean, std);
-                let l = adaptive_lower_threshold_zscore(sig, start, end, mean, std);
+                let u = adaptive_threshold_zscore(sig, start, end, mean, std, &upper_params);
+                let l = adaptive_lower_threshold_zscore(sig, start, end, mean, std, &lower_params);
                 (u, l, mean, std)
             }
             StrategyMode::LongOnly => {
-                let u = adaptive_threshold(sig, start, end);
+                let u = adaptive_threshold(sig, start, end, &upper_params);
                 (u, 0.0, 0.0, 1.0)
             }
         };
@@ -1790,7 +2237,7 @@ impl Backtester {
         let mut valid_count = 0.0;
         let total_symbols = self.cache.len() as f64;
 
-        for data in self.cache.values() {
+        for (sym, data) in &self.cache {
             if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
                 let sig_slice = signal.as_slice().unwrap();
                 let ret_slice = data.returns.as_slice().unwrap();
@@ -1799,7 +2246,7 @@ impl Backtester {
                     continue;
                 }
                 let split_idx = (len as f64 * 0.7).max(20.0) as usize;
-                let score = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx, mode);
+                let score = self.pnl_fitness(sig_slice, ret_slice, 0, split_idx, mode, sym);
                 total_score += score;
                 valid_count += 1.0;
             }
@@ -1828,7 +2275,7 @@ impl Backtester {
         let mut total_score = 0.0;
         let mut count = 0.0;
 
-        for data in self.cache.values() {
+        for (sym, data) in &self.cache {
             if let Some(signal) = self.vm.execute(&genome.tokens, &data.features) {
                 let sig_slice = signal.as_slice().unwrap();
                 let ret_slice = data.returns.as_slice().unwrap();
@@ -1840,7 +2287,7 @@ impl Backtester {
                 if split_idx >= len {
                     continue;
                 }
-                let score = self.pnl_fitness(sig_slice, ret_slice, split_idx, len, mode);
+                let score = self.pnl_fitness(sig_slice, ret_slice, split_idx, len, mode, sym);
                 total_score += score;
                 count += 1.0;
             }
@@ -1863,20 +2310,25 @@ fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 
-/// Compute an adaptive sigmoid threshold as the 70th percentile of sigmoid(signal),
-/// clamped to [0.52, 0.70]. Goes long on top ~30% of signals.
-fn adaptive_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
+/// Compute an adaptive sigmoid threshold as a percentile of sigmoid(signal),
+/// clamped to the configured range.
+fn adaptive_threshold(
+    sig: &[f64],
+    start: usize,
+    end: usize,
+    params: &ResolvedThresholdParams,
+) -> f64 {
     let mut vals: Vec<f64> = (start..end).map(|i| sigmoid(sig[i])).collect();
     vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     if vals.is_empty() {
         return 0.65;
     }
-    let idx = ((vals.len() as f64) * 0.70) as usize;
-    vals[idx.min(vals.len() - 1)].clamp(0.52, 0.70)
+    let idx = ((vals.len() as f64) * params.percentile) as usize;
+    vals[idx.min(vals.len() - 1)].clamp(params.clamp_lo, params.clamp_hi)
 }
 
-/// Compute an adaptive lower sigmoid threshold as the 30th percentile of sigmoid(signal),
-/// clamped to [0.20, 0.48]. Superseded by z-score thresholds for LongShort (P3.5).
+/// Compute an adaptive lower sigmoid threshold as a percentile of sigmoid(signal).
+/// Superseded by z-score thresholds for LongShort (P3.5).
 /// Retained for LongOnly backward compatibility and test comparison.
 #[allow(dead_code)]
 fn adaptive_lower_threshold(sig: &[f64], start: usize, end: usize) -> f64 {
@@ -1904,34 +2356,42 @@ fn zscore_params(sig: &[f64], start: usize, end: usize) -> (f64, f64) {
     (mean, std)
 }
 
-/// Compute adaptive upper threshold as 70th percentile of z-scored signal,
-/// clamped to [0.1, 2.0]. For LongShort mode (raw signal, no sigmoid).
-fn adaptive_threshold_zscore(sig: &[f64], start: usize, end: usize, mean: f64, std: f64) -> f64 {
+/// Compute adaptive upper threshold as a configurable percentile of z-scored signal,
+/// clamped to the configured range. For LongShort mode (raw signal, no sigmoid).
+fn adaptive_threshold_zscore(
+    sig: &[f64],
+    start: usize,
+    end: usize,
+    mean: f64,
+    std: f64,
+    params: &ResolvedThresholdParams,
+) -> f64 {
     let mut zvals: Vec<f64> = (start..end).map(|i| (sig[i] - mean) / std).collect();
     zvals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     if zvals.is_empty() {
         return 0.5;
     }
-    let idx = ((zvals.len() as f64) * 0.70) as usize;
-    zvals[idx.min(zvals.len() - 1)].clamp(0.1, 2.0)
+    let idx = ((zvals.len() as f64) * params.percentile) as usize;
+    zvals[idx.min(zvals.len() - 1)].clamp(params.clamp_lo, params.clamp_hi)
 }
 
-/// Compute adaptive lower threshold as 30th percentile of z-scored signal,
-/// clamped to [-2.0, -0.1]. For LongShort mode (raw signal, no sigmoid).
+/// Compute adaptive lower threshold as a configurable percentile of z-scored signal,
+/// clamped to the configured range. For LongShort mode (raw signal, no sigmoid).
 fn adaptive_lower_threshold_zscore(
     sig: &[f64],
     start: usize,
     end: usize,
     mean: f64,
     std: f64,
+    params: &ResolvedThresholdParams,
 ) -> f64 {
     let mut zvals: Vec<f64> = (start..end).map(|i| (sig[i] - mean) / std).collect();
     zvals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     if zvals.is_empty() {
         return -0.5;
     }
-    let idx = ((zvals.len() as f64) * 0.30) as usize;
-    zvals[idx.min(zvals.len() - 1)].clamp(-2.0, -0.1)
+    let idx = ((zvals.len() as f64) * params.percentile) as usize;
+    zvals[idx.min(zvals.len() - 1)].clamp(params.clamp_lo, params.clamp_hi)
 }
 
 #[allow(dead_code)]
@@ -2012,15 +2472,24 @@ impl Backtester {
                 .min(features.shape()[2]);
 
             // LongShort: z-score thresholds; LongOnly: sigmoid thresholds
+            let upper_params = self.threshold_config.resolve_upper(symbol, mode);
+            let lower_params = self.threshold_config.resolve_lower(symbol);
             let (upper, lower, z_mean, z_std) = match mode {
                 StrategyMode::LongShort => {
                     let (mean, std) = zscore_params(sig_slice, 0, len);
-                    let u = adaptive_threshold_zscore(sig_slice, 0, len, mean, std);
-                    let l = adaptive_lower_threshold_zscore(sig_slice, 0, len, mean, std);
+                    let u = adaptive_threshold_zscore(sig_slice, 0, len, mean, std, &upper_params);
+                    let l = adaptive_lower_threshold_zscore(
+                        sig_slice,
+                        0,
+                        len,
+                        mean,
+                        std,
+                        &lower_params,
+                    );
                     (u, l, mean, std)
                 }
                 StrategyMode::LongOnly => {
-                    let u = adaptive_threshold(sig_slice, 0, len);
+                    let u = adaptive_threshold(sig_slice, 0, len, &upper_params);
                     (u, 0.0, 0.0, 1.0)
                 }
             };
@@ -2610,8 +3079,18 @@ mod tests {
         // Symmetric signal centered at 0 → upper > 0, lower < 0
         let sig: Vec<f64> = (-50..=50).map(|i| i as f64 * 0.1).collect(); // -5.0 to 5.0
         let (mean, std) = zscore_params(&sig, 0, sig.len());
-        let upper = adaptive_threshold_zscore(&sig, 0, sig.len(), mean, std);
-        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std);
+        let upper_p = ResolvedThresholdParams {
+            percentile: 0.70,
+            clamp_lo: 0.1,
+            clamp_hi: 2.0,
+        };
+        let lower_p = ResolvedThresholdParams {
+            percentile: 0.30,
+            clamp_lo: -2.0,
+            clamp_hi: -0.1,
+        };
+        let upper = adaptive_threshold_zscore(&sig, 0, sig.len(), mean, std, &upper_p);
+        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std, &lower_p);
 
         assert!(
             upper > 0.0,
@@ -2647,8 +3126,18 @@ mod tests {
 
         // Z-score path: should produce both longs and shorts
         let (mean, std) = zscore_params(&sig, 0, sig.len());
-        let upper = adaptive_threshold_zscore(&sig, 0, sig.len(), mean, std);
-        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std);
+        let upper_p = ResolvedThresholdParams {
+            percentile: 0.70,
+            clamp_lo: 0.1,
+            clamp_hi: 2.0,
+        };
+        let lower_p = ResolvedThresholdParams {
+            percentile: 0.30,
+            clamp_lo: -2.0,
+            clamp_hi: -0.1,
+        };
+        let upper = adaptive_threshold_zscore(&sig, 0, sig.len(), mean, std, &upper_p);
+        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std, &lower_p);
 
         let mut zs_long = 0;
         let mut zs_short = 0;
@@ -2692,7 +3181,12 @@ mod tests {
     fn zscore_longonly_unchanged() {
         // Verify that long_only path still uses sigmoid (not z-score)
         let sig = vec![0.5, -0.3, 1.2, -0.8, 0.1];
-        let upper_sigmoid = adaptive_threshold(&sig, 0, sig.len());
+        let params = ResolvedThresholdParams {
+            percentile: 0.70,
+            clamp_lo: 0.52,
+            clamp_hi: 0.80,
+        };
+        let upper_sigmoid = adaptive_threshold(&sig, 0, sig.len(), &params);
 
         // sigmoid(0.5) ≈ 0.622, sigmoid(-0.3) ≈ 0.426, etc.
         // Verify sigmoid values are in (0, 1)
@@ -2701,10 +3195,10 @@ mod tests {
             assert!(sv > 0.0 && sv < 1.0, "sigmoid({}) = {} not in (0,1)", s, sv);
         }
 
-        // Upper threshold should be in sigmoid range
+        // Upper threshold should be in sigmoid range (now clamp_hi = 0.80)
         assert!(
-            upper_sigmoid >= 0.52 && upper_sigmoid <= 0.70,
-            "sigmoid upper should be in [0.52, 0.70], got {}",
+            upper_sigmoid >= 0.52 && upper_sigmoid <= 0.80,
+            "sigmoid upper should be in [0.52, 0.80], got {}",
             upper_sigmoid
         );
     }
@@ -2714,7 +3208,12 @@ mod tests {
         // Very skewed signal (all positive) → lower z-threshold should clamp to -0.1
         let sig: Vec<f64> = (1..=100).map(|i| i as f64).collect(); // 1.0 to 100.0
         let (mean, std) = zscore_params(&sig, 0, sig.len());
-        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std);
+        let lower_p = ResolvedThresholdParams {
+            percentile: 0.30,
+            clamp_lo: -2.0,
+            clamp_hi: -0.1,
+        };
+        let lower = adaptive_lower_threshold_zscore(&sig, 0, sig.len(), mean, std, &lower_p);
 
         // 30th percentile of z-scores for uniform-ish positive data:
         // z-scores range from (1-50.5)/29.01 ≈ -1.71 to (100-50.5)/29.01 ≈ 1.71
@@ -2725,5 +3224,254 @@ mod tests {
             "lower should be clamped to [-2.0, -0.1], got {}",
             lower
         );
+    }
+
+    // ── P4: UtilizationTracker tests ──────────────────────────────────────
+
+    #[test]
+    fn utilization_tracker_push_and_ratios() {
+        let mut tracker = UtilizationTracker::new(50);
+        // total=100, active=60, long=40, short=20
+        tracker.push(100, 60, 40, 20);
+        assert!((tracker.utilization() - 0.60).abs() < 1e-10);
+        assert!((tracker.long_ratio() - (40.0 / 60.0)).abs() < 1e-10);
+        assert!((tracker.short_ratio() - (20.0 / 60.0)).abs() < 1e-10);
+
+        // Second generation: total=200, active=100, long=30, short=70
+        tracker.push(200, 100, 30, 70);
+        // Aggregated: total=300, active=160, long=70, short=90
+        assert!((tracker.utilization() - (160.0 / 300.0)).abs() < 1e-10);
+        assert!((tracker.long_ratio() - (70.0 / 160.0)).abs() < 1e-10);
+        assert!((tracker.short_ratio() - (90.0 / 160.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn utilization_tracker_window_eviction() {
+        let mut tracker = UtilizationTracker::new(3);
+        tracker.push(100, 50, 30, 20);
+        tracker.push(100, 50, 30, 20);
+        tracker.push(100, 50, 30, 20);
+        assert_eq!(tracker.len(), 3);
+
+        // Push a 4th entry — oldest should be evicted
+        tracker.push(100, 100, 100, 0);
+        assert_eq!(tracker.len(), 3);
+        // Now: [(100,50,30,20), (100,50,30,20), (100,100,100,0)]
+        // total=300, active=200, long=160, short=40
+        assert!((tracker.utilization() - (200.0 / 300.0)).abs() < 1e-10);
+        assert!((tracker.long_ratio() - (160.0 / 200.0)).abs() < 1e-10);
+        assert!((tracker.short_ratio() - (40.0 / 200.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn utilization_tracker_empty() {
+        let tracker = UtilizationTracker::new(50);
+        assert!((tracker.utilization() - 0.0).abs() < 1e-10);
+        assert!((tracker.long_ratio() - 0.0).abs() < 1e-10);
+        assert!((tracker.short_ratio() - 0.0).abs() < 1e-10);
+        assert_eq!(tracker.len(), 0);
+    }
+
+    #[test]
+    fn walk_forward_step_has_utilization_fields() {
+        let step = WalkForwardStep {
+            step: 0,
+            train_start: 0,
+            train_end: 100,
+            test_start: 120,
+            test_end: 220,
+            psr: 1.5,
+            trade_count: 10,
+            active_bars: 60,
+            long_bars: 40,
+            short_bars: 20,
+            upper_threshold: 0.55,
+            lower_threshold: -0.55,
+        };
+        assert_eq!(step.long_bars, 40);
+        assert_eq!(step.short_bars, 20);
+        // Verify serialization includes new fields
+        let json = serde_json::to_value(&step).unwrap();
+        assert!(json.get("long_bars").is_some());
+        assert!(json.get("short_bars").is_some());
+        assert_eq!(json["long_bars"].as_u64().unwrap(), 40);
+        assert_eq!(json["short_bars"].as_u64().unwrap(), 20);
+    }
+
+    // ── P4: ThresholdConfig tests ─────────────────────────────────────────
+
+    #[test]
+    fn threshold_config_parse_defaults() {
+        let cfg = ThresholdConfig::default();
+        assert!((cfg.long_only.percentile_upper - 70.0).abs() < 1e-10);
+        assert!((cfg.long_only.clamp_upper.0 - 0.52).abs() < 1e-10);
+        assert!((cfg.long_only.clamp_upper.1 - 0.80).abs() < 1e-10);
+        assert!((cfg.long_short.percentile_upper - 70.0).abs() < 1e-10);
+        assert!((cfg.long_short.percentile_lower - 30.0).abs() < 1e-10);
+        assert!((cfg.long_short.clamp_upper.0 - 0.1).abs() < 1e-10);
+        assert!((cfg.long_short.clamp_upper.1 - 2.0).abs() < 1e-10);
+        assert!((cfg.long_short.clamp_lower.0 - (-2.0)).abs() < 1e-10);
+        assert!((cfg.long_short.clamp_lower.1 - (-0.1)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn threshold_config_parse_overrides() {
+        let yaml = r#"
+long_only:
+  percentile_upper: 70
+  clamp_upper: [0.52, 0.80]
+long_short:
+  percentile_upper: 70
+  percentile_lower: 30
+  clamp_upper: [0.1, 2.0]
+  clamp_lower: [-2.0, -0.1]
+overrides:
+  NVDA:
+    long_only:
+      clamp_upper: [0.52, 0.85]
+  QQQ:
+    long_short:
+      percentile_upper: 65
+      percentile_lower: 35
+"#;
+        let cfg: ThresholdConfig = serde_yaml::from_str(yaml).unwrap();
+
+        // NVDA long_only override
+        let nvda_upper = cfg.resolve_upper("NVDA", StrategyMode::LongOnly);
+        assert!((nvda_upper.clamp_hi - 0.85).abs() < 1e-10);
+        assert!((nvda_upper.clamp_lo - 0.52).abs() < 1e-10);
+        assert!((nvda_upper.percentile - 0.70).abs() < 1e-10);
+
+        // QQQ long_short override
+        let qqq_upper = cfg.resolve_upper("QQQ", StrategyMode::LongShort);
+        assert!((qqq_upper.percentile - 0.65).abs() < 1e-10);
+        let qqq_lower = cfg.resolve_lower("QQQ");
+        assert!((qqq_lower.percentile - 0.35).abs() < 1e-10);
+    }
+
+    #[test]
+    fn threshold_config_fallback() {
+        let cfg = ThresholdConfig::default();
+        // Unknown symbol falls back to global defaults
+        let upper = cfg.resolve_upper("UNKNOWN_SYM", StrategyMode::LongOnly);
+        assert!((upper.percentile - 0.70).abs() < 1e-10);
+        assert!((upper.clamp_lo - 0.52).abs() < 1e-10);
+        assert!((upper.clamp_hi - 0.80).abs() < 1e-10);
+
+        let ls_upper = cfg.resolve_upper("UNKNOWN_SYM", StrategyMode::LongShort);
+        assert!((ls_upper.percentile - 0.70).abs() < 1e-10);
+        assert!((ls_upper.clamp_lo - 0.1).abs() < 1e-10);
+
+        let ls_lower = cfg.resolve_lower("UNKNOWN_SYM");
+        assert!((ls_lower.percentile - 0.30).abs() < 1e-10);
+        assert!((ls_lower.clamp_lo - (-2.0)).abs() < 1e-10);
+    }
+
+    // ── P4: Dynamic Threshold Adjustment tests ────────────────────────────
+
+    fn make_tracker(util_pct: f64, long_pct: f64, entries: usize) -> UtilizationTracker {
+        let mut tracker = UtilizationTracker::new(50);
+        for _ in 0..entries {
+            let total = 1000_u32;
+            let active = (total as f64 * util_pct) as u32;
+            let long = (active as f64 * long_pct) as u32;
+            let short = active - long;
+            tracker.push(total, active, long, short);
+        }
+        tracker
+    }
+
+    #[test]
+    fn adjust_threshold_low_util_relaxes() {
+        let mut cfg = ThresholdConfig::default();
+        // 20% utilization — below 30% band → should relax
+        let tracker = make_tracker(0.20, 0.50, 20);
+        let changed = adjust_threshold_params(&mut cfg, "AAPL", StrategyMode::LongOnly, &tracker);
+        assert!(changed, "low utilization should trigger adjustment");
+        let resolved = cfg.resolve_upper("AAPL", StrategyMode::LongOnly);
+        // Percentile should have decreased (relaxed) from 70 toward 50
+        assert!(
+            resolved.percentile < 0.70,
+            "percentile should decrease: got {}",
+            resolved.percentile
+        );
+    }
+
+    #[test]
+    fn adjust_threshold_high_util_tightens() {
+        let mut cfg = ThresholdConfig::default();
+        // 90% utilization — above 80% band → should tighten
+        let tracker = make_tracker(0.90, 0.50, 20);
+        let changed = adjust_threshold_params(&mut cfg, "AAPL", StrategyMode::LongOnly, &tracker);
+        assert!(changed, "high utilization should trigger adjustment");
+        let resolved = cfg.resolve_upper("AAPL", StrategyMode::LongOnly);
+        // Percentile should have increased (tightened) from 70 toward 85
+        assert!(
+            resolved.percentile > 0.70,
+            "percentile should increase: got {}",
+            resolved.percentile
+        );
+    }
+
+    #[test]
+    fn adjust_threshold_in_band_noop() {
+        let mut cfg = ThresholdConfig::default();
+        // 55% utilization — within [40, 70] band → no change
+        let tracker = make_tracker(0.55, 0.50, 20);
+        let changed = adjust_threshold_params(&mut cfg, "AAPL", StrategyMode::LongOnly, &tracker);
+        assert!(
+            !changed,
+            "in-band utilization should not trigger adjustment"
+        );
+    }
+
+    #[test]
+    fn adjust_threshold_asymmetric_shorts() {
+        let mut cfg = ThresholdConfig::default();
+        // 50% utilization but 90% long, 10% short → asymmetric
+        let tracker = make_tracker(0.50, 0.90, 20);
+        let changed = adjust_threshold_params(&mut cfg, "SPY", StrategyMode::LongShort, &tracker);
+        assert!(changed, "asymmetric long/short should trigger adjustment");
+        let resolved_lower = cfg.resolve_lower("SPY");
+        // Lower percentile should have increased (toward 50) to make shorting easier
+        assert!(
+            resolved_lower.percentile > 0.30,
+            "lower percentile should increase: got {}",
+            resolved_lower.percentile
+        );
+    }
+
+    #[test]
+    fn adjust_threshold_respects_bounds() {
+        let mut cfg = ThresholdConfig::default();
+        // Start with percentile at ceiling and try to push higher
+        cfg.overrides.insert(
+            "TEST".to_string(),
+            ThresholdOverride {
+                long_only: Some(LongOnlyThresholdOverride {
+                    percentile_upper: Some(85.0), // already at ceiling
+                    clamp_upper: None,
+                }),
+                long_short: None,
+            },
+        );
+        let tracker = make_tracker(0.90, 0.50, 20);
+        let changed = adjust_threshold_params(&mut cfg, "TEST", StrategyMode::LongOnly, &tracker);
+        // Should not change since we're already at ceiling
+        assert!(!changed, "at ceiling should not change");
+        let resolved = cfg.resolve_upper("TEST", StrategyMode::LongOnly);
+        assert!(
+            (resolved.percentile - 0.85).abs() < 1e-10,
+            "should stay at 85%"
+        );
+    }
+
+    #[test]
+    fn adjust_threshold_not_enough_data() {
+        let mut cfg = ThresholdConfig::default();
+        // Only 5 entries (< 10 minimum)
+        let tracker = make_tracker(0.10, 0.50, 5);
+        let changed = adjust_threshold_params(&mut cfg, "AAPL", StrategyMode::LongOnly, &tracker);
+        assert!(!changed, "insufficient data should not trigger adjustment");
     }
 }

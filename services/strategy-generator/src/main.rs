@@ -14,7 +14,10 @@ mod genome_decoder;
 mod llm_oracle;
 
 use backtest::StrategyMode;
-use backtest::{is_sentinel, sentinel_label, Backtester, WalkForwardConfig};
+use backtest::{
+    adjust_threshold_params, is_sentinel, sentinel_label, Backtester, ThresholdConfig,
+    UtilizationTracker, WalkForwardConfig,
+};
 use backtest_engine::config::{FactorConfig, MultiTimeframeFactorConfig};
 use genetic::{AlpsGA, PromotionStats};
 use llm_oracle::LlmOracleConfig;
@@ -171,6 +174,8 @@ struct GeneratorConfig {
     exchanges: Vec<ExchangeConfig>,
     #[serde(default)]
     llm_oracle: LlmOracleConfig,
+    #[serde(default)]
+    threshold_config: ThresholdConfig,
 }
 
 #[tokio::main]
@@ -199,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
     // Load generator config
     let config_path =
         env::var("GENERATOR_CONFIG").unwrap_or_else(|_| "config/generator.yaml".to_string());
-    let (exchange_configs, oracle_config) = load_exchange_configs(&config_path);
+    let (exchange_configs, oracle_config, threshold_config) = load_exchange_configs(&config_path);
     info!(
         "Loaded {} exchange configs: {:?}",
         exchange_configs.len(),
@@ -252,6 +257,7 @@ async fn main() -> anyhow::Result<()> {
                 let redis_url = redis_url.clone();
                 let config = ec.clone();
                 let oracle_cfg = oracle_config.clone();
+                let thresh_cfg = threshold_config.clone();
                 let sym = symbol.clone();
                 let ex_name = ec.exchange.clone();
                 let handle = tokio::spawn(async move {
@@ -260,6 +266,7 @@ async fn main() -> anyhow::Result<()> {
                         &redis_url,
                         config,
                         oracle_cfg,
+                        thresh_cfg,
                         sym.clone(),
                         mode,
                     )
@@ -284,7 +291,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig) {
+fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig, ThresholdConfig) {
     match std::fs::read_to_string(path) {
         Ok(content) => match serde_yaml::from_str::<GeneratorConfig>(&content) {
             Ok(cfg) => {
@@ -292,11 +299,22 @@ fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig) {
                     "LLM oracle config: enabled={}, provider={}, model={}",
                     cfg.llm_oracle.enabled, cfg.llm_oracle.provider, cfg.llm_oracle.model
                 );
-                (cfg.exchanges, cfg.llm_oracle)
+                info!(
+                    "Threshold config: LO upper_pct={}, LS upper_pct={}/lower_pct={}, {} overrides",
+                    cfg.threshold_config.long_only.percentile_upper,
+                    cfg.threshold_config.long_short.percentile_upper,
+                    cfg.threshold_config.long_short.percentile_lower,
+                    cfg.threshold_config.overrides.len()
+                );
+                (cfg.exchanges, cfg.llm_oracle, cfg.threshold_config)
             }
             Err(e) => {
                 warn!("Failed to parse {}: {}. Falling back to default.", path, e);
-                (default_exchange_configs(), LlmOracleConfig::default())
+                (
+                    default_exchange_configs(),
+                    LlmOracleConfig::default(),
+                    ThresholdConfig::default(),
+                )
             }
         },
         Err(e) => {
@@ -323,6 +341,7 @@ fn load_exchange_configs(path: &str) -> (Vec<ExchangeConfig>, LlmOracleConfig) {
                     walk_forward: None,
                 }],
                 LlmOracleConfig::default(),
+                ThresholdConfig::default(),
             )
         }
     }
@@ -455,6 +474,7 @@ async fn run_symbol_evolution(
     redis_url: &str,
     config: ExchangeConfig,
     oracle_config: LlmOracleConfig,
+    threshold_config: ThresholdConfig,
     symbol: String,
     mode: StrategyMode,
 ) -> anyhow::Result<()> {
@@ -520,11 +540,12 @@ async fn run_symbol_evolution(
         exchange_lower, symbol, mode_str
     );
 
-    let mut backtester = Backtester::new(
+    let mut backtester = Backtester::with_threshold_config(
         pool.clone(),
         factor_config,
         exchange.clone(),
         resolution.clone(),
+        threshold_config,
     );
     let mut ga = AlpsGA::new(feat_offset);
 
@@ -762,6 +783,8 @@ async fn run_symbol_evolution(
 
     // TFT tracker + oracle state for P2 LLM-guided mutation
     let mut tft_tracker = TftTracker::new(50);
+    // P4: Utilization tracker for adaptive threshold tuning
+    let mut util_tracker = UtilizationTracker::new(50);
     let mut last_oracle_gen: usize = 0;
     let mut last_oracle_time = std::time::Instant::now();
     let mut oracle_invocations: usize = 0;
@@ -852,6 +875,38 @@ async fn run_symbol_evolution(
             // Track TFT rate for LLM oracle trigger
             let is_tft = wf_result.failure_mode.as_deref() == Some("too_few_trades");
             tft_tracker.push(is_tft);
+
+            // P4: Feed utilization metrics from walk-forward steps
+            let wf_total_bars: u32 = wf_result
+                .steps
+                .iter()
+                .map(|s| (s.test_end - s.test_start) as u32)
+                .sum();
+            let wf_active_bars: u32 = wf_result.steps.iter().map(|s| s.active_bars).sum();
+            let wf_long_bars: u32 = wf_result.steps.iter().map(|s| s.long_bars).sum();
+            let wf_short_bars: u32 = wf_result.steps.iter().map(|s| s.short_bars).sum();
+            util_tracker.push(wf_total_bars, wf_active_bars, wf_long_bars, wf_short_bars);
+
+            // P4: Adaptive threshold adjustment every 50 generations
+            if gen > 0
+                && gen.is_multiple_of(50)
+                && adjust_threshold_params(
+                    &mut backtester.threshold_config,
+                    &symbol,
+                    mode,
+                    &util_tracker,
+                )
+            {
+                let resolved_upper = backtester.threshold_config.resolve_upper(&symbol, mode);
+                info!(
+                    "[{}:{}:{}] Gen {} — threshold adjusted: util={:.2}%, long_r={:.2}%, short_r={:.2}%, upper_pct={:.1}",
+                    exchange, symbol, mode_str, gen,
+                    util_tracker.utilization() * 100.0,
+                    util_tracker.long_ratio() * 100.0,
+                    util_tracker.short_ratio() * 100.0,
+                    resolved_upper.percentile * 100.0,
+                );
+            }
 
             // ═══ LLM Oracle Trigger Check ═══
             let mut oracle_injected_this_gen = 0usize;
@@ -1017,6 +1072,12 @@ async fn run_symbol_evolution(
                     log: &oracle_log,
                     cross_symbol_elites: &oracle_cross_elites,
                 }),
+                "utilization": {
+                    "long_ratio": util_tracker.long_ratio(),
+                    "short_ratio": util_tracker.short_ratio(),
+                    "total_utilization": util_tracker.utilization(),
+                    "window": util_tracker.len(),
+                },
                 "meta": {
                     "name": format!("{}-{}-Gen{}-PSR{:.2}", symbol, mode_str, gen, best.fitness),
                     "description": format!("{} {} Evolved Strategy. IS PSR: {:.4}, OOS PSR: {:.4}", symbol, mode_str, best.fitness, oos_psr)
