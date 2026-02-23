@@ -191,20 +191,13 @@ async fn main() {
         }
     });
 
-    // Rate limiting configuration
+    // Rate limiting on auth endpoint only (anti-brute-force)
     let auth_governor_conf = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
             .per_second(3)
             .burst_size(10)
             .finish()
             .expect("Failed to build auth rate limiter config"),
-    );
-    let api_governor_conf = Arc::new(
-        tower_governor::governor::GovernorConfigBuilder::default()
-            .per_second(10)
-            .burst_size(50)
-            .finish()
-            .expect("Failed to build API rate limiter config"),
     );
 
     // Build App — split into public/protected route groups
@@ -254,10 +247,7 @@ async fn main() {
             "/api/v1/config/accounts/:account_id",
             axum::routing::put(update_trading_account),
         )
-        .layer(axum::middleware::from_fn(jwt_auth::jwt_middleware))
-        .layer(tower_governor::GovernorLayer {
-            config: api_governor_conf,
-        });
+        .layer(axum::middleware::from_fn(jwt_auth::jwt_middleware));
 
     // CORS configuration from env (comma-separated origins, default: localhost:3000)
     let cors_origins = std::env::var("CORS_ALLOWED_ORIGINS")
