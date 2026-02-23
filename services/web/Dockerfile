@@ -12,6 +12,9 @@ RUN npm ci
 # Copy source code
 COPY services/web .
 
+# Override .env.local so rewrites use Docker-internal gateway hostname
+ENV API_URL=http://gateway:8080
+
 # Build for production (output: standalone)
 RUN npm run build
 
