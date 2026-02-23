@@ -21,6 +21,8 @@ help:
 	@echo "  make audit      - Run cargo-audit and npm audit"
 
 setup:
+	@echo ">>> Installing git hooks..."
+	git config core.hooksPath .githooks
 	@echo ">>> Verifying Rust Toolchain..."
 	cargo check --workspace
 	@$(MAKE) web-setup
