@@ -8,7 +8,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 
 # Run as non-root user
-RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
+    mkdir -p /app/.com.futunn.FutuOpenD && \
+    chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8088
