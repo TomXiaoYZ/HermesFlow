@@ -1,21 +1,44 @@
 ---
-description: Git workflow and commit conventions
+description: Git workflow and commit conventions — enforces dev-agent-skills plugin workflows
 globs: ["**/*"]
 ---
 
 # Git Workflow
 
-## Commit Messages
-Use conventional commits:
-- `feat:` - New feature
-- `fix:` - Bug fix
-- `refactor:` - Code restructuring
-- `test:` - Adding/updating tests
-- `docs:` - Documentation only
-- `chore:` - Build, CI, dependencies
-- `perf:` - Performance improvement
+## MANDATORY: Use dev-agent-skills for All Git Operations
 
-Format: `type: concise description of WHY, not what`
+Every git commit, PR creation, PR review, and PR merge **MUST** use the corresponding `github-workflow` skill. These are not optional suggestions — they are the required process.
+
+| Operation | Required Skill | Trigger |
+|-----------|---------------|---------|
+| Committing changes | `github-workflow:git-commit` | Any `git commit` |
+| Creating a PR | `github-workflow:github-pr-creation` | Any PR creation |
+| Reviewing PR comments | `github-workflow:github-pr-review` | Any PR review feedback |
+| Merging a PR | `github-workflow:github-pr-merge` | Any PR merge |
+
+## Commit Messages
+
+Use Conventional Commits with **required scope** (kebab-case):
+
+```
+type(scope): subject
+```
+
+- `feat(scope):` - New feature
+- `fix(scope):` - Bug fix
+- `refactor(scope):` - Code restructuring
+- `test(scope):` - Adding/updating tests
+- `docs(scope):` - Documentation only
+- `chore(scope):` - Build, CI, dependencies
+- `perf(scope):` - Performance improvement
+- `security(scope):` - Vulnerability fixes or hardening
+
+### Commit Rules
+- Scope is **required** — use service/module name: `gateway`, `data-engine`, `execution-engine`, `web`, `strategy-generator`, etc.
+- Subject: present tense imperative verb, no period, max 50 chars
+- **NEVER** use generic messages ("update code", "fix bug", "changes")
+- Use HEREDOC for multi-line commits
+- Group related changes into a single focused commit
 
 ## Before Committing
 1. `cargo clippy --workspace -- -D warnings` passes
@@ -25,10 +48,38 @@ Format: `type: concise description of WHY, not what`
 5. No debug println!/console.log in production code
 
 ## Pull Request Workflow
-1. Analyze full commit history with `git diff main...HEAD`
-2. Keep PR title under 70 characters
-3. Use description for details
-4. Include test plan
+
+**MUST use `github-workflow:github-pr-creation` skill**, which enforces:
+1. Confirm target branch with user
+2. Search for task documentation
+3. Analyze commits and verify task completion
+4. Run tests (must pass before creating PR)
+5. Generate Conventional Commits title: `type(scope): description`
+6. Generate PR body from template
+7. Check available labels with `gh label list` and suggest matches
+8. Check open milestones and assign if applicable
+9. Show full PR content for user approval before creating
+
+## PR Review Workflow
+
+**MUST use `github-workflow:github-pr-review` skill**, which enforces:
+- Severity-based comment classification: CRITICAL > HIGH > MEDIUM > LOW
+- CRITICAL/HIGH: must fix (separate commits per fix)
+- MEDIUM/LOW: batch into single `style:` commit
+- Reply to every thread with standard templates (no emojis)
+- Run tests before pushing
+- Submit formal review via `gh pr review`
+
+## PR Merge Workflow
+
+**MUST use `github-workflow:github-pr-merge` skill**, which enforces:
+- Verify all review comments have replies (STOP if unreplied)
+- Check milestone assignment (warn if missing)
+- Run tests, lint, CI checks (all must pass)
+- Confirm with user before merging
+- Use merge commit (`--merge`), never squash/rebase
+- Delete feature branch after merge
+- Check milestone completion after merge
 
 ## Branch Naming
 - `feat/description` - Features

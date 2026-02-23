@@ -1,7 +1,7 @@
 # HermesFlow Strategy Evolution — Development Roadmap
 
-**Date**: 2026-02-22
-**Current state**: P0–P4 deployed, P5–P6 planned
+**Date**: 2026-02-23
+**Current state**: P0–P5 deployed, P6 designed (3 phases)
 
 ---
 
@@ -14,8 +14,10 @@
 | **P2** | LLM-Guided Mutation | Deployed | Accelerate convergence with domain-aware mutation |
 | **P3** | Multi-Timeframe Factor Stacking | Deployed | Add temporal depth (1h + 4h + 1d factors) |
 | **P4** | Adaptive Threshold Tuning | Deployed | Per-symbol threshold optimization with utilization feedback |
-| **P5** | Strategy Ensemble & Portfolio | Planned | Combine top strategies into portfolio allocation |
-| **P6** | Live Paper Trading Integration | Planned | Forward-test top strategies against real market |
+| **P5** | Strategy Ensemble & Portfolio | Deployed | HRP portfolio ensemble with dynamic weights and crowding detection |
+| **P6a** | Foundation Hardening | Designed | Atomic blocks, protected-op penalty, EWMA covariance, rayon isolation |
+| **P6b** | Paper Trading + Deadzone | Designed | Strategy deployment pipeline, paper accounts, turnover deadzone |
+| **P6c** | MCTS + Execution | Designed | MCTS symbolic regression, execution optimization, multi-exchange |
 
 ---
 
@@ -147,61 +149,88 @@ The original plan discussed three approaches (genome encoding, grid search, Baye
 
 ---
 
-## P5 — Strategy Ensemble & Portfolio (PLANNED)
+## P5 — Strategy Ensemble & Portfolio (COMPLETE)
 
-**Goal**: Combine top-performing strategies from multiple symbols into a diversified portfolio with allocation weights.
+**Commit**: `5fde72b`
+**Report**: `docs/P5_IMPLEMENTATION_REPORT.md`
+**LoC**: ~1,200
 
-### Rationale
-- Individual strategies have varying Sharpe ratios and correlation profiles
-- An ensemble of 5-10 uncorrelated strategies can achieve portfolio Sharpe > any individual
-- Walk-forward validated strategies provide reliable OOS Sharpe estimates
+### Delivered
 
-### Design Sketch
+#### HRP Portfolio Allocation (Pure-Math Implementation)
+- 5-stage Hierarchical Risk Parity pipeline: correlation → distance → single-linkage clustering → optimal leaf ordering → recursive bisection
+- No external optimization libraries — implemented from first principles using `ndarray`
+- Pearson correlation matrix with minimum 30-bar data requirement
 
-1. **Strategy selection**: Top N strategies per symbol with OOS PSR > 1.5 and valid walk-forward
-2. **Correlation matrix**: Compute pairwise return correlation across strategies
-3. **Portfolio optimization**: Mean-variance optimization (or risk parity) for allocation weights
-4. **Rebalancing**: Re-run selection + optimization weekly as new strategies evolve
-5. **Output**: Portfolio definition file for `strategy-engine` (live execution)
+#### Dynamic Weight Adjustment
+- Momentum tilt: recent Sharpe ratio bias (α = 0.3)
+- Volatility scaling: inverse realized vol weighting
+- Drawdown dampening: reduce allocation to strategies in drawdown > 10%
+- Crowding detection: penalize strategies with correlation > 0.7
 
-### New Components
-- `services/portfolio-optimizer/` — new Rust service or module within strategy-generator
-- Portfolio optimization: minimum variance, max Sharpe, or risk parity
-- Strategy correlation cache in TimescaleDB
+#### Ensemble Selection & Rebalancing
+- Top-N strategy selection per (exchange, symbol, mode) with OOS PSR > 1.5
+- Shadow equity tracking across rebalance cycles
+- 30-minute rebalance interval (configurable)
+- Full persistence to `portfolio_ensembles` TimescaleDB table
 
-### Estimated Effort
-- New module: ~500-800 LoC
-- Depends on: Sufficient elite strategies (P1+P2 convergence)
+### Tests
+- 45 unit tests covering HRP math, dynamic weights, crowding detection, and rebalance logic
+- 353/353 workspace tests pass
 
 ---
 
-## P6 — Live Paper Trading Integration (PLANNED)
+## P6 — Full-Stack Evolution Upgrade + Live Paper Trading (DESIGNED)
 
-**Goal**: Forward-test evolved strategies against real-time market data before live execution with real capital.
+**Design doc**: `docs/plans/2026-02-23-p6-design.md`
+**Goal**: Harden the evolution engine, validate strategies via paper trading, and upgrade search from heuristic GP to MCTS symbolic regression.
 
-### Rationale
-- Walk-forward validation uses historical data — paper trading validates against live market microstructure
-- Detects issues: slippage, partial fills, market impact, data lag, after-hours gaps
-- Builds confidence before committing real capital
+### Three-Phase Architecture
 
-### Design Sketch
+```
+P6a (Foundation Hardening) → P6b (Paper Trading) → P6c (MCTS + Execution)
+```
 
-1. **Strategy deployment**: Export top walk-forward-validated strategies to `strategy-engine`
-2. **Paper account**: Use IBKR paper trading account (already configured via `ib-gateway`)
-3. **Signal generation**: `strategy-engine` computes VM signals from real-time data
-4. **Paper execution**: `execution-engine` sends orders to paper account
-5. **Performance tracking**: Compare paper PnL vs backtest expectations
-6. **Promotion criteria**: Strategy paper-trades for 20+ trading days with Sharpe > 1.0 → eligible for live capital
+### P6a — Foundation Hardening (8 items)
 
-### Integration Points
-- `strategy-engine` ← strategy definitions from `strategy-generator`
-- `execution-engine` ← signals from `strategy-engine`
-- `data-engine` → real-time data to both engines
+| ID | Component | Service | Description |
+|----|-----------|---------|-------------|
+| E1 | Atomic Semantic Blocks | strategy-generator, backtest-engine | `block_mask` protecting LLM-generated RPN fragments from destructive crossover/mutation |
+| E2 | Protected-Op Penalty | backtest-engine, strategy-generator | Fitness penalty when protection_ratio > 15% to combat deceptive pseudo-signals |
+| E3 | SIMD Vectorization* | backtest-engine | AVX2/NEON batch processing for RPN VM arithmetic (conditional on profiling) |
+| G1 | ndarray Zero-Copy | strategy-generator, backtest-engine | ArrayView + stride manipulation for MTF alignment without memory allocation |
+| G2 | rayon CPU Isolation | strategy-generator | Separate thread pool for CPU-bound fitness evaluation, freeing Tokio for I/O |
+| G3 | rkyv Deserialization* | common, data-engine, strategy-engine | Zero-copy Redis deserialization (conditional on profiling) |
+| F1 | EWMA Covariance | strategy-generator | Exponentially weighted moving average (λ=0.94) replacing equal-weight correlation |
+| F2 | Portfolio Turnover Cost | strategy-generator | Per-venue cost modeling in shadow equity tracking |
 
-### Estimated Effort
-- Mostly integration work, existing services handle the heavy lifting
-- ~300 LoC of glue code + configuration
-- Requires: P5 portfolio allocation for position sizing
+### P6b — Paper Trading + Deadzone (6 items)
+
+| ID | Component | Service | Description |
+|----|-----------|---------|-------------|
+| B1 | Strategy Deployment Pipeline | strategy-engine, strategy-generator | `deployed_strategies` table + VM signal generation from live data |
+| B2 | Paper Account Integration | execution-engine | Paper mode for IBKR, Futu, Solana devnet with isolated tracking tables |
+| B3 | Promotion Criteria | execution-engine | 5-criterion gate (20d, Sharpe>1, <20% deviation, <15% drawdown, >90% fills) |
+| C1 | Turnover Deadzone + L1 | strategy-generator | Dynamic lambda with vol-regime scaling to suppress micro-rebalancing |
+| F3 | Regime-Aware Rebalance | strategy-generator | Volatility-driven frequency: Low/Normal/High → 240/60/15 min |
+| F4 | Ensemble Walk-Forward | strategy-generator | Portfolio-level backtest validation (scheduled daily 03:00 UTC) |
+
+### P6c — MCTS + Execution (4 items)
+
+| ID | Component | Service | Description |
+|----|-----------|---------|-------------|
+| A1 | MCTS Engine | strategy-generator | 2000-3000 LoC new module: UCT selection, LLM policy prior, risk-seeking gradients |
+| A2 | Search Space Constraints | strategy-generator | 30-token limit, legal action masks, discrete constant set |
+| D1 | Execution Optimization | execution-engine | 3 levels: profiling → crossbeam SPSC → core_affinity + io_uring (Linux) |
+| D2 | Multi-Exchange Portfolio | strategy-generator | Cross-venue HRP with daily normalization, per-exchange capital limits |
+
+### New DB Migrations
+- `031_deployed_strategies.sql` — strategy deployment tracking (P6b)
+- `032_paper_trading.sql` — paper trade orders, executions, positions, daily summary (P6b)
+- `033_ensemble_backtest.sql` — ensemble-level backtest results (P6b)
+
+### Multi-Exchange Support
+Execution venues (not data sources): IBKR (US stocks), Binance/OKX/Bybit (crypto), Futu (HK stocks), Longbridge (future), Solana (DeFi). Adding new exchanges requires only a config entry in `capital_limits`.
 
 ---
 
@@ -210,14 +239,16 @@ The original plan discussed three approaches (genome encoding, grid search, Baye
 ```
 P0 (OOS eval) ──> P1 (factors) ──> P2 (LLM mutation) ──> P3 (multi-TF) ──> P4 (thresholds)
                        │                                                         │
-                       └──> P5 (portfolio) ──────────────────────────────────> P6 (paper trading)
+                       └──> P5 (portfolio) ──> P6a (hardening) ──> P6b (paper) ──> P6c (MCTS)
 ```
 
 - **P2 depends on P1**: LLM oracle references the 25-factor vocabulary
 - **P3 depends on P2**: 75-feature space requires guided search
 - **P4 depends on P3**: Uses utilization feedback from walk-forward steps with MTF data
 - **P5 depends on convergence**: Needs sufficient high-PSR strategies (10+)
-- **P6 depends on P5**: Needs portfolio allocation for position sizing
+- **P6a depends on P5**: Enhances evolution and portfolio components built in P5
+- **P6b depends on P6a**: Paper trading needs turnover cost model (F2) and EWMA covariance (F1)
+- **P6c depends on P6b**: MCTS needs enhanced VM (E1, E2); execution optimization needs paper trading baseline (B2)
 
 ---
 
@@ -228,7 +259,9 @@ P0 (OOS eval) ──> P1 (factors) ──> P2 (LLM mutation) ──> P3 (multi-T
 3. **P2**: LLM-guided mutation oracle, 5 sub-phases (commits `2e2e9fc`–`9d3a42b`)
 4. **P3**: Multi-timeframe factor stacking (commit `a3de5fe`)
 5. **P4**: Adaptive threshold tuning (commit `8e84677`)
+6. **P5**: HRP portfolio ensemble with dynamic weights (commit `5fde72b`)
 
 ## Remaining
-6. **P5**: Portfolio optimization (once we have 10+ high-PSR strategies across symbols)
-7. **P6**: Paper trading (final validation step before live capital)
+7. **P6a**: Foundation hardening — atomic blocks, protected-op penalty, EWMA covariance, rayon isolation
+8. **P6b**: Paper trading — strategy deployment, paper accounts, turnover deadzone, regime-aware rebalancing
+9. **P6c**: MCTS + execution — symbolic regression engine, execution optimization, multi-exchange portfolio
