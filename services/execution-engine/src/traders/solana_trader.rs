@@ -26,6 +26,7 @@ pub struct SolanaTrader {
     http_client: HttpClient,
     keypair: Arc<Keypair>,
     raydium: RaydiumTrader,
+    skip_preflight: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,11 +70,16 @@ impl SolanaTrader {
         // Initialize Raydium trader
         let raydium = RaydiumTrader::new(Arc::clone(&rpc_client));
 
+        let skip_preflight = std::env::var("SOLANA_SKIP_PREFLIGHT")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+
         Ok(Self {
             rpc_client,
             http_client: HttpClient::new(),
             keypair: Arc::new(keypair),
             raydium,
+            skip_preflight,
         })
     }
 
@@ -609,7 +615,7 @@ impl SolanaTrader {
 
         // Send
         let config = solana_client::rpc_config::RpcSendTransactionConfig {
-            skip_preflight: true,
+            skip_preflight: self.skip_preflight,
             ..Default::default()
         };
 

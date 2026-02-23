@@ -14,12 +14,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::broadcast;
-use tower_http::cors::CorsLayer;
-use tracing::{error, info};
+use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod auth_handler;
 mod health_checker;
+mod jwt_auth;
 mod metrics;
 
 struct AppState {
@@ -190,17 +191,52 @@ async fn main() {
         }
     });
 
-    // Build App
-    let app = Router::new()
+    // Rate limiting configuration
+    let auth_governor_conf = Arc::new(
+        tower_governor::governor::GovernorConfigBuilder::default()
+            .per_second(3)
+            .burst_size(10)
+            .finish()
+            .expect("Failed to build auth rate limiter config"),
+    );
+    let api_governor_conf = Arc::new(
+        tower_governor::governor::GovernorConfigBuilder::default()
+            .per_second(10)
+            .burst_size(50)
+            .finish()
+            .expect("Failed to build API rate limiter config"),
+    );
+
+    // Build App — split into public/protected route groups
+    // Public routes (no auth required)
+    let auth_routes = Router::new()
+        .route(
+            "/api/auth/login",
+            axum::routing::any(auth_handler::proxy_handler),
+        )
+        .layer(tower_governor::GovernorLayer {
+            config: auth_governor_conf,
+        });
+
+    let public_routes = Router::new()
         .route("/health", get(health_check))
         .route("/metrics", get(common::metrics::metrics_handler))
-        .route("/ws", get(ws_handler))
+        .merge(auth_routes);
+
+    // WebSocket route (auth handled inside handler via query param)
+    let ws_routes = Router::new().route("/ws", get(ws_handler));
+
+    // Protected API routes (JWT middleware required)
+    let protected_routes = Router::new()
         .route("/api/logs", get(get_logs))
         .route("/api/v1/strategy/status", get(get_strategy_status))
         .route("/api/v1/strategy/population", get(get_strategy_population))
         .route("/api/v1/strategy/history", get(get_strategy_history))
         .route("/api/v1/backtest/history", get(get_backtest_history))
-        .route("/api/v1/backtest/run", axum::routing::post(run_backtest_proxy))
+        .route(
+            "/api/v1/backtest/run",
+            axum::routing::post(run_backtest_proxy),
+        )
         .route("/api/v1/market/tokens", get(get_market_tokens))
         .route("/api/v1/data/*path", axum::routing::any(data_engine_proxy))
         .route("/api/v1/watchlist", axum::routing::any(watchlist_proxy))
@@ -208,58 +244,146 @@ async fn main() {
         .route("/api/v1/evolution/*path", get(evolution_proxy))
         .route("/api/v1/trades/history", get(get_trade_history))
         .route("/api/v1/trades/positions", get(get_trade_positions))
-        .route("/api/v1/trades/strategy/:strategy_id", get(get_trade_strategy))
+        .route(
+            "/api/v1/trades/strategy/:strategy_id",
+            get(get_trade_strategy),
+        )
         .route("/api/v1/trades/account-summary", get(get_account_summary))
         .route("/api/v1/config/accounts", get(get_trading_accounts))
         .route(
             "/api/v1/config/accounts/:account_id",
             axum::routing::put(update_trading_account),
         )
-        .route("/api/auth/login", axum::routing::any(auth_handler::proxy_handler))
-        .layer(CorsLayer::permissive()) // Enable CORS for local dev
+        .layer(axum::middleware::from_fn(jwt_auth::jwt_middleware))
+        .layer(tower_governor::GovernorLayer {
+            config: api_governor_conf,
+        });
+
+    // CORS configuration from env (comma-separated origins, default: localhost:3000)
+    let cors_origins = std::env::var("CORS_ALLOWED_ORIGINS")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let origins: Vec<axum::http::HeaderValue> = cors_origins
+        .split(',')
+        .filter_map(|o| o.trim().parse().ok())
+        .collect();
+
+    let cors = if origins.is_empty() {
+        warn!("No valid CORS origins configured, defaulting to localhost:3000");
+        CorsLayer::new().allow_origin(
+            "http://localhost:3000"
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+    } else {
+        CorsLayer::new().allow_origin(AllowOrigin::list(origins))
+    }
+    .allow_methods(AllowMethods::list([
+        axum::http::Method::GET,
+        axum::http::Method::POST,
+        axum::http::Method::PUT,
+        axum::http::Method::DELETE,
+        axum::http::Method::OPTIONS,
+    ]))
+    .allow_headers(AllowHeaders::list([
+        axum::http::header::AUTHORIZATION,
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::ACCEPT,
+    ]))
+    .allow_credentials(true);
+
+    let app = public_routes
+        .merge(ws_routes)
+        .merge(protected_routes)
+        .layer(cors)
         .with_state(app_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     info!("Gateway listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect("Failed to bind gateway to address");
+    if let Err(e) = axum::serve(listener, app).await {
+        error!("Gateway server error: {}", e);
+    }
 }
 
 async fn health_check() -> Json<Value> {
     Json(json!({ "status": "ok", "service": "gateway" }))
 }
 
+fn is_valid_service_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn is_valid_log_level(s: &str) -> bool {
+    matches!(
+        s.to_uppercase().as_str(),
+        "DEBUG" | "INFO" | "WARN" | "WARNING" | "ERROR" | "TRACE" | "FATAL" | "ALL"
+    )
+}
+
+/// Escape a string for ClickHouse string literals: replace \ with \\, ' with \'
+fn ch_escape_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 async fn get_logs(
     State(state): State<Arc<AppState>>,
     Query(params): Query<LogQuery>,
-) -> Json<Value> {
+) -> impl IntoResponse {
     let limit = params.limit.unwrap_or(100).min(1000);
+
+    // Validate service name (whitelist: alphanumeric, dash, underscore)
+    if params.service != "all" && !is_valid_service_name(&params.service) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid service name" })),
+        );
+    }
+
+    // Validate log level against known levels
+    if let Some(ref level) = params.level {
+        if !is_valid_log_level(level) {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Invalid log level" })),
+            );
+        }
+    }
 
     let mut query = "SELECT toInt64(toUnixTimestamp(timestamp)) as timestamp, container_name, level, message FROM system_logs WHERE 1=1".to_string();
 
     if params.service != "all" {
+        // Service name is validated above (alphanumeric + dash/underscore only)
         query.push_str(&format!(" AND container_name ILIKE '%{}%'", params.service));
     }
 
-    if let Some(level) = &params.level {
-        if level != "ALL" {
-            query.push_str(&format!(" AND level = '{}'", level));
+    if let Some(ref level) = params.level {
+        if level.to_uppercase() != "ALL" {
+            // Level is validated above against known values
+            query.push_str(&format!(" AND level = '{}'", level.to_uppercase()));
         }
     }
 
-    if let Some(keyword) = &params.keyword {
-        let safe_keyword = keyword.replace("'", "''");
+    if let Some(ref keyword) = params.keyword {
+        let safe_keyword = ch_escape_string(keyword);
         query.push_str(&format!(" AND message ILIKE '%{}%'", safe_keyword));
     }
 
     query.push_str(&format!(" ORDER BY timestamp DESC LIMIT {}", limit));
 
     match state.ch_client.query(&query).fetch_all::<SystemLog>().await {
-        Ok(logs) => Json(json!(logs)),
+        Ok(logs) => (axum::http::StatusCode::OK, Json(json!(logs))),
         Err(e) => {
             error!("ClickHouse query error: {}", e);
-            Json(json!({ "error": "Failed to fetch logs" }))
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to fetch logs" })),
+            )
         }
     }
 }
@@ -425,7 +549,20 @@ async fn run_backtest_proxy(
     }
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+#[derive(Deserialize)]
+struct WsQuery {
+    token: Option<String>,
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    Query(params): Query<WsQuery>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    // Validate JWT from query parameter (browser WebSocket API doesn't support custom headers)
+    if let Err(msg) = jwt_auth::validate_ws_token(params.token.as_deref()) {
+        return (axum::http::StatusCode::UNAUTHORIZED, msg).into_response();
+    }
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -497,7 +634,7 @@ async fn watchlist_proxy(
     let target_url = format!("http://data-engine:8080/api/v1/watchlist{}", query_string);
 
     // Read body content
-    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+    let body_bytes = axum::body::to_bytes(body, 10 * 1024 * 1024)
         .await
         .unwrap_or_default();
 
@@ -571,7 +708,7 @@ async fn data_engine_proxy(
     );
 
     // Read body content
-    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+    let body_bytes = axum::body::to_bytes(body, 10 * 1024 * 1024)
         .await
         .unwrap_or_default();
 
@@ -641,7 +778,7 @@ async fn jobs_proxy(
         path, query_string
     );
 
-    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+    let body_bytes = axum::body::to_bytes(body, 10 * 1024 * 1024)
         .await
         .unwrap_or_default();
     let mut request_builder = state.http_client.request(parts.method, &target_url);

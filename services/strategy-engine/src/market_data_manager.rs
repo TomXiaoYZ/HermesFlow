@@ -84,19 +84,22 @@ impl SymbolBuffer {
         }
     }
 
-    fn to_arrays(&self) -> OhlcvArrays {
+    fn to_arrays(&self) -> Option<OhlcvArrays> {
         let t = self.close.len();
+        if t == 0 {
+            return None;
+        }
         let shape = (1, t);
 
-        OhlcvArrays {
-            close: Array2::from_shape_vec(shape, self.close.clone()).unwrap(),
-            open: Array2::from_shape_vec(shape, self.open.clone()).unwrap(),
-            high: Array2::from_shape_vec(shape, self.high.clone()).unwrap(),
-            low: Array2::from_shape_vec(shape, self.low.clone()).unwrap(),
-            volume: Array2::from_shape_vec(shape, self.volume.clone()).unwrap(),
-            liquidity: Array2::from_shape_vec(shape, self.liquidity.clone()).unwrap(),
-            fdv: Array2::from_shape_vec(shape, self.fdv.clone()).unwrap(),
-        }
+        Some(OhlcvArrays {
+            close: Array2::from_shape_vec(shape, self.close.clone()).ok()?,
+            open: Array2::from_shape_vec(shape, self.open.clone()).ok()?,
+            high: Array2::from_shape_vec(shape, self.high.clone()).ok()?,
+            low: Array2::from_shape_vec(shape, self.low.clone()).ok()?,
+            volume: Array2::from_shape_vec(shape, self.volume.clone()).ok()?,
+            liquidity: Array2::from_shape_vec(shape, self.liquidity.clone()).ok()?,
+            fdv: Array2::from_shape_vec(shape, self.fdv.clone()).ok()?,
+        })
     }
 }
 
@@ -133,7 +136,7 @@ impl MarketDataManager {
         }
 
         // Generate Features
-        let arrays = buffer.to_arrays();
+        let arrays = buffer.to_arrays()?;
 
         let features = FeatureEngineer::compute_features(&arrays.as_ref());
         Some(features)

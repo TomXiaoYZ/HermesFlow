@@ -23,13 +23,13 @@ pub async fn proxy_handler(
     let method = parts.method;
     let headers = parts.headers;
 
-    // Read body
-    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+    // Read body (1 MB limit for auth requests)
+    let body_bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
         Ok(b) => b,
-        Err(e) => {
+        Err(_) => {
             return Response::builder()
-                .status(400)
-                .body(Body::from(e.to_string()))
+                .status(413)
+                .body(Body::from("Request body too large"))
                 .unwrap()
         }
     };
@@ -82,7 +82,7 @@ pub async fn proxy_handler(
             tracing::error!("Proxy error: {}", e);
             Response::builder()
                 .status(502)
-                .body(Body::from(format!("Bad Gateway: {}", e)))
+                .body(Body::from("Service temporarily unavailable"))
                 .unwrap()
         }
     }

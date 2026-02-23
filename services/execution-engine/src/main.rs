@@ -29,11 +29,9 @@ async fn main() -> anyhow::Result<()> {
     let solana_rpc = env::var("SOLANA_RPC_URL")
         .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
     let priv_key = env::var("SOLANA_PRIVATE_KEY")
-        .unwrap_or_else(|_| {
-            "1111111111111111111111111111111111111111111111111111111111111111".to_string()
-        })
-        .trim()
-        .to_string();
+        .ok()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty());
 
     // ========================================
     // 0. Initialize Database Connection (optional)
@@ -66,14 +64,22 @@ async fn main() -> anyhow::Result<()> {
     // ========================================
     // 1. Initialize Solana Trader
     // ========================================
-    info!("Initializing Solana Trader...");
-    let solana = match SolanaTrader::new(&solana_rpc, &priv_key) {
-        Ok(t) => {
-            info!("Solana Trader initialized");
-            Some(Arc::new(t))
+    let solana = match priv_key {
+        Some(ref key) => {
+            info!("Initializing Solana Trader...");
+            match SolanaTrader::new(&solana_rpc, key) {
+                Ok(t) => {
+                    info!("Solana Trader initialized");
+                    Some(Arc::new(t))
+                }
+                Err(e) => {
+                    warn!("Solana Trader not available: {}", e);
+                    None
+                }
+            }
         }
-        Err(e) => {
-            warn!("Solana Trader not available: {}", e);
+        None => {
+            warn!("SOLANA_PRIVATE_KEY not set, Solana trading disabled");
             None
         }
     };

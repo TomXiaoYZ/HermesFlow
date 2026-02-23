@@ -1,4 +1,4 @@
-.PHONY: help setup lint test build up down clean logs web-setup web-dev web-build
+.PHONY: help setup lint test build up down clean logs web-setup web-dev web-build audit
 
 help:
 	@echo "HermesFlow Development Commands"
@@ -17,6 +17,8 @@ help:
 	@echo "  make down       - Stop services"
 	@echo "  make logs       - View logs"
 	@echo "  make clean      - Stop services, remove volumes and build artifacts"
+	@echo "Security:"
+	@echo "  make audit      - Run cargo-audit and npm audit"
 
 setup:
 	@echo ">>> Verifying Rust Toolchain..."
@@ -63,3 +65,10 @@ clean:
 
 logs:
 	docker compose logs -f
+
+audit:
+	@echo ">>> Running Security Audit..."
+	@command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit
+	cargo audit
+	cd services/web && npm audit --audit-level=moderate
+	@echo "Security audit complete."

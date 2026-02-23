@@ -59,6 +59,10 @@ RUN set -eux; \
     sleep 5; \
     done
 
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
 COPY --from=builder /app/services/execution-engine/target/release/execution-engine /usr/local/bin/
 
+USER appuser
 CMD ["execution-engine"]

@@ -59,9 +59,13 @@ RUN set -eux; \
     sleep 5; \
     done
 
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
 # Copy the binary from builder
 COPY --from=builder /app/target/release/gateway /usr/local/bin/
 
 WORKDIR /app
+USER appuser
 EXPOSE 8080
 CMD ["gateway"]

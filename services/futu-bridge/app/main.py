@@ -201,7 +201,7 @@ async def place_order(req: PlaceOrderRequest):
 
     if ret != RET_OK:
         logger.error(f"place_order failed: {data}")
-        raise HTTPException(status_code=500, detail=str(data))
+        raise HTTPException(status_code=500, detail="Order placement failed")
 
     order_id = str(data["order_id"].iloc[0])
     status = str(data["order_status"].iloc[0])
@@ -226,7 +226,7 @@ async def cancel_order(order_id: str):
 
     if ret != RET_OK:
         logger.error(f"cancel_order failed: {data}")
-        raise HTTPException(status_code=500, detail=str(data))
+        raise HTTPException(status_code=500, detail="Order cancellation failed")
 
     return {"status": "cancelled", "order_id": order_id}
 
@@ -241,7 +241,7 @@ async def get_positions():
 
     if ret != RET_OK:
         logger.error(f"position_list_query failed: {data}")
-        raise HTTPException(status_code=500, detail=str(data))
+        raise HTTPException(status_code=500, detail="Failed to query positions")
 
     positions = []
     for _, row in data.iterrows():
@@ -268,7 +268,7 @@ async def get_account():
 
     if ret != RET_OK:
         logger.error(f"accinfo_query failed: {data}")
-        raise HTTPException(status_code=500, detail=str(data))
+        raise HTTPException(status_code=500, detail="Failed to query account info")
 
     row = data.iloc[0]
     return AccountSummaryResponse(

@@ -13,10 +13,18 @@ async fn health() -> Json<Value> {
 
 pub async fn start_health_server() {
     let app = Router::new().route("/health", get(health));
-    
+
     let addr = SocketAddr::from(([0, 0, 0, 0], 8083));
     info!("Execution Engine health endpoint listening on {}", addr);
-    
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.expect("Health server failed");
+
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("Failed to bind health server on {}: {}", addr, e);
+            return;
+        }
+    };
+    if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!("Health server error: {}", e);
+    }
 }
