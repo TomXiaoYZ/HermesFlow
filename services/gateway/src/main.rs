@@ -298,6 +298,11 @@ async fn main() {
         .with_state(app_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    if jwt_auth::is_jwt_enabled() {
+        info!("JWT authentication: ENABLED");
+    } else {
+        warn!("JWT authentication: DISABLED (set JWT_SECRET to enable)");
+    }
     info!("Gateway listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)

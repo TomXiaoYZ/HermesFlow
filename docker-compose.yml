@@ -146,7 +146,7 @@ services:
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-hermesflow}
       - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-password}@timescaledb:5432/hermesflow
-      - JWT_SECRET=${JWT_SECRET}
+      - JWT_SECRET=${JWT_SECRET:-}
       - USER_MANAGEMENT_URL=http://user-management:8086
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     depends_on:

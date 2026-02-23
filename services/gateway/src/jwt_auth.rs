@@ -21,7 +21,7 @@ pub struct Claims {
 ///   `Decoders.BASE64.decode(secretKey)` → raw bytes → `Keys.hmacShaKeyFor()`
 /// We replicate the same: Base64-decode the env var to get the raw HMAC key.
 fn get_decoding_key() -> Option<DecodingKey> {
-    let secret = std::env::var("JWT_SECRET").ok()?;
+    let secret = std::env::var("JWT_SECRET").ok().filter(|s| !s.is_empty())?;
     let key_bytes = general_purpose::STANDARD
         .decode(secret.as_bytes())
         .or_else(|_| {
@@ -34,14 +34,25 @@ fn get_decoding_key() -> Option<DecodingKey> {
     Some(DecodingKey::from_secret(&key_bytes))
 }
 
+/// Check if JWT enforcement is enabled (JWT_SECRET must be set).
+/// When disabled, all requests pass through without auth — allows gradual
+/// frontend integration of login flow before enforcing JWT globally.
+pub fn is_jwt_enabled() -> bool {
+    std::env::var("JWT_SECRET")
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
+
 /// Axum middleware: validates JWT from `Authorization: Bearer <token>` header.
 /// On success, injects `Claims` into request extensions.
+/// When JWT_SECRET is not set, requests pass through unauthenticated.
 pub async fn jwt_middleware(mut req: Request<Body>, next: Next) -> Response {
     let key = match get_decoding_key() {
         Some(k) => k,
         None => {
-            warn!("JWT_SECRET not configured, rejecting request");
-            return unauthorized("Authentication not configured");
+            // JWT not configured — pass through (allows frontend to work
+            // before login UI is integrated). Log once at startup via is_jwt_enabled().
+            return next.run(req).await;
         }
     };
 
@@ -53,7 +64,10 @@ pub async fn jwt_middleware(mut req: Request<Body>, next: Next) -> Response {
 
     let token = match token {
         Some(t) => t,
-        None => return unauthorized("Missing or invalid Authorization header"),
+        None => {
+            // No token provided but JWT is enabled — reject
+            return unauthorized("Missing or invalid Authorization header");
+        }
     };
 
     let mut validation = Validation::new(Algorithm::HS256);
@@ -73,8 +87,19 @@ pub async fn jwt_middleware(mut req: Request<Body>, next: Next) -> Response {
 
 /// Validate a token from WebSocket query parameter.
 /// Returns `Ok(Claims)` on success, `Err(message)` on failure.
+/// When JWT is not configured, returns a default anonymous claim.
 pub fn validate_ws_token(token: Option<&str>) -> Result<Claims, &'static str> {
-    let key = get_decoding_key().ok_or("Authentication not configured")?;
+    let key = match get_decoding_key() {
+        Some(k) => k,
+        None => {
+            // JWT not configured — allow anonymous WebSocket connections
+            return Ok(Claims {
+                sub: "anonymous".to_string(),
+                exp: u64::MAX,
+                iat: 0,
+            });
+        }
+    };
     let token = token.ok_or("Missing authentication token")?;
 
     let mut validation = Validation::new(Algorithm::HS256);
