@@ -15,8 +15,10 @@ CREATE TABLE IF NOT EXISTS trading_accounts (
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Seed with placeholder values; actual account IDs are set via env vars
+-- and reconciled by the execution-engine at runtime.
 INSERT INTO trading_accounts (account_id, label, broker, broker_account, mode)
 VALUES
-    ('ibkr_long_only',  'Long Only',  'IBKR', 'DU7413927',  'long_only'),
-    ('ibkr_long_short', 'Long Short', 'IBKR', 'DUP964037', 'long_short')
+    ('ibkr_long_only',  'Long Only',  'IBKR', 'PAPER_ACCOUNT_LO',  'long_only'),
+    ('ibkr_long_short', 'Long Short', 'IBKR', 'PAPER_ACCOUNT_LS', 'long_short')
 ON CONFLICT (account_id) DO NOTHING;

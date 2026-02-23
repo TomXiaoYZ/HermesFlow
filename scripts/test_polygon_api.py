@@ -4,11 +4,16 @@ Quick test script for Polygon.io API
 Tests Basic (free) plan capabilities
 """
 
+import os
+import sys
 import requests
 import json
 from datetime import datetime, timedelta
 
-API_KEY = "0_EQM4CgpMzXgdFs7y9rM7FEUyGZrDPH"
+API_KEY = os.environ.get("POLYGON_API_KEY")
+if not API_KEY:
+    print("Error: POLYGON_API_KEY environment variable is not set")
+    sys.exit(1)
 BASE_URL = "https://api.polygon.io"
 
 def test_daily_aggregates():

@@ -453,8 +453,8 @@ The execution engine connects to **two separate IB Gateway instances** for dual 
 | `IBKR_PORT_LS` | `4004` | Gateway 2 port (paper trading) |
 | `IBKR_CLIENT_ID_LONG_ONLY` | `1` | API client ID for gateway 1 |
 | `IBKR_CLIENT_ID_LONG_SHORT` | `1` | API client ID for gateway 2 |
-| `IBKR_ACCOUNT_LONG_ONLY` | — | Account ID for long_only (e.g., DU7413927) |
-| `IBKR_ACCOUNT_LONG_SHORT` | — | Account ID for long_short (e.g., DUP964037) |
+| `IBKR_ACCOUNT_LONG_ONLY` | — | Account ID for long_only (e.g., `<your_long_only_account>`) |
+| `IBKR_ACCOUNT_LONG_SHORT` | — | Account ID for long_short (e.g., `<your_long_short_account>`) |
 
 **Gateway containers**: Both use `ghcr.io/gnzsnz/ib-gateway:stable` image. Each authenticates with its own `TWS_USERID`/`TWS_PASSWORD` pair. The execution engine creates two `IBKRTrader` instances (`trader_lo` and `trader_ls`) at startup, each connected to its respective gateway.
 

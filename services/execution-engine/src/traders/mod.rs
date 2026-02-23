@@ -79,7 +79,7 @@ pub trait Trader: Send + Sync {
     async fn get_positions(&self) -> Result<Vec<BrokerPosition>>;
     async fn get_account_summary(&self) -> Result<AccountSummary>;
 
-    /// Returns per-account summaries keyed by IBKR account ID (e.g. "DU7413927").
+    /// Returns per-account summaries keyed by IBKR account ID (e.g. "DUxxxxxxx").
     /// Default implementation returns a single entry with empty key.
     async fn get_account_summaries(&self) -> Result<HashMap<String, AccountSummary>> {
         let summary = self.get_account_summary().await?;

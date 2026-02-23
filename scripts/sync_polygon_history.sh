@@ -9,7 +9,7 @@ echo "=================================="
 echo ""
 
 # Configuration
-API_KEY="${POLYGON_API_KEY:-0_EQM4CgpMzXgdFs7y9rM7FEUyGZrDPH}"
+API_KEY="${POLYGON_API_KEY:?Error: POLYGON_API_KEY environment variable is not set}"
 TICKERS=(AAPL MSFT GOOGL TSLA NVDA AMZN META NFLX)
 RESOLUTIONS=(1d 1h)
 

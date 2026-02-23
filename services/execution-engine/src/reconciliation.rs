@@ -7,7 +7,7 @@ use tracing::{error, info, warn};
 
 use crate::traders::BrokerPosition;
 
-/// Maps IBKR account IDs (e.g. "DU7413927") → internal account_ids (e.g. "ibkr_long_only").
+/// Maps IBKR account IDs (e.g. "DUxxxxxxx") → internal account_ids (e.g. "ibkr_long_only").
 /// Built from IBKR_ACCOUNT_LONG_ONLY / IBKR_ACCOUNT_LONG_SHORT env vars.
 fn build_account_map() -> HashMap<String, String> {
     let mut map = HashMap::new();

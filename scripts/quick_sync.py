@@ -13,7 +13,10 @@ from datetime import datetime, timedelta
 import argparse
 
 # Polygon API configuration
-API_KEY = os.getenv("POLYGON_API_KEY", "0_EQM4CgpMzXgdFs7y9rM7FEUyGZrDPH")
+API_KEY = os.environ.get("POLYGON_API_KEY")
+if not API_KEY:
+    print("Error: POLYGON_API_KEY environment variable is not set")
+    sys.exit(1)
 BASE_URL = "https://api.polygon.io"
 
 # Configure requests session with retry logic

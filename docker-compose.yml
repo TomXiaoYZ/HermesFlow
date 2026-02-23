@@ -18,7 +18,7 @@ services:
       - "8123:8123"
       - "9000:9000"
     environment:
-      - CLICKHOUSE_PASSWORD=hermesflow
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-hermesflow}
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
     ulimits:
@@ -44,7 +44,7 @@ services:
     ports:
       - "5432:5432"
     environment:
-      - POSTGRES_PASSWORD=password
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
     command:
       - "postgres"
       - "-c"
@@ -99,7 +99,7 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - DATA_ENGINE__REDIS__URL=redis://redis:6379
       - DATA_ENGINE__POSTGRES__HOST=timescaledb
-      - DATA_ENGINE__POSTGRES__PASSWORD=password
+      - DATA_ENGINE__POSTGRES__PASSWORD=${POSTGRES_PASSWORD:-password}
       - DATA_ENGINE__SERVER__HOST=0.0.0.0
       - DATA_ENGINE__BIRDEYE__API_KEY=${DATA_ENGINE__BIRDEYE__API_KEY}
       - DATA_ENGINE__HELIUS__API_KEY=${DATA_ENGINE__HELIUS__API_KEY}
@@ -144,8 +144,8 @@ services:
       - REDIS_URL=redis://redis:6379
       - CLICKHOUSE_URL=http://clickhouse:8123
       - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=hermesflow
-      - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-hermesflow}
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-password}@timescaledb:5432/hermesflow
     depends_on:
       redis:
         condition: service_healthy
@@ -169,7 +169,7 @@ services:
       - RUST_LOG=info
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-password}@timescaledb:5432/hermesflow
       - TRADE_SIZE_PCT=0.005
     depends_on:
       redis:
@@ -193,7 +193,7 @@ services:
     environment:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://timescaledb:5432/hermesflow
       - SPRING_DATASOURCE_USERNAME=postgres
-      - SPRING_DATASOURCE_PASSWORD=password
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:-password}
       - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD}
     depends_on:
       timescaledb:
@@ -232,7 +232,7 @@ services:
       retries: 10
       start_period: 60s
 
-  # Second IB Gateway for long_short account (tomxiaoyzzzz1 → DUP964037)
+  # Second IB Gateway for long_short account
   ib-gateway-ls:
     image: ghcr.io/gnzsnz/ib-gateway:stable
     environment:
@@ -262,7 +262,7 @@ services:
     environment:
       - RUST_LOG=info
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-password}@timescaledb:5432/hermesflow
       - HTTPS_PROXY=http://host.docker.internal:7897
       - ALL_PROXY=socks5://host.docker.internal:7897
       - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY}
@@ -321,7 +321,7 @@ services:
     environment:
       - RUST_LOG=info
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgres://postgres:password@timescaledb:5432/hermesflow
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-password}@timescaledb:5432/hermesflow
       - GENERATOR_CONFIG=config/generator.yaml
       - GENERATOR_API_PORT=8082
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
