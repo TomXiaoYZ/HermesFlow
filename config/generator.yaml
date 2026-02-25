@@ -66,6 +66,13 @@ ensemble:
   regime_aware: true
   regime_thresholds: [0.15, 0.30]  # annualized vol boundaries [low_upper, normal_upper]
   regime_intervals: [240, 60, 15]  # rebalance interval in minutes [low, normal, high]
+  # P6b-C1: Deadzone + L1 regularization for turnover suppression.
+  # Suppresses small weight changes and shrinks deltas toward zero.
+  deadzone:
+    enabled: true
+    threshold: 0.02       # suppress weight changes below 2%
+    l1_lambda: 0.01       # shrink weight deltas by 1%
+    vol_adaptive: true    # scale lambda by volatility regime
   dynamic_weights:
     psr_reward_scale: 0.2
     psr_max_reward: 3.0

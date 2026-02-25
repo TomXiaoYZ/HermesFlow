@@ -77,6 +77,9 @@ pub struct EnsembleConfig {
     /// P6b-F3: Rebalance intervals (minutes) per regime [low, normal, high].
     #[serde(default = "default_regime_intervals")]
     pub regime_intervals: [u64; 3],
+    /// P6b-C1: Deadzone + L1 regularization for turnover suppression.
+    #[serde(default)]
+    pub deadzone: DeadzoneConfig,
 }
 
 impl Default for EnsembleConfig {
@@ -96,6 +99,7 @@ impl Default for EnsembleConfig {
             regime_aware: false,
             regime_thresholds: default_regime_thresholds(),
             regime_intervals: default_regime_intervals(),
+            deadzone: DeadzoneConfig::default(),
         }
     }
 }
@@ -130,6 +134,36 @@ impl Default for DynamicWeightYamlConfig {
     }
 }
 
+/// P6b-C1: Deadzone + L1 regularization config for turnover suppression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeadzoneConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_deadzone_threshold")]
+    pub threshold: f64,
+    #[serde(default = "default_deadzone_l1_lambda")]
+    pub l1_lambda: f64,
+    #[serde(default)]
+    pub vol_adaptive: bool,
+}
+
+impl Default for DeadzoneConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_deadzone_threshold(),
+            l1_lambda: default_deadzone_l1_lambda(),
+            vol_adaptive: false,
+        }
+    }
+}
+
+fn default_deadzone_threshold() -> f64 {
+    0.02
+}
+fn default_deadzone_l1_lambda() -> f64 {
+    0.01
+}
 fn default_enabled() -> bool {
     true
 }
@@ -190,6 +224,20 @@ pub enum VolRegime {
     Low = 0,
     Normal = 1,
     High = 2,
+}
+
+impl VolRegime {
+    /// Regime-adaptive multiplier for deadzone L1 lambda (P6b-C1).
+    ///
+    /// Higher in calm markets (more turnover suppression),
+    /// lower in volatile markets (faster adaptation).
+    pub fn deadzone_multiplier(&self) -> f64 {
+        match self {
+            VolRegime::Low => 2.0,
+            VolRegime::Normal => 1.0,
+            VolRegime::High => 0.5,
+        }
+    }
 }
 
 impl fmt::Display for VolRegime {

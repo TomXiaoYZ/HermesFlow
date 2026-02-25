@@ -1723,12 +1723,73 @@ async fn run_ensemble_rebalance(
     // 6. Apply dynamic weight adjustments
     let valid_owned: Vec<StrategyCandidate> =
         valid_candidates.iter().map(|c| (*c).clone()).collect();
-    let adjustments = ensemble_weights::adjust_weights(
+    let mut adjustments = ensemble_weights::adjust_weights(
         &hrp_result.weights,
         &valid_owned,
         &hrp_result.correlation_matrix,
         dw_config,
     );
+
+    // 6b. Load previous weights from DB (shared by deadzone + turnover)
+    let prev_weights: Vec<(String, f64)> = sqlx::query_as::<_, (String, String, f64)>(
+        "SELECT symbol, mode, final_weight FROM portfolio_ensemble_strategies pes \
+         JOIN portfolio_ensembles pe ON pes.ensemble_id = pe.id \
+         WHERE pe.exchange = $1 \
+         ORDER BY pe.created_at DESC LIMIT 50",
+    )
+    .bind(exchange)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(sym, mode, w)| (format!("{}_{}", sym, mode), w))
+    .collect();
+
+    // 6c. P6b-C1: Apply deadzone + L1 regularization
+    if ensemble_cfg.deadzone.enabled && !prev_weights.is_empty() {
+        // Build new weight vector keyed by "symbol_mode"
+        let mut new_weights: Vec<(String, f64)> = adjustments
+            .iter()
+            .enumerate()
+            .map(|(i, adj)| {
+                let key = format!("{}_{}", valid_candidates[i].id.symbol, valid_candidates[i].id.mode);
+                (key, adj.final_weight)
+            })
+            .collect();
+
+        let regime_multiplier = if ensemble_cfg.deadzone.vol_adaptive {
+            // Preliminary regime detection for adaptive lambda
+            let preliminary_returns: Vec<f64> = (0..min_len)
+                .map(|i| {
+                    adjustments.iter().enumerate().map(|(j, adj)| {
+                        return_matrix[[i, j]] * adj.final_weight
+                    }).sum::<f64>()
+                })
+                .collect();
+            let info = ensemble::detect_regime(
+                &preliminary_returns,
+                resolution,
+                20,
+                ensemble_cfg.regime_thresholds,
+            );
+            info.regime.deadzone_multiplier()
+        } else {
+            1.0
+        };
+
+        ensemble_weights::apply_deadzone_l1(
+            &prev_weights,
+            &mut new_weights,
+            ensemble_cfg.deadzone.threshold,
+            ensemble_cfg.deadzone.l1_lambda,
+            regime_multiplier,
+        );
+
+        // Update adjustments with deadzoned weights
+        for (i, (_, weight)) in new_weights.iter().enumerate() {
+            adjustments[i].final_weight = *weight;
+        }
+    }
 
     // 7. Compute portfolio-level metrics
     let crowding_pairs = ensemble_weights::detect_crowding(
@@ -1809,21 +1870,7 @@ async fn run_ensemble_rebalance(
         })
         .collect();
 
-    // Load previous weights from DB
-    let prev_weights: Vec<(String, f64)> = sqlx::query_as::<_, (String, String, f64)>(
-        "SELECT symbol, mode, final_weight FROM portfolio_ensemble_strategies pes \
-         JOIN portfolio_ensembles pe ON pes.ensemble_id = pe.id \
-         WHERE pe.exchange = $1 \
-         ORDER BY pe.created_at DESC LIMIT 50",
-    )
-    .bind(exchange)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(sym, mode, w)| (format!("{}_{}", sym, mode), w))
-    .collect();
-
+    // prev_weights loaded in step 6b (shared with deadzone)
     let turnover = ensemble_weights::compute_turnover(&prev_weights, &new_weights);
     let turnover_cost_val = ensemble_weights::turnover_cost(turnover, ensemble_cfg.turnover_cost_rate);
 

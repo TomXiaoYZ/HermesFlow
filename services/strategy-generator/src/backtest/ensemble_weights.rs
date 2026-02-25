@@ -214,6 +214,54 @@ pub fn turnover_cost(turnover: f64, cost_rate: f64) -> f64 {
     turnover * cost_rate
 }
 
+// ── Deadzone + L1 Regularization (P6b-C1) ────────────────────────────
+
+/// Apply deadzone and L1 regularization to suppress unnecessary turnover.
+///
+/// 1. **Deadzone**: If `|new_w - old_w| < threshold` for a strategy, revert to old weight.
+/// 2. **L1 regularization**: Shrink weight deltas toward zero:
+///    `adjusted = old + (new - old) * (1 - effective_lambda)`.
+/// 3. **Renormalize** to sum = 1.0.
+///
+/// `regime_multiplier` adapts lambda: >1.0 in calm markets (more suppression),
+/// <1.0 in volatile markets (faster adaptation).
+pub fn apply_deadzone_l1(
+    old_weights: &[(String, f64)],
+    new_weights: &mut [(String, f64)],
+    threshold: f64,
+    l1_lambda: f64,
+    regime_multiplier: f64,
+) {
+    let old_map: std::collections::HashMap<&str, f64> =
+        old_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+
+    let effective_lambda = (l1_lambda * regime_multiplier).min(0.5);
+
+    for (key, weight) in new_weights.iter_mut() {
+        if let Some(&old_w) = old_map.get(key.as_str()) {
+            let delta = *weight - old_w;
+
+            // Deadzone: suppress changes below threshold
+            if delta.abs() < threshold {
+                *weight = old_w;
+                continue;
+            }
+
+            // L1: shrink delta toward zero
+            *weight = old_w + delta * (1.0 - effective_lambda);
+        }
+        // New strategies (no old weight) keep their target weight unchanged
+    }
+
+    // Renormalize
+    let total: f64 = new_weights.iter().map(|(_, w)| *w).sum();
+    if total > 1e-12 {
+        for (_, w) in new_weights.iter_mut() {
+            *w /= total;
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -398,6 +446,79 @@ mod tests {
     fn turnover_cost_calculation() {
         assert!(approx_eq(turnover_cost(0.3, 0.001), 0.0003, 1e-10));
         assert!(approx_eq(turnover_cost(0.0, 0.001), 0.0, 1e-10));
+    }
+
+    // ── Deadzone + L1 tests (P6b-C1) ──────────────────────────────
+
+    #[test]
+    fn deadzone_suppresses_small_changes() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let mut new = vec![("SPY_lo".to_string(), 0.51), ("GLD_lo".to_string(), 0.49)];
+        // threshold=0.02, delta=0.01 < 0.02 → reverted to old
+        apply_deadzone_l1(&old, &mut new, 0.02, 0.0, 1.0);
+        assert!(approx_eq(new[0].1, 0.5, 1e-10));
+        assert!(approx_eq(new[1].1, 0.5, 1e-10));
+    }
+
+    #[test]
+    fn deadzone_allows_large_changes() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let mut new = vec![("SPY_lo".to_string(), 0.7), ("GLD_lo".to_string(), 0.3)];
+        // threshold=0.02, delta=0.2 > 0.02 → not reverted
+        apply_deadzone_l1(&old, &mut new, 0.02, 0.0, 1.0);
+        // With lambda=0, no L1 shrinkage, just renormalized
+        let sum: f64 = new.iter().map(|(_, w)| *w).sum();
+        assert!(approx_eq(sum, 1.0, 1e-10));
+        assert!(new[0].1 > new[1].1); // SPY still has more weight
+    }
+
+    #[test]
+    fn l1_shrinks_deltas() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let mut new = vec![("SPY_lo".to_string(), 0.7), ("GLD_lo".to_string(), 0.3)];
+        // lambda=0.5 → delta shrunk by 50%: 0.5 + 0.2*0.5 = 0.6, 0.5 + (-0.2)*0.5 = 0.4
+        apply_deadzone_l1(&old, &mut new, 0.0, 0.5, 1.0);
+        // After renormalization: 0.6/(0.6+0.4)=0.6, 0.4/(0.6+0.4)=0.4
+        assert!(approx_eq(new[0].1, 0.6, 1e-10));
+        assert!(approx_eq(new[1].1, 0.4, 1e-10));
+    }
+
+    #[test]
+    fn regime_multiplier_scales_lambda() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let mut new_calm = vec![("SPY_lo".to_string(), 0.7), ("GLD_lo".to_string(), 0.3)];
+        let mut new_volatile = vec![("SPY_lo".to_string(), 0.7), ("GLD_lo".to_string(), 0.3)];
+
+        // Calm: multiplier=2.0, effective_lambda=0.1*2.0=0.2
+        apply_deadzone_l1(&old, &mut new_calm, 0.0, 0.1, 2.0);
+        // Volatile: multiplier=0.5, effective_lambda=0.1*0.5=0.05
+        apply_deadzone_l1(&old, &mut new_volatile, 0.0, 0.1, 0.5);
+
+        // Calm should have weights closer to old (more suppression)
+        let calm_delta = (new_calm[0].1 - 0.5).abs();
+        let vol_delta = (new_volatile[0].1 - 0.5).abs();
+        assert!(calm_delta < vol_delta);
+    }
+
+    #[test]
+    fn deadzone_new_strategy_passes_through() {
+        let old = vec![("SPY_lo".to_string(), 1.0)];
+        let mut new = vec![("SPY_lo".to_string(), 0.6), ("GLD_lo".to_string(), 0.4)];
+        // GLD is new (not in old), should keep its weight
+        apply_deadzone_l1(&old, &mut new, 0.02, 0.1, 1.0);
+        let sum: f64 = new.iter().map(|(_, w)| *w).sum();
+        assert!(approx_eq(sum, 1.0, 1e-10));
+        assert!(new[1].1 > 0.0); // GLD has weight
+    }
+
+    #[test]
+    fn lambda_capped_at_half() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let mut new = vec![("SPY_lo".to_string(), 0.7), ("GLD_lo".to_string(), 0.3)];
+        // lambda=0.4, multiplier=2.0 → 0.8, but capped at 0.5
+        apply_deadzone_l1(&old, &mut new, 0.0, 0.4, 2.0);
+        // delta=0.2 * (1-0.5) = 0.1 → new=0.6, renormalized to 0.6
+        assert!(approx_eq(new[0].1, 0.6, 1e-10));
     }
 
     #[test]
