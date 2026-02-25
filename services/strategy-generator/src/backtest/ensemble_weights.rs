@@ -171,6 +171,49 @@ pub fn adjust_weights(
     adjustments
 }
 
+// ── Turnover Cost (P6a-F2) ────────────────────────────────────────────
+
+/// Compute portfolio turnover between two weight vectors.
+///
+/// Turnover = 0.5 * sum(|new_i - old_i|). Range [0.0, 1.0].
+/// 0.0 means no change; 1.0 means complete rebalance.
+/// Old and new vectors may have different lengths (strategies added/removed).
+/// Uses strategy symbol+mode as key for matching.
+pub fn compute_turnover(
+    old_weights: &[(String, f64)],
+    new_weights: &[(String, f64)],
+) -> f64 {
+    let old_map: std::collections::HashMap<&str, f64> =
+        old_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let new_map: std::collections::HashMap<&str, f64> =
+        new_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+
+    let mut all_keys: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (k, _) in old_weights {
+        all_keys.insert(k.as_str());
+    }
+    for (k, _) in new_weights {
+        all_keys.insert(k.as_str());
+    }
+
+    let total_change: f64 = all_keys
+        .iter()
+        .map(|k| {
+            let old_w = old_map.get(k).copied().unwrap_or(0.0);
+            let new_w = new_map.get(k).copied().unwrap_or(0.0);
+            (new_w - old_w).abs()
+        })
+        .sum();
+
+    0.5 * total_change
+}
+
+/// Compute turnover cost: turnover * cost_rate.
+/// Cost rate is per-exchange (e.g., IBKR=0.0001, Binance=0.001).
+pub fn turnover_cost(turnover: f64, cost_rate: f64) -> f64 {
+    turnover * cost_rate
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -318,6 +361,43 @@ mod tests {
         // Penalty should be capped at 0.8, not 1.0
         assert!(approx_eq(adj[0].crowding_penalty, 0.8, 1e-10));
         assert!(adj[0].final_weight > 0.0); // not completely zeroed
+    }
+
+    // ── Turnover cost tests (P6a-F2) ──────────────────────────────
+
+    #[test]
+    fn turnover_identical_weights_is_zero() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let new = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        assert!(approx_eq(compute_turnover(&old, &new), 0.0, 1e-10));
+    }
+
+    #[test]
+    fn turnover_complete_rebalance() {
+        let old = vec![("SPY_lo".to_string(), 1.0), ("GLD_lo".to_string(), 0.0)];
+        let new = vec![("SPY_lo".to_string(), 0.0), ("GLD_lo".to_string(), 1.0)];
+        assert!(approx_eq(compute_turnover(&old, &new), 1.0, 1e-10));
+    }
+
+    #[test]
+    fn turnover_new_strategy_added() {
+        let old = vec![("SPY_lo".to_string(), 1.0)];
+        let new = vec![("SPY_lo".to_string(), 0.6), ("GLD_lo".to_string(), 0.4)];
+        // |0.6-1.0| + |0.4-0.0| = 0.4 + 0.4 = 0.8, turnover = 0.4
+        assert!(approx_eq(compute_turnover(&old, &new), 0.4, 1e-10));
+    }
+
+    #[test]
+    fn turnover_strategy_removed() {
+        let old = vec![("SPY_lo".to_string(), 0.6), ("GLD_lo".to_string(), 0.4)];
+        let new = vec![("SPY_lo".to_string(), 1.0)];
+        assert!(approx_eq(compute_turnover(&old, &new), 0.4, 1e-10));
+    }
+
+    #[test]
+    fn turnover_cost_calculation() {
+        assert!(approx_eq(turnover_cost(0.3, 0.001), 0.0003, 1e-10));
+        assert!(approx_eq(turnover_cost(0.0, 0.001), 0.0, 1e-10));
     }
 
     #[test]

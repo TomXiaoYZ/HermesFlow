@@ -3,9 +3,30 @@
 //! Implements López de Prado (2016): correlation → distance → single-linkage
 //! clustering → quasi-diagonalization (seriation) → recursive bisection.
 //!
+//! Supports both sample and EWMA covariance estimation (P6a-F1).
 //! Pure math module — no I/O, no DB. Only depends on ndarray.
 
 use ndarray::Array2;
+use serde::{Deserialize, Serialize};
+
+/// Covariance estimation method for HRP allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "snake_case")]
+pub enum CovarianceMethod {
+    /// Standard sample covariance and Pearson correlation.
+    #[default]
+    Sample,
+    /// Exponentially Weighted Moving Average covariance.
+    /// lambda controls decay: 0.94 (RiskMetrics daily), higher = slower decay.
+    Ewma {
+        #[serde(default = "default_ewma_lambda")]
+        lambda: f64,
+    },
+}
+
+fn default_ewma_lambda() -> f64 {
+    0.94
+}
 
 /// Result of an HRP allocation.
 #[derive(Debug, Clone)]
@@ -100,6 +121,81 @@ fn covariance_matrix(returns: &Array2<f64>) -> Array2<f64> {
     }
 
     cov
+}
+
+// ── EWMA Covariance (P6a-F1) ─────────────────────────────────────────
+
+/// Compute EWMA covariance matrix from a T x N return matrix.
+///
+/// Exponential weights: w_t = (1-lambda) * lambda^(T-1-t), giving more
+/// weight to recent observations. RiskMetrics suggests lambda=0.94 for daily data.
+fn ewma_covariance_matrix(returns: &Array2<f64>, lambda: f64) -> Array2<f64> {
+    let n = returns.ncols();
+    let t = returns.nrows();
+    let mut cov = Array2::<f64>::zeros((n, n));
+
+    if t < 2 || n == 0 || lambda <= 0.0 || lambda >= 1.0 {
+        return cov;
+    }
+
+    // Compute exponential weights
+    let mut weights = Vec::with_capacity(t);
+    for i in 0..t {
+        weights.push((1.0 - lambda) * lambda.powi((t - 1 - i) as i32));
+    }
+    let w_sum: f64 = weights.iter().sum();
+
+    // Exponentially weighted means
+    let means: Vec<f64> = (0..n)
+        .map(|j| {
+            weights
+                .iter()
+                .enumerate()
+                .map(|(i, &w)| w * returns[[i, j]])
+                .sum::<f64>()
+                / w_sum
+        })
+        .collect();
+
+    // Exponentially weighted covariance
+    for i in 0..n {
+        for j in i..n {
+            let mut s = 0.0;
+            for k in 0..t {
+                s += weights[k] * (returns[[k, i]] - means[i]) * (returns[[k, j]] - means[j]);
+            }
+            let c = s / w_sum;
+            cov[[i, j]] = c;
+            cov[[j, i]] = c;
+        }
+    }
+
+    cov
+}
+
+/// Derive correlation matrix from EWMA covariance.
+fn ewma_correlation_matrix(returns: &Array2<f64>, lambda: f64) -> Array2<f64> {
+    let cov = ewma_covariance_matrix(returns, lambda);
+    let n = cov.nrows();
+    let mut corr = Array2::<f64>::eye(n);
+
+    for i in 0..n {
+        let std_i = cov[[i, i]].max(0.0).sqrt();
+        if std_i < 1e-12 {
+            continue;
+        }
+        for j in (i + 1)..n {
+            let std_j = cov[[j, j]].max(0.0).sqrt();
+            if std_j < 1e-12 {
+                continue;
+            }
+            let r = (cov[[i, j]] / (std_i * std_j)).clamp(-1.0, 1.0);
+            corr[[i, j]] = r;
+            corr[[j, i]] = r;
+        }
+    }
+
+    corr
 }
 
 // ── Distance ───────────────────────────────────────────────────────────
@@ -347,7 +443,21 @@ pub fn recursive_bisection(cov: &Array2<f64>, leaf_order: &[usize]) -> Vec<f64> 
 /// Output: HrpResult with weights, correlation matrix, diagnostics.
 ///
 /// Returns None if input is empty or has fewer than 2 time steps.
+/// Uses sample covariance (Pearson correlation). For EWMA, use `allocate_hrp_with_method`.
+#[cfg(test)]
 pub fn allocate_hrp(returns: &Array2<f64>) -> Option<HrpResult> {
+    allocate_hrp_with_method(returns, CovarianceMethod::Sample)
+}
+
+/// HRP allocation with configurable covariance method.
+///
+/// `CovarianceMethod::Sample` uses standard Pearson correlation + sample covariance.
+/// `CovarianceMethod::Ewma { lambda }` uses exponentially-weighted estimates,
+/// giving more weight to recent observations (RiskMetrics: lambda=0.94).
+pub fn allocate_hrp_with_method(
+    returns: &Array2<f64>,
+    method: CovarianceMethod,
+) -> Option<HrpResult> {
     let n = returns.ncols();
     let t = returns.nrows();
 
@@ -368,11 +478,17 @@ pub fn allocate_hrp(returns: &Array2<f64>) -> Option<HrpResult> {
         });
     }
 
-    let corr = correlation_matrix(returns);
+    let (corr, cov) = match method {
+        CovarianceMethod::Sample => (correlation_matrix(returns), covariance_matrix(returns)),
+        CovarianceMethod::Ewma { lambda } => (
+            ewma_correlation_matrix(returns, lambda),
+            ewma_covariance_matrix(returns, lambda),
+        ),
+    };
+
     let dist = distance_matrix(&corr);
     let linkage = single_linkage_clustering(&dist);
     let leaf_order = quasi_diagonalize(&linkage, n);
-    let cov = covariance_matrix(returns);
     let weights = recursive_bisection(&cov, &leaf_order);
 
     Some(HrpResult {
@@ -702,5 +818,127 @@ mod tests {
         // Both should get roughly equal weight
         assert!(approx_eq(result.weights[0], 0.5, 0.1));
         assert!(approx_eq(result.weights[1], 0.5, 0.1));
+    }
+
+    // ── EWMA covariance tests (P6a-F1) ─────────────────────────────
+
+    #[test]
+    fn ewma_covariance_diagonal_positive() {
+        let t = 100;
+        let n = 3;
+        let mut returns = Array2::<f64>::zeros((t, n));
+        for i in 0..t {
+            for j in 0..n {
+                returns[[i, j]] = ((i as f64 + j as f64) * 0.1).sin() * 0.01;
+            }
+        }
+        let cov = ewma_covariance_matrix(&returns, 0.94);
+        for i in 0..n {
+            assert!(cov[[i, i]] > 0.0, "variance must be positive");
+        }
+    }
+
+    #[test]
+    fn ewma_covariance_symmetric() {
+        let t = 50;
+        let mut returns = Array2::<f64>::zeros((t, 3));
+        for i in 0..t {
+            returns[[i, 0]] = (i as f64 * 0.1).sin();
+            returns[[i, 1]] = (i as f64 * 0.2).cos();
+            returns[[i, 2]] = (i as f64 * 0.3).sin() + 0.5;
+        }
+        let cov = ewma_covariance_matrix(&returns, 0.94);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(approx_eq(cov[[i, j]], cov[[j, i]], 1e-12));
+            }
+        }
+    }
+
+    #[test]
+    fn ewma_correlation_diagonal_one() {
+        let t = 100;
+        let mut returns = Array2::<f64>::zeros((t, 3));
+        for i in 0..t {
+            for j in 0..3 {
+                returns[[i, j]] = ((i as f64 + j as f64) * 0.1).sin() * 0.01;
+            }
+        }
+        let corr = ewma_correlation_matrix(&returns, 0.94);
+        for i in 0..3 {
+            assert!(approx_eq(corr[[i, i]], 1.0, 1e-10));
+        }
+    }
+
+    #[test]
+    fn ewma_correlation_bounded() {
+        let t = 100;
+        let mut returns = Array2::<f64>::zeros((t, 3));
+        for i in 0..t {
+            returns[[i, 0]] = (i as f64 * 0.1).sin();
+            returns[[i, 1]] = (i as f64 * 0.2).cos();
+            returns[[i, 2]] = (i as f64 * 0.3).sin();
+        }
+        let corr = ewma_correlation_matrix(&returns, 0.94);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(corr[[i, j]] >= -1.0 && corr[[i, j]] <= 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn ewma_recent_data_more_weight() {
+        // Create two regimes: first half uncorrelated, second half perfectly correlated.
+        // EWMA (lambda=0.94) should give higher correlation than sample method.
+        let t = 200;
+        let mut returns = Array2::<f64>::zeros((t, 2));
+        for i in 0..100 {
+            returns[[i, 0]] = (i as f64 * 0.1).sin() * 0.01;
+            returns[[i, 1]] = (i as f64 * 0.3).cos() * 0.01; // uncorrelated
+        }
+        for i in 100..200 {
+            let v = (i as f64 * 0.1).sin() * 0.01;
+            returns[[i, 0]] = v;
+            returns[[i, 1]] = v; // perfectly correlated
+        }
+        let sample_corr = correlation_matrix(&returns);
+        let ewma_corr = ewma_correlation_matrix(&returns, 0.94);
+        // EWMA should show higher correlation (recent regime dominates)
+        assert!(
+            ewma_corr[[0, 1]] > sample_corr[[0, 1]],
+            "EWMA should weight recent correlated regime more: ewma={}, sample={}",
+            ewma_corr[[0, 1]],
+            sample_corr[[0, 1]]
+        );
+    }
+
+    #[test]
+    fn allocate_hrp_ewma_produces_valid_weights() {
+        let t = 200;
+        let n = 4;
+        let mut returns = Array2::<f64>::zeros((t, n));
+        for i in 0..t {
+            for j in 0..n {
+                returns[[i, j]] = ((i as f64 + j as f64) * 0.1 * (j as f64 + 1.0)).sin() * 0.01;
+            }
+        }
+        let result =
+            allocate_hrp_with_method(&returns, CovarianceMethod::Ewma { lambda: 0.94 }).unwrap();
+        assert_eq!(result.weights.len(), n);
+        let sum: f64 = result.weights.iter().sum();
+        assert!(approx_eq(sum, 1.0, 1e-10));
+        for &w in &result.weights {
+            assert!(w > 0.0);
+        }
+    }
+
+    #[test]
+    fn ewma_invalid_lambda_returns_zero() {
+        let returns = Array2::<f64>::zeros((10, 2));
+        let cov = ewma_covariance_matrix(&returns, 0.0);
+        assert!(cov.iter().all(|&v| v == 0.0));
+        let cov = ewma_covariance_matrix(&returns, 1.0);
+        assert!(cov.iter().all(|&v| v == 0.0));
     }
 }

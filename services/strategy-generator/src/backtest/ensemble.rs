@@ -62,6 +62,12 @@ pub struct EnsembleConfig {
     pub rebalance_interval_minutes: u64,
     #[serde(default)]
     pub dynamic_weights: DynamicWeightYamlConfig,
+    /// P6a-F1: Covariance estimation method for HRP allocation.
+    #[serde(default)]
+    pub covariance_method: super::hrp::CovarianceMethod,
+    /// P6a-F2: Turnover cost rate (fraction of portfolio value per unit turnover).
+    #[serde(default = "default_turnover_cost_rate")]
+    pub turnover_cost_rate: f64,
 }
 
 impl Default for EnsembleConfig {
@@ -76,6 +82,8 @@ impl Default for EnsembleConfig {
             correlation_lookback_bars: default_correlation_lookback_bars(),
             rebalance_interval_minutes: default_rebalance_interval_minutes(),
             dynamic_weights: DynamicWeightYamlConfig::default(),
+            covariance_method: super::hrp::CovarianceMethod::default(),
+            turnover_cost_rate: default_turnover_cost_rate(),
         }
     }
 }
@@ -133,6 +141,9 @@ fn default_correlation_lookback_bars() -> usize {
 }
 fn default_rebalance_interval_minutes() -> u64 {
     30
+}
+fn default_turnover_cost_rate() -> f64 {
+    0.0001 // 1 bps
 }
 fn default_psr_reward_scale() -> f64 {
     0.2

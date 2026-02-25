@@ -68,6 +68,10 @@ jsonwebtoken = "9"
 # Rate limiting
 tower_governor = "0.4"
 
+# Parallelism
+rayon = "1.10"
+num_cpus = "1.16"
+
 # Misc
 rand = "0.8"
 clap = { version = "4.4", features = ["derive"] }

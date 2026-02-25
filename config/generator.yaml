@@ -54,6 +54,13 @@ ensemble:
   max_total_strategies: 20
   correlation_lookback_bars: 500
   rebalance_interval_minutes: 30
+  # P6a-F1: Covariance method for HRP allocation.
+  # Options: { method: "sample" } or { method: "ewma", lambda: 0.94 }
+  covariance_method:
+    method: "ewma"
+    lambda: 0.94
+  # P6a-F2: Turnover cost rate per exchange (fraction of portfolio value).
+  turnover_cost_rate: 0.0001  # 1 bps for Polygon/IBKR
   dynamic_weights:
     psr_reward_scale: 0.2
     psr_max_reward: 3.0
@@ -61,6 +68,11 @@ ensemble:
     crowding_corr_threshold: 0.7
     crowding_penalty_rate: 0.3
     crowding_max_penalty: 0.8
+
+# P6a-E2: VM protection penalty threshold.
+# Genomes where >15% of ops trigger NaN/Inf sanitization get fitness penalized.
+vm:
+  protection_penalty_threshold: 0.15
 
 # LLM-guided mutation oracle (P2)
 # Invoked when GA stalls (promotion rate drop or high TFT rate).

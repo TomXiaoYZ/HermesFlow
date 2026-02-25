@@ -710,6 +710,10 @@ pub struct Backtester {
     pub exchange: String,
     pub resolution: String,
     pub threshold_config: ThresholdConfig,
+    /// P6a-E2: Threshold for protected-op penalty. Genomes with a higher ratio
+    /// of NaN/Inf sanitization triggers get their fitness penalized.
+    /// Default 0.15 means >15% of ops triggered protection → penalty applied.
+    pub protection_penalty_threshold: f64,
 }
 
 impl Backtester {
@@ -749,6 +753,7 @@ impl Backtester {
             exchange,
             resolution,
             threshold_config,
+            protection_penalty_threshold: 0.15,
         }
     }
 
@@ -1575,7 +1580,9 @@ impl Backtester {
             }
         };
 
-        let signal = match self.vm.execute(&genome.tokens, &data.features) {
+        // P6a-E2: Use execute_with_stats to track protection guard triggers
+        let (signal, exec_stats) = self.vm.execute_with_stats(&genome.tokens, &data.features);
+        let signal = match signal {
             Some(s) => s,
             None => {
                 genome.fitness = -1000.0;
@@ -1650,7 +1657,22 @@ impl Backtester {
             0.0
         };
 
-        let fitness = mean_psr - 0.5 * std_psr - complexity_penalty;
+        // P6a-E2: Penalize genomes that rely heavily on protected operations.
+        // If >threshold fraction of ops triggered NaN/Inf sanitization,
+        // scale down fitness proportionally.
+        let protection_ratio = exec_stats.protection_ratio();
+        let protection_penalty = if protection_ratio > self.protection_penalty_threshold {
+            // Linear penalty: at ratio=1.0, multiply fitness by 0.1 (90% penalty)
+            // At threshold, penalty starts from 0
+            let excess = protection_ratio - self.protection_penalty_threshold;
+            let max_excess = 1.0 - self.protection_penalty_threshold;
+            excess / max_excess * 0.9
+        } else {
+            0.0
+        };
+
+        let raw_fitness = mean_psr - 0.5 * std_psr - complexity_penalty;
+        let fitness = raw_fitness * (1.0 - protection_penalty);
         genome.fitness = if fitness.is_nan() { -10.0 } else { fitness };
     }
 

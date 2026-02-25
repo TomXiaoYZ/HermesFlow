@@ -1,9 +1,11 @@
+use rayon::prelude::*;
 use redis::AsyncCommands;
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::env;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -241,6 +243,18 @@ async fn main() -> anyhow::Result<()> {
         api::start_api_server(pool_api, api_exchanges, api_port).await;
     });
 
+    // P6a-G2: Dedicated rayon thread pool for CPU-bound genome evaluation.
+    // Reserve 2 cores for Tokio I/O + OS, rest for parallel fitness evaluation.
+    let rayon_threads = num_cpus::get().saturating_sub(2).max(1);
+    let rayon_pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(rayon_threads)
+            .thread_name(|idx| format!("genome-eval-{}", idx))
+            .build()
+            .expect("failed to create rayon thread pool"),
+    );
+    info!("Created rayon pool: {} threads (CPUs: {})", rayon_threads, num_cpus::get());
+
     // Spawn two evolution tasks per (exchange, symbol) pair: long_only + long_short
     let mut handles = Vec::new();
     for ec in &exchange_configs {
@@ -261,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
                 let config = ec.clone();
                 let oracle_cfg = oracle_config.clone();
                 let thresh_cfg = threshold_config.clone();
+                let rayon_pool = rayon_pool.clone();
                 let sym = symbol.clone();
                 let ex_name = ec.exchange.clone();
                 let handle = tokio::spawn(async move {
@@ -270,6 +285,7 @@ async fn main() -> anyhow::Result<()> {
                         config,
                         oracle_cfg,
                         thresh_cfg,
+                        rayon_pool,
                         sym.clone(),
                         mode,
                     )
@@ -525,12 +541,14 @@ async fn load_symbols(pool: &PgPool, exchange: &str) -> Vec<String> {
 }
 
 /// Run the evolution loop for a single (exchange, symbol, mode) triple.
+#[allow(clippy::too_many_arguments)]
 async fn run_symbol_evolution(
     pool: PgPool,
     redis_url: &str,
     config: ExchangeConfig,
     oracle_config: LlmOracleConfig,
     threshold_config: ThresholdConfig,
+    rayon_pool: Arc<rayon::ThreadPool>,
     symbol: String,
     mode: StrategyMode,
 ) -> anyhow::Result<()> {
@@ -854,10 +872,14 @@ async fn run_symbol_evolution(
         let data_len = backtester.data_length(&symbol);
         let k = ((data_len as f64 / 300.0).round() as usize).clamp(3, 8);
 
-        // Evaluate each genome via K-fold temporal cross-validation
-        for genome in ga.all_genomes_mut() {
-            backtester.evaluate_symbol_kfold(genome, &symbol, k, mode);
-        }
+        // P6a-G2: Parallel genome evaluation via rayon thread pool.
+        // Each genome is independent; Backtester is Sync (immutable &self).
+        let mut genomes = ga.all_genomes_mut();
+        rayon_pool.install(|| {
+            genomes.par_iter_mut().for_each(|genome| {
+                backtester.evaluate_symbol_kfold(genome, &symbol, k, mode);
+            });
+        });
         let promo_stats = ga.evolve();
         promo_tracker.push(promo_stats.clone());
 
@@ -1642,7 +1664,8 @@ async fn run_ensemble_rebalance(
     }
 
     // 5. Run HRP allocation
-    let hrp_result = match hrp::allocate_hrp(&return_matrix) {
+    // P6a-F1: Use configurable covariance method (sample or EWMA)
+    let hrp_result = match hrp::allocate_hrp_with_method(&return_matrix, ensemble_cfg.covariance_method) {
         Some(r) => r,
         None => {
             warn!("[{}] HRP allocation failed", exchange);
@@ -1721,6 +1744,37 @@ async fn run_ensemble_rebalance(
         }
     }
 
+    // 7b. P6a-F2: Compute turnover vs previous rebalance weights
+    let new_weights: Vec<(String, f64)> = adjustments
+        .iter()
+        .enumerate()
+        .map(|(i, adj)| {
+            let key = format!("{}_{}", valid_candidates[i].id.symbol, valid_candidates[i].id.mode);
+            (key, adj.final_weight)
+        })
+        .collect();
+
+    // Load previous weights from DB
+    let prev_weights: Vec<(String, f64)> = sqlx::query_as::<_, (String, String, f64)>(
+        "SELECT symbol, mode, final_weight FROM portfolio_ensemble_strategies pes \
+         JOIN portfolio_ensembles pe ON pes.ensemble_id = pe.id \
+         WHERE pe.exchange = $1 \
+         ORDER BY pe.created_at DESC LIMIT 50",
+    )
+    .bind(exchange)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(sym, mode, w)| (format!("{}_{}", sym, mode), w))
+    .collect();
+
+    let turnover = ensemble_weights::compute_turnover(&prev_weights, &new_weights);
+    let turnover_cost_val = ensemble_weights::turnover_cost(turnover, ensemble_cfg.turnover_cost_rate);
+
+    // Deduct from shadow equity
+    equity *= 1.0 - turnover_cost_val;
+
     // 8. Persist to DB
     *version += 1;
     let weights_json: serde_json::Value = adjustments
@@ -1735,6 +1789,13 @@ async fn run_ensemble_rebalance(
         })
         .collect();
 
+    let metadata = serde_json::json!({
+        "turnover": turnover,
+        "turnover_cost": turnover_cost_val,
+        "turnover_cost_rate": ensemble_cfg.turnover_cost_rate,
+        "covariance_method": format!("{:?}", ensemble_cfg.covariance_method),
+    });
+
     let hrp_diagnostics = serde_json::json!({
         "leaf_order": hrp_result.leaf_order,
         "linkage_steps": hrp_result.linkage.len(),
@@ -1745,8 +1806,8 @@ async fn run_ensemble_rebalance(
         "INSERT INTO portfolio_ensembles \
          (exchange, version, strategy_count, portfolio_oos_psr, portfolio_sharpe, \
           portfolio_max_drawdown, avg_pairwise_correlation, crowded_pair_count, \
-          weights, hrp_diagnostics) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+          weights, hrp_diagnostics, metadata) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          RETURNING id",
     )
     .bind(exchange)
@@ -1759,6 +1820,7 @@ async fn run_ensemble_rebalance(
     .bind(crowding_pairs.len() as i32)
     .bind(&weights_json)
     .bind(&hrp_diagnostics)
+    .bind(&metadata)
     .fetch_one(pool)
     .await?;
 
@@ -1838,14 +1900,16 @@ async fn run_ensemble_rebalance(
     }
 
     info!(
-        "[{}] Ensemble v{}: {} strategies, Sharpe={:.3}, MaxDD={:.3}, AvgCorr={:.3}, Crowded={}",
+        "[{}] Ensemble v{}: {} strategies, Sharpe={:.3}, MaxDD={:.3}, AvgCorr={:.3}, Crowded={}, Turnover={:.4}, Cost={:.6}",
         exchange,
         version,
         n_valid,
         port_sharpe,
         max_dd,
         avg_corr,
-        crowding_pairs.len()
+        crowding_pairs.len(),
+        turnover,
+        turnover_cost_val,
     );
 
     Ok(())

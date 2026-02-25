@@ -5,4 +5,4 @@ pub mod ops;
 pub mod vm; // The core stack VM
 
 // Re-export core items
-pub use vm::StackVM;
+pub use vm::{ExecutionStats, StackVM};
