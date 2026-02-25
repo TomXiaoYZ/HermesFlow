@@ -380,10 +380,13 @@ pub fn validate_formulas(
         }
 
         accepted_formulas.push(formula.clone());
+        let len = tokens.len();
         genomes.push(Genome {
             tokens,
             fitness: 0.0,
             age: 0,
+            block_mask: vec![0; len],
+            block_age: vec![0; len],
         });
     }
 

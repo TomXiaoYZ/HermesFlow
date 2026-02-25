@@ -746,10 +746,13 @@ async fn run_symbol_evolution(
                 _ => {
                     // Compatible: same feat_offset
                     let tokens: Vec<usize> = best_tokens.into_iter().map(|x| x as usize).collect();
+                    let len = tokens.len();
                     ga.best_genome = Some(genetic::Genome {
                         tokens,
                         fitness: 0.0,
                         age: 0,
+                        block_mask: vec![0; len],
+                        block_age: vec![0; len],
                     });
                 }
             }
