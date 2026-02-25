@@ -200,10 +200,10 @@ pub async fn load_candidates_from_db(
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        // Extract walk-forward step count from metadata -> walk_forward -> num_valid_steps
+        // Extract walk-forward step count from metadata -> walk_forward -> num_valid
         let walk_forward_steps = metadata
             .get("walk_forward")
-            .and_then(|wf| wf.get("num_valid_steps"))
+            .and_then(|wf| wf.get("num_valid"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
 
