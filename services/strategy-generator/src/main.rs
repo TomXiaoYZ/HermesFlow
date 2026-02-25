@@ -1884,7 +1884,25 @@ async fn run_ensemble_rebalance(
     .await
     .map_err(|e| error!("[{}] Failed to persist equity point: {}", exchange, e));
 
-    // 9. Publish to Redis
+    // 9. UPSERT deployed strategies (P6b-B1)
+    let threshold_json = serde_json::to_value(threshold_config).unwrap_or_default();
+    if let Err(e) = ensemble::upsert_deployed_strategies(
+        pool,
+        exchange,
+        &valid_owned,
+        &adjustments,
+        *version,
+        &threshold_json,
+    )
+    .await
+    {
+        error!(
+            "[{}] Failed to upsert deployed strategies: {}",
+            exchange, e
+        );
+    }
+
+    // 10. Publish to Redis
     if let Ok(client) = redis::Client::open(redis_url) {
         if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
             let channel = format!("portfolio_ensemble:{}", exchange.to_lowercase());

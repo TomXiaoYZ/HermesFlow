@@ -399,6 +399,90 @@ pub fn extract_strategy_returns(
     Some(bar_returns)
 }
 
+// ── Deployment ────────────────────────────────────────────────────────
+
+/// UPSERT selected strategies into deployed_strategies table.
+///
+/// For each strategy in the current ensemble, inserts or updates its row
+/// in deployed_strategies with status='active'. Previously active strategies
+/// for this exchange that are no longer in the ensemble are set to 'replaced'.
+pub async fn upsert_deployed_strategies(
+    pool: &PgPool,
+    exchange: &str,
+    candidates: &[StrategyCandidate],
+    weights: &[super::ensemble_weights::WeightAdjustment],
+    ensemble_version: i32,
+    threshold_config: &serde_json::Value,
+) -> anyhow::Result<()> {
+    // Collect (symbol, mode) pairs from current ensemble
+    let active_keys: std::collections::HashSet<(String, String)> = candidates
+        .iter()
+        .map(|c| (c.id.symbol.clone(), c.id.mode.clone()))
+        .collect();
+
+    // Mark previously active strategies as 'replaced' if no longer in ensemble
+    sqlx::query(
+        "UPDATE deployed_strategies \
+         SET status = 'replaced', updated_at = NOW() \
+         WHERE exchange = $1 AND status = 'active' \
+           AND (symbol, mode) NOT IN (SELECT * FROM UNNEST($2::text[], $3::text[]))",
+    )
+    .bind(exchange)
+    .bind(
+        active_keys
+            .iter()
+            .map(|(s, _)| s.clone())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        active_keys
+            .iter()
+            .map(|(_, m)| m.clone())
+            .collect::<Vec<_>>(),
+    )
+    .execute(pool)
+    .await?;
+
+    // UPSERT each active strategy
+    for (i, c) in candidates.iter().enumerate() {
+        let final_weight = weights.get(i).map(|w| w.final_weight).unwrap_or(0.0);
+
+        sqlx::query(
+            "INSERT INTO deployed_strategies \
+             (exchange, symbol, mode, genome, generation, threshold_config, \
+              oos_psr, is_fitness, utilization, final_weight, ensemble_version, \
+              status, deployed_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', NOW(), NOW()) \
+             ON CONFLICT (exchange, symbol, mode) DO UPDATE SET \
+              genome = EXCLUDED.genome, \
+              generation = EXCLUDED.generation, \
+              threshold_config = EXCLUDED.threshold_config, \
+              oos_psr = EXCLUDED.oos_psr, \
+              is_fitness = EXCLUDED.is_fitness, \
+              utilization = EXCLUDED.utilization, \
+              final_weight = EXCLUDED.final_weight, \
+              ensemble_version = EXCLUDED.ensemble_version, \
+              status = 'active', \
+              updated_at = NOW()",
+        )
+        .bind(exchange)
+        .bind(&c.id.symbol)
+        .bind(&c.id.mode)
+        .bind(&c.genome)
+        .bind(c.id.generation)
+        .bind(threshold_config)
+        .bind(c.oos_psr)
+        .bind(c.is_fitness)
+        .bind(c.utilization)
+        .bind(final_weight)
+        .bind(ensemble_version)
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(())
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]

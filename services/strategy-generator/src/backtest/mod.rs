@@ -104,7 +104,7 @@ pub struct ResolvedThresholdParams {
 }
 
 /// Per-mode threshold configuration (from YAML).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LongOnlyThresholdYaml {
     #[serde(default = "default_percentile_70")]
     pub percentile_upper: f64,
@@ -121,7 +121,7 @@ impl Default for LongOnlyThresholdYaml {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LongShortThresholdYaml {
     #[serde(default = "default_percentile_70")]
     pub percentile_upper: f64,
@@ -145,13 +145,13 @@ impl Default for LongShortThresholdYaml {
 }
 
 /// Optional per-field overrides for a specific symbol.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LongOnlyThresholdOverride {
     pub percentile_upper: Option<f64>,
     pub clamp_upper: Option<(f64, f64)>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LongShortThresholdOverride {
     pub percentile_upper: Option<f64>,
     pub percentile_lower: Option<f64>,
@@ -159,14 +159,14 @@ pub struct LongShortThresholdOverride {
     pub clamp_lower: Option<(f64, f64)>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ThresholdOverride {
     pub long_only: Option<LongOnlyThresholdOverride>,
     pub long_short: Option<LongShortThresholdOverride>,
 }
 
 /// Top-level threshold configuration loaded from generator.yaml.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ThresholdConfig {
     #[serde(default)]
     pub long_only: LongOnlyThresholdYaml,
