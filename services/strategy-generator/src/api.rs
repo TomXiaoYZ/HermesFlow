@@ -66,6 +66,10 @@ pub async fn start_api_server(
         .route("/:exchange/ensemble/history", get(get_ensemble_history))
         .route("/:exchange/ensemble/equity", get(get_ensemble_equity))
         .route("/:exchange/ensemble/rebalance", post(trigger_rebalance))
+        .route(
+            "/:exchange/ensemble/backtest",
+            get(get_backtest_results).post(trigger_backtest),
+        )
         .with_state(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -1016,6 +1020,108 @@ async fn trigger_rebalance(
         Ok(None) => Json(json!({
             "status": "no_ensemble_yet",
             "message": "No ensemble has been created yet. The background loop will create one shortly.",
+        })),
+        Err(e) => Json(json!({"error": format!("Database error: {}", e)})),
+    }
+}
+
+/// POST /:exchange/ensemble/backtest — trigger walk-forward backtest
+async fn trigger_backtest(
+    State(state): State<ApiState>,
+    Path(exchange): Path<String>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    let exchange_name = match state.exchanges.get(&key) {
+        Some(cfg) => cfg.exchange.clone(),
+        None => return Json(json!({"error": format!("Unknown exchange: {}", exchange)})),
+    };
+
+    match crate::backtest::ensemble::run_ensemble_walk_forward(&state.pool, &exchange_name).await {
+        Ok(Some(result)) => {
+            let response = json!({
+                "status": "completed",
+                "exchange": result.exchange,
+                "backtest_start": result.backtest_start.to_rfc3339(),
+                "backtest_end": result.backtest_end.to_rfc3339(),
+                "rebalance_count": result.rebalance_count,
+                "cumulative_return": result.cumulative_return,
+                "annualized_sharpe": result.annualized_sharpe,
+                "max_drawdown": result.max_drawdown,
+                "avg_turnover": result.avg_turnover,
+                "total_turnover_cost": result.total_turnover_cost,
+                "avg_strategy_count": result.avg_strategy_count,
+            });
+            // Persist result
+            if let Err(e) =
+                crate::backtest::ensemble::persist_backtest_result(&state.pool, &result).await
+            {
+                tracing::error!("[{}] Failed to persist backtest: {}", exchange_name, e);
+            }
+            Json(response)
+        }
+        Ok(None) => Json(json!({
+            "status": "insufficient_data",
+            "message": "Not enough ensemble history for backtest",
+        })),
+        Err(e) => Json(json!({"error": format!("Backtest failed: {}", e)})),
+    }
+}
+
+/// GET /:exchange/ensemble/backtest — get latest backtest results
+async fn get_backtest_results(
+    State(state): State<ApiState>,
+    Path(exchange): Path<String>,
+) -> Json<Value> {
+    let key = exchange.to_lowercase();
+    let exchange_name = match state.exchanges.get(&key) {
+        Some(cfg) => cfg.exchange.clone(),
+        None => return Json(json!({"error": format!("Unknown exchange: {}", exchange)})),
+    };
+
+    let row = sqlx::query(
+        "SELECT id, exchange, backtest_start, backtest_end, rebalance_count, \
+                cumulative_return, annualized_sharpe, max_drawdown, \
+                avg_turnover, total_turnover_cost, avg_strategy_count, \
+                created_at \
+         FROM ensemble_backtest_results \
+         WHERE exchange = $1 \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&exchange_name)
+    .fetch_optional(&state.pool)
+    .await;
+
+    match row {
+        Ok(Some(r)) => {
+            let id: uuid::Uuid = r.get("id");
+            let start: chrono::DateTime<chrono::Utc> = r.get("backtest_start");
+            let end: chrono::DateTime<chrono::Utc> = r.get("backtest_end");
+            let count: i32 = r.get("rebalance_count");
+            let cum_ret: Option<f64> = r.get("cumulative_return");
+            let sharpe: Option<f64> = r.get("annualized_sharpe");
+            let max_dd: Option<f64> = r.get("max_drawdown");
+            let avg_turn: Option<f64> = r.get("avg_turnover");
+            let total_cost: Option<f64> = r.get("total_turnover_cost");
+            let avg_strat: Option<f64> = r.get("avg_strategy_count");
+            let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
+            Json(json!({
+                "id": id.to_string(),
+                "exchange": exchange_name,
+                "backtest_start": start.to_rfc3339(),
+                "backtest_end": end.to_rfc3339(),
+                "rebalance_count": count,
+                "cumulative_return": cum_ret,
+                "annualized_sharpe": sharpe,
+                "max_drawdown": max_dd,
+                "avg_turnover": avg_turn,
+                "total_turnover_cost": total_cost,
+                "avg_strategy_count": avg_strat,
+                "computed_at": created.to_rfc3339(),
+            }))
+        }
+        Ok(None) => Json(json!({
+            "status": "no_backtest_yet",
+            "message": "No backtest has been run yet. POST to trigger one.",
         })),
         Err(e) => Json(json!({"error": format!("Database error: {}", e)})),
     }

@@ -331,6 +331,15 @@ async fn main() -> anyhow::Result<()> {
             });
             handles.push(handle);
         }
+        // P6b-F4: Spawn daily ensemble walk-forward backtest per exchange
+        for ec in &exchange_configs {
+            let pool_bt = pool.clone();
+            let exchange = ec.exchange.clone();
+            let handle = tokio::spawn(async move {
+                run_daily_backtest_loop(pool_bt, &exchange).await;
+            });
+            handles.push(handle);
+        }
     } else {
         info!("Ensemble rebalance loop disabled by config");
     }
@@ -1477,6 +1486,67 @@ use backtest::hrp;
 
 /// Periodic ensemble rebalance loop for one exchange.
 ///
+/// P6b-F4: Daily ensemble walk-forward backtest scheduler.
+///
+/// Runs at 03:00 UTC each day. Computes aggregate performance statistics
+/// from historical ensemble equity data and persists to ensemble_backtest_results.
+async fn run_daily_backtest_loop(pool: PgPool, exchange: &str) {
+    info!("[{}] Starting daily ensemble backtest scheduler", exchange);
+
+    // Wait 5 minutes after startup (let ensemble run first)
+    tokio::time::sleep(Duration::from_secs(300)).await;
+
+    loop {
+        // Compute sleep until next 03:00 UTC
+        let now = chrono::Utc::now();
+        let today_3am = now
+            .date_naive()
+            .and_hms_opt(3, 0, 0)
+            .unwrap()
+            .and_utc();
+        let next_run = if now < today_3am {
+            today_3am
+        } else {
+            today_3am + chrono::Duration::days(1)
+        };
+        let sleep_secs = (next_run - now).num_seconds().max(0) as u64;
+        info!(
+            "[{}] Next ensemble backtest at {} (in {}h {}m)",
+            exchange,
+            next_run.format("%Y-%m-%d %H:%M UTC"),
+            sleep_secs / 3600,
+            (sleep_secs % 3600) / 60,
+        );
+        tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+
+        // Run backtest
+        match ensemble::run_ensemble_walk_forward(&pool, exchange).await {
+            Ok(Some(result)) => {
+                info!(
+                    "[{}] Ensemble backtest: {} rebalances, return={:.2}%, sharpe={:.3}, maxDD={:.2}%",
+                    exchange,
+                    result.rebalance_count,
+                    result.cumulative_return * 100.0,
+                    result.annualized_sharpe,
+                    result.max_drawdown * 100.0,
+                );
+                if let Err(e) = ensemble::persist_backtest_result(&pool, &result).await {
+                    error!("[{}] Failed to persist backtest result: {}", exchange, e);
+                }
+            }
+            Ok(None) => {
+                info!(
+                    "[{}] Insufficient ensemble history for backtest",
+                    exchange
+                );
+            }
+            Err(e) => {
+                error!("[{}] Ensemble backtest failed: {}", exchange, e);
+            }
+        }
+    }
+}
+
 /// Loads top strategies, computes HRP weights with dynamic adjustments,
 /// persists to DB, and publishes to Redis.
 #[allow(clippy::too_many_arguments)]

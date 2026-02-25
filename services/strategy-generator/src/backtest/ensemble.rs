@@ -631,6 +631,234 @@ pub async fn upsert_deployed_strategies(
     Ok(())
 }
 
+// ── Walk-Forward Backtest (P6b-F4) ────────────────────────────────────
+
+/// Summary of an ensemble walk-forward backtest run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnsembleBacktestResult {
+    pub exchange: String,
+    pub backtest_start: chrono::DateTime<chrono::Utc>,
+    pub backtest_end: chrono::DateTime<chrono::Utc>,
+    pub rebalance_count: i32,
+    pub cumulative_return: f64,
+    pub annualized_sharpe: f64,
+    pub max_drawdown: f64,
+    pub avg_turnover: f64,
+    pub total_turnover_cost: f64,
+    pub avg_strategy_count: f64,
+    pub per_period: Vec<serde_json::Value>,
+}
+
+/// Run ensemble walk-forward backtest by replaying historical ensemble decisions.
+///
+/// Loads the recorded equity curve from `portfolio_ensemble_equity` and
+/// ensemble metadata from `portfolio_ensembles`, then computes aggregate
+/// performance statistics to validate out-of-sample ensemble behavior.
+pub async fn run_ensemble_walk_forward(
+    pool: &PgPool,
+    exchange: &str,
+) -> anyhow::Result<Option<EnsembleBacktestResult>> {
+    // 1. Load historical equity points ordered by time
+    let equity_rows = sqlx::query(
+        "SELECT ensemble_version, timestamp, equity, period_return \
+         FROM portfolio_ensemble_equity \
+         WHERE exchange = $1 \
+         ORDER BY timestamp ASC",
+    )
+    .bind(exchange)
+    .fetch_all(pool)
+    .await?;
+
+    if equity_rows.len() < 2 {
+        return Ok(None);
+    }
+
+    // 2. Load ensemble metadata (strategy count, turnover, etc.)
+    let ensemble_rows = sqlx::query(
+        "SELECT version, strategy_count, portfolio_sharpe, portfolio_max_drawdown, \
+                metadata, created_at \
+         FROM portfolio_ensembles \
+         WHERE exchange = $1 \
+         ORDER BY version ASC",
+    )
+    .bind(exchange)
+    .fetch_all(pool)
+    .await?;
+
+    // Build version -> metadata map
+    let mut version_meta: std::collections::HashMap<i32, (i32, Option<f64>, Option<f64>)> =
+        std::collections::HashMap::new();
+    for row in &ensemble_rows {
+        let ver: i32 = row.get("version");
+        let count: i32 = row.get("strategy_count");
+        let meta: Option<serde_json::Value> = row.get("metadata");
+        let turnover = meta
+            .as_ref()
+            .and_then(|m| m.get("turnover"))
+            .and_then(|v| v.as_f64());
+        let cost = meta
+            .as_ref()
+            .and_then(|m| m.get("turnover_cost"))
+            .and_then(|v| v.as_f64());
+        version_meta.insert(ver, (count, turnover, cost));
+    }
+
+    // 3. Compute period-by-period returns from equity curve
+    let mut period_returns: Vec<f64> = Vec::new();
+    let mut per_period_json: Vec<serde_json::Value> = Vec::new();
+    let mut total_turnover = 0.0_f64;
+    let mut total_cost = 0.0_f64;
+    let mut total_strategies = 0.0_f64;
+    let mut turnover_count = 0_usize;
+
+    let first_ts: chrono::DateTime<chrono::Utc> = equity_rows[0].get("timestamp");
+    let mut last_ts = first_ts;
+
+    for i in 1..equity_rows.len() {
+        let prev_equity: f64 = equity_rows[i - 1].get("equity");
+        let curr_equity: f64 = equity_rows[i].get("equity");
+        let ts: chrono::DateTime<chrono::Utc> = equity_rows[i].get("timestamp");
+        let version: i32 = equity_rows[i].get("ensemble_version");
+
+        let period_ret = if prev_equity > 1e-10 {
+            (curr_equity / prev_equity) - 1.0
+        } else {
+            0.0
+        };
+        period_returns.push(period_ret);
+        last_ts = ts;
+
+        // Aggregate metadata from ensemble version
+        if let Some((count, turnover, cost)) = version_meta.get(&version) {
+            total_strategies += *count as f64;
+            if let Some(t) = turnover {
+                total_turnover += t;
+                turnover_count += 1;
+            }
+            if let Some(c) = cost {
+                total_cost += c;
+            }
+        }
+
+        per_period_json.push(serde_json::json!({
+            "version": version,
+            "timestamp": ts.to_rfc3339(),
+            "equity": curr_equity,
+            "period_return": period_ret,
+        }));
+    }
+
+    let n = period_returns.len();
+    if n < 2 {
+        return Ok(None);
+    }
+
+    // 4. Compute aggregate metrics
+    let cumulative_return = period_returns
+        .iter()
+        .fold(1.0_f64, |acc, r| acc * (1.0 + r))
+        - 1.0;
+
+    let mean_ret = period_returns.iter().sum::<f64>() / n as f64;
+    let var = period_returns
+        .iter()
+        .map(|r| (r - mean_ret).powi(2))
+        .sum::<f64>()
+        / (n as f64 - 1.0);
+    let std = var.sqrt();
+
+    // Annualize: assume each period is one rebalance interval (~30min to ~240min)
+    // Use the actual time span for annualization
+    let total_hours = (last_ts - first_ts).num_minutes() as f64 / 60.0;
+    let periods_per_year = if total_hours > 0.0 {
+        (n as f64 / total_hours) * 252.0 * 6.5
+    } else {
+        252.0
+    };
+    let annualized_sharpe = if std > 1e-10 {
+        mean_ret / std * periods_per_year.sqrt()
+    } else {
+        0.0
+    };
+
+    // Max drawdown
+    let mut equity = 1.0_f64;
+    let mut peak = 1.0_f64;
+    let mut max_dd = 0.0_f64;
+    for &r in &period_returns {
+        equity *= 1.0 + r;
+        if equity > peak {
+            peak = equity;
+        }
+        let dd = (peak - equity) / peak;
+        if dd > max_dd {
+            max_dd = dd;
+        }
+    }
+
+    let rebalance_count = ensemble_rows.len() as i32;
+    let avg_turnover = if turnover_count > 0 {
+        total_turnover / turnover_count as f64
+    } else {
+        0.0
+    };
+    let avg_strategy_count = if rebalance_count > 0 {
+        total_strategies / rebalance_count as f64
+    } else {
+        0.0
+    };
+
+    Ok(Some(EnsembleBacktestResult {
+        exchange: exchange.to_string(),
+        backtest_start: first_ts,
+        backtest_end: last_ts,
+        rebalance_count,
+        cumulative_return,
+        annualized_sharpe,
+        max_drawdown: max_dd,
+        avg_turnover,
+        total_turnover_cost: total_cost,
+        avg_strategy_count,
+        per_period: per_period_json,
+    }))
+}
+
+/// Persist ensemble backtest result to DB.
+pub async fn persist_backtest_result(
+    pool: &PgPool,
+    result: &EnsembleBacktestResult,
+) -> anyhow::Result<()> {
+    let per_period_json = serde_json::to_value(&result.per_period).unwrap_or_default();
+    let metadata = serde_json::json!({
+        "computed_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    sqlx::query(
+        "INSERT INTO ensemble_backtest_results \
+         (exchange, backtest_start, backtest_end, rebalance_count, \
+          cumulative_return, annualized_sharpe, max_drawdown, \
+          avg_turnover, total_turnover_cost, avg_strategy_count, \
+          per_period_json, metadata) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+    )
+    .bind(&result.exchange)
+    .bind(result.backtest_start)
+    .bind(result.backtest_end)
+    .bind(result.rebalance_count)
+    .bind(result.cumulative_return)
+    .bind(result.annualized_sharpe)
+    .bind(result.max_drawdown)
+    .bind(result.avg_turnover)
+    .bind(result.total_turnover_cost)
+    .bind(result.avg_strategy_count)
+    .bind(&per_period_json)
+    .bind(&metadata)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
