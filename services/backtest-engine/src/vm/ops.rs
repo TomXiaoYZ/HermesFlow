@@ -1,11 +1,10 @@
-use ndarray::{s, Array2};
-// use ndarray_stats::QuantileExt; // Unused here
+use ndarray::{s, Array2, ArrayBase, Data, Ix2};
 
 /// Time-series delay: Shift array along time axis (axis 1) with zero padding.
 /// x shape: (batch, time)
-pub fn ts_delay(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_delay<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     if d == 0 {
-        return x.clone();
+        return x.mapv(|v| v);
     }
 
     let (batch_size, time_steps) = x.dim();
@@ -28,11 +27,16 @@ pub fn ts_delay(x: &Array2<f64>, d: usize) -> Array2<f64> {
 }
 
 /// Gate operator: if condition > 0 then x else y
-pub fn op_gate(condition: &Array2<f64>, x: &Array2<f64>, y: &Array2<f64>) -> Array2<f64> {
-    // We can use zip_mut_with or mapv
-    // out = mask * x + (1 - mask) * y
-    // equivalent to: if c > 0 { x } else { y }
-
+pub fn op_gate<S1, S2, S3>(
+    condition: &ArrayBase<S1, Ix2>,
+    x: &ArrayBase<S2, Ix2>,
+    y: &ArrayBase<S3, Ix2>,
+) -> Array2<f64>
+where
+    S1: Data<Elem = f64>,
+    S2: Data<Elem = f64>,
+    S3: Data<Elem = f64>,
+{
     let mut out = Array2::zeros(condition.dim());
 
     ndarray::Zip::from(&mut out)
@@ -47,8 +51,8 @@ pub fn op_gate(condition: &Array2<f64>, x: &Array2<f64>, y: &Array2<f64>) -> Arr
 }
 
 /// Jump operator: Z-score normalization -> Relu(z - 3.0)
-pub fn op_jump(x: &Array2<f64>) -> Array2<f64> {
-    let mut out = x.clone();
+pub fn op_jump<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
+    let mut out = x.mapv(|v| v);
 
     // Compute mean and std per row (batch item)
     // Note: Python code does mean(dim=1, keepdim=True), so per time series
@@ -72,7 +76,7 @@ pub fn op_jump(x: &Array2<f64>) -> Array2<f64> {
 }
 
 /// Decay operator: x + 0.8 * delay(x, 1) + 0.6 * delay(x, 2)
-pub fn op_decay(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_decay<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     let d1 = ts_delay(x, 1);
     let d2 = ts_delay(x, 2);
 
@@ -80,32 +84,45 @@ pub fn op_decay(x: &Array2<f64>) -> Array2<f64> {
 }
 
 /// Helper for element-wise ops
-pub fn op_add(x: &Array2<f64>, y: &Array2<f64>) -> Array2<f64> {
+pub fn op_add<S1: Data<Elem = f64>, S2: Data<Elem = f64>>(
+    x: &ArrayBase<S1, Ix2>,
+    y: &ArrayBase<S2, Ix2>,
+) -> Array2<f64> {
     x + y
 }
-pub fn op_sub(x: &Array2<f64>, y: &Array2<f64>) -> Array2<f64> {
+pub fn op_sub<S1: Data<Elem = f64>, S2: Data<Elem = f64>>(
+    x: &ArrayBase<S1, Ix2>,
+    y: &ArrayBase<S2, Ix2>,
+) -> Array2<f64> {
     x - y
 }
-pub fn op_mul(x: &Array2<f64>, y: &Array2<f64>) -> Array2<f64> {
+pub fn op_mul<S1: Data<Elem = f64>, S2: Data<Elem = f64>>(
+    x: &ArrayBase<S1, Ix2>,
+    y: &ArrayBase<S2, Ix2>,
+) -> Array2<f64> {
     x * y
 }
-pub fn op_div(x: &Array2<f64>, y: &Array2<f64>) -> Array2<f64> {
-    x / (y + 1e-6)
+pub fn op_div<S1: Data<Elem = f64>, S2: Data<Elem = f64>>(
+    x: &ArrayBase<S1, Ix2>,
+    y: &ArrayBase<S2, Ix2>,
+) -> Array2<f64> {
+    let y_safe = y + 1e-6;
+    x / &y_safe
 }
-pub fn op_neg(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_neg<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     -x
 }
-pub fn op_abs(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_abs<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     x.mapv(f64::abs)
 }
-pub fn op_sign(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_sign<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     x.mapv(f64::signum)
 }
-pub fn op_max3(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_max3<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     let d1 = ts_delay(x, 1);
     let d2 = ts_delay(x, 2);
 
-    let mut out = x.clone();
+    let mut out = x.mapv(|v| v);
     ndarray::Zip::from(&mut out)
         .and(&d1)
         .and(&d2)
@@ -116,7 +133,7 @@ pub fn op_max3(x: &Array2<f64>) -> Array2<f64> {
 }
 
 /// Natural Logarithm: ln(|x|). Protected: if x approx 0 -> 0.
-pub fn op_log(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_log<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     x.mapv(|v| {
         let abs_v = v.abs();
         if abs_v < 1e-9 {
@@ -128,31 +145,31 @@ pub fn op_log(x: &Array2<f64>) -> Array2<f64> {
 }
 
 /// Square Root: sqrt(|x|).
-pub fn op_sqrt(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_sqrt<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     x.mapv(|v| v.abs().sqrt())
 }
 
 /// Inverse: 1/x. Protected: if x approx 0 -> 0.
-pub fn op_inv(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_inv<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     x.mapv(|v| if v.abs() < 1e-9 { 0.0 } else { 1.0 / v })
 }
 
 /// Time-series Delta: x[t] - x[t-d]
-pub fn ts_delta(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_delta<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     let delayed = ts_delay(x, d);
     x - &delayed
 }
 
 /// Signed Power: sign(x) * |x|^0.5
 /// Preserves sign while compressing magnitude — standard WorldQuant operator.
-pub fn op_signed_power(x: &Array2<f64>) -> Array2<f64> {
+pub fn op_signed_power<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     x.mapv(|v| v.signum() * v.abs().sqrt())
 }
 
 /// Decay Linear: linearly-weighted moving average over d periods.
 /// Weight d for most recent, d-1 for lag 1, ..., 1 for lag d-1.
 /// Equivalent to WorldQuant's decay_linear.
-pub fn op_decay_linear(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn op_decay_linear<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     let total_weight: f64 = (1..=d).sum::<usize>() as f64;
     let mut sum = Array2::zeros(x.dim());
     for i in 0..d {
@@ -164,7 +181,7 @@ pub fn op_decay_linear(x: &Array2<f64>, d: usize) -> Array2<f64> {
 
 /// Time-series Argmax: position of maximum value in last d periods.
 /// Normalized to [0, 1] where 0 = max at oldest, 1 = max at most recent.
-pub fn ts_argmax(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_argmax<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     let (batch, time) = x.dim();
     let mut out = Array2::zeros((batch, time));
     for b in 0..batch {
@@ -243,7 +260,7 @@ mod tests {
 }
 
 /// Time-series Mean
-pub fn ts_mean(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_mean<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     let mut sum = Array2::zeros(x.dim());
     for i in 0..d {
         sum = sum + ts_delay(x, i);
@@ -252,7 +269,7 @@ pub fn ts_mean(x: &Array2<f64>, d: usize) -> Array2<f64> {
 }
 
 /// Time-series Sum
-pub fn ts_sum(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_sum<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     let mut sum = Array2::zeros(x.dim());
     for i in 0..d {
         sum = sum + ts_delay(x, i);
@@ -261,14 +278,12 @@ pub fn ts_sum(x: &Array2<f64>, d: usize) -> Array2<f64> {
 }
 
 /// Time-series Standard Deviation
-pub fn ts_std(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_std<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     let mean = ts_mean(x, d);
-    // (sum_sq_diff variable removed)
 
-    // We need to re-loop or be clever.
     // std = sqrt( E[x^2] - E[x]^2 )
     // E[x^2]
-    let x2 = x * x;
+    let x2 = x.mapv(|v| v * v);
     let mean_x2 = ts_mean(&x2, d);
 
     let var = &mean_x2 - &(&mean * &mean);
@@ -277,7 +292,11 @@ pub fn ts_std(x: &Array2<f64>, d: usize) -> Array2<f64> {
 }
 
 /// Time-series Correlation (x, y, d)
-pub fn ts_corr(x: &Array2<f64>, y: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_corr<S1: Data<Elem = f64>, S2: Data<Elem = f64>>(
+    x: &ArrayBase<S1, Ix2>,
+    y: &ArrayBase<S2, Ix2>,
+    d: usize,
+) -> Array2<f64> {
     // Corr(X, Y) = Cov(X, Y) / (Std(X) * Std(Y))
     // Cov(X, Y) = E[XY] - E[X]E[Y]
 
@@ -296,7 +315,7 @@ pub fn ts_corr(x: &Array2<f64>, y: &Array2<f64>, d: usize) -> Array2<f64> {
 }
 
 /// Time-series Product
-pub fn ts_product(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_product<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     let mut prod = Array2::ones(x.dim());
     for i in 0..d {
         prod = prod * ts_delay(x, i);
@@ -305,8 +324,8 @@ pub fn ts_product(x: &Array2<f64>, d: usize) -> Array2<f64> {
 }
 
 /// Time-series Min
-pub fn ts_min(x: &Array2<f64>, d: usize) -> Array2<f64> {
-    let mut val = x.clone();
+pub fn ts_min<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
+    let mut val = x.mapv(|v| v);
     for i in 1..d {
         // Start from 1 since 0 is x itself
         let delayed = ts_delay(x, i);
@@ -319,8 +338,8 @@ pub fn ts_min(x: &Array2<f64>, d: usize) -> Array2<f64> {
 }
 
 /// Time-series Max
-pub fn ts_max(x: &Array2<f64>, d: usize) -> Array2<f64> {
-    let mut val = x.clone();
+pub fn ts_max<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
+    let mut val = x.mapv(|v| v);
     for i in 1..d {
         let delayed = ts_delay(x, i);
         ndarray::Zip::from(&mut val)
@@ -331,32 +350,23 @@ pub fn ts_max(x: &Array2<f64>, d: usize) -> Array2<f64> {
 }
 
 /// Time-series Rank (of current value in last d days)
-pub fn ts_rank(x: &Array2<f64>, d: usize) -> Array2<f64> {
+pub fn ts_rank<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
     // For each element, count how many in the past d window are < current
     // Output normalized to [0, 1]
 
     let mut count = Array2::zeros(x.dim());
-    // (valid variable removed)
-    // Actually delay pads with 0. So if data is > 0, the padding 0s might count as "smaller".
-    // ideally we handle NaNs or masked, but here assumed 0-padding.
-    // If x > 0, then 0 padding is smaller.
 
     // Naively:
     for i in 0..d {
         let delayed = ts_delay(x, i);
-        // if delayed < x { count++ }
-        // We use mapv to create a boolean mask (1.0 or 0.0)
 
-        let is_smaller =
-            ndarray::Zip::from(x).and(&delayed).map_collect(
-                |&cx, &dx| {
-                    if dx < cx {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                },
-            );
+        let is_smaller = ndarray::Zip::from(x).and(&delayed).map_collect(|&cx, &dx| {
+            if dx < cx {
+                1.0
+            } else {
+                0.0
+            }
+        });
         count = count + is_smaller;
     }
 
@@ -366,7 +376,7 @@ pub fn ts_rank(x: &Array2<f64>, d: usize) -> Array2<f64> {
 /// Cross-Sectional Rank
 /// Rank inputs along the batch dimension (Axis 0) for each timestep
 /// Normalized to [0, 1]
-pub fn cs_rank(x: &Array2<f64>) -> Array2<f64> {
+pub fn cs_rank<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     let (batch, time) = x.dim();
     let mut out = Array2::zeros(x.dim());
 
@@ -397,16 +407,8 @@ pub fn cs_rank(x: &Array2<f64>) -> Array2<f64> {
 }
 
 /// Cross-Sectional Mean
-pub fn cs_mean(x: &Array2<f64>) -> Array2<f64> {
-    // Mean across Axis 0.
-    // Result should be broadcast back to (batch, time)?
-    // Usually AlphaGPT's CsMean returns a "scalar" per time step, broadcasted.
-
+pub fn cs_mean<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>) -> Array2<f64> {
     let mean_1d = x.mean_axis(ndarray::Axis(0)).unwrap(); // Shape (time,)
-
-    // Broadcast back to (batch, time)
-    // We can just subtract this if we did ZScore.
-    // Here we want to return the mean array.
 
     let mut out = Array2::zeros(x.dim());
     // Copy row to all rows

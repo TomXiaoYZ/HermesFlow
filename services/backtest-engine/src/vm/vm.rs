@@ -1,6 +1,6 @@
 use super::ops::*;
 use crate::config::FactorConfig;
-use ndarray::{Array2, Array3};
+use ndarray::{Array2, Array3, CowArray, Ix2};
 use std::env;
 
 /// Statistics from VM execution for quality monitoring.
@@ -80,24 +80,25 @@ impl StackVM {
 
     /// Execute a formula on the given feature tensor.
     /// features shape: (batch, features, time)
-    pub fn execute(&self, formula_tokens: &[usize], features: &Array3<f64>) -> Option<Array2<f64>> {
-        let mut stack: Vec<Array2<f64>> = Vec::new();
+    ///
+    /// Uses CowArray (copy-on-write) for zero-copy feature loading:
+    /// feature slices borrow directly from the input tensor, avoiding
+    /// allocation until mutation is needed.
+    pub fn execute<'f>(
+        &self,
+        formula_tokens: &[usize],
+        features: &'f Array3<f64>,
+    ) -> Option<Array2<f64>> {
+        let mut stack: Vec<CowArray<'f, f64, Ix2>> = Vec::new();
 
         for &token in formula_tokens {
             if token < self.feat_offset {
-                // Token is a feature index
-                // Slice: (:, token, :) -> (batch, time)
-                let feature_slice = features.index_axis(ndarray::Axis(1), token).to_owned();
-                stack.push(feature_slice);
+                // Token is a feature index — zero-copy borrow from feature tensor
+                let feature_view = features.index_axis(ndarray::Axis(1), token);
+                stack.push(CowArray::from(feature_view));
             } else {
                 // Token is an operator
-                // op_map in Python: {i + offset: cfg[1]}
-                // We map token to op manually here or via a lookup
                 let op_idx = token - self.feat_offset;
-
-                // See OPS_CONFIG in Python for indices
-                // 0: ADD, 1: SUB, 2: MUL, 3: DIV, 4: NEG, 5: ABS, 6: SIGN
-                // 7: GATE, 8: JUMP, 9: DECAY, 10: DELAY1, 11: MAX3
 
                 match op_idx {
                     0 => {
@@ -107,7 +108,7 @@ impl StackVM {
                         }
                         let y = stack.pop()?;
                         let x = stack.pop()?;
-                        stack.push(op_add(&x, &y));
+                        stack.push(CowArray::from(op_add(&x, &y)));
                     }
                     1 => {
                         // SUB
@@ -116,7 +117,7 @@ impl StackVM {
                         }
                         let y = stack.pop()?;
                         let x = stack.pop()?;
-                        stack.push(op_sub(&x, &y));
+                        stack.push(CowArray::from(op_sub(&x, &y)));
                     }
                     2 => {
                         // MUL
@@ -125,7 +126,7 @@ impl StackVM {
                         }
                         let y = stack.pop()?;
                         let x = stack.pop()?;
-                        stack.push(op_mul(&x, &y));
+                        stack.push(CowArray::from(op_mul(&x, &y)));
                     }
                     3 => {
                         // DIV
@@ -134,7 +135,7 @@ impl StackVM {
                         }
                         let y = stack.pop()?;
                         let x = stack.pop()?;
-                        stack.push(op_div(&x, &y));
+                        stack.push(CowArray::from(op_div(&x, &y)));
                     }
                     4 => {
                         // NEG
@@ -142,7 +143,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_neg(&x));
+                        stack.push(CowArray::from(op_neg(&x)));
                     }
                     5 => {
                         // ABS
@@ -150,7 +151,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_abs(&x));
+                        stack.push(CowArray::from(op_abs(&x)));
                     }
                     6 => {
                         // SIGN
@@ -158,7 +159,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_sign(&x));
+                        stack.push(CowArray::from(op_sign(&x)));
                     }
                     7 => {
                         // GATE (arity 3)
@@ -168,7 +169,7 @@ impl StackVM {
                         let y = stack.pop()?;
                         let x = stack.pop()?;
                         let cond = stack.pop()?;
-                        stack.push(op_gate(&cond, &x, &y));
+                        stack.push(CowArray::from(op_gate(&cond, &x, &y)));
                     }
                     8 => {
                         // SIGNED_POWER: sign(x) * |x|^0.5
@@ -176,7 +177,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_signed_power(&x));
+                        stack.push(CowArray::from(op_signed_power(&x)));
                     }
                     9 => {
                         // DECAY_LINEAR: linearly-weighted MA (legacy, no longer generated)
@@ -184,7 +185,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_decay_linear(&x, self.ts_window));
+                        stack.push(CowArray::from(op_decay_linear(&x, self.ts_window)));
                     }
                     10 => {
                         // DELAY1
@@ -192,7 +193,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_delay(&x, 1));
+                        stack.push(CowArray::from(ts_delay(&x, 1)));
                     }
                     11 => {
                         // DELAY5
@@ -200,7 +201,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_delay(&x, 5));
+                        stack.push(CowArray::from(ts_delay(&x, 5)));
                     }
                     12 => {
                         // TS_MEAN
@@ -208,7 +209,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_mean(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_mean(&x, self.ts_window)));
                     }
                     13 => {
                         // TS_STD
@@ -216,7 +217,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_std(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_std(&x, self.ts_window)));
                     }
                     14 => {
                         // TS_RANK
@@ -224,7 +225,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_rank(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_rank(&x, self.ts_window)));
                     }
                     15 => {
                         // TS_SUM (legacy, no longer generated)
@@ -232,7 +233,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_sum(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_sum(&x, self.ts_window)));
                     }
                     16 => {
                         // TS_CORR
@@ -241,7 +242,7 @@ impl StackVM {
                         }
                         let y = stack.pop()?;
                         let x = stack.pop()?;
-                        stack.push(ts_corr(&x, &y, self.ts_window));
+                        stack.push(CowArray::from(ts_corr(&x, &y, self.ts_window)));
                     }
                     17 => {
                         // TS_MIN: rolling minimum
@@ -249,7 +250,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_min(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_min(&x, self.ts_window)));
                     }
                     18 => {
                         // TS_MAX: rolling maximum
@@ -257,7 +258,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_max(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_max(&x, self.ts_window)));
                     }
                     19 => {
                         // LOG
@@ -265,7 +266,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_log(&x));
+                        stack.push(CowArray::from(op_log(&x)));
                     }
                     20 => {
                         // SQRT
@@ -273,7 +274,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(op_sqrt(&x));
+                        stack.push(CowArray::from(op_sqrt(&x)));
                     }
                     21 => {
                         // TS_ARGMAX (legacy, no longer generated)
@@ -281,7 +282,7 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_argmax(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_argmax(&x, self.ts_window)));
                     }
                     22 => {
                         // TS_DELTA
@@ -289,36 +290,32 @@ impl StackVM {
                             return None;
                         }
                         let x = stack.pop()?;
-                        stack.push(ts_delta(&x, 1)); // Default delta=1? Or specific. Let's assume 1 for basic op.
-                                                     // Actually gplearn delta usually takes a parameter.
-                                                     // In our RPN, parameters are hardcoded ops (TS_DELTA_1, TS_DELTA_5) or we pop parameter?
-                                                     // For simplicity, let's make 22 = ts_delta(1).
-                                                     // We can add TS_DELTA_5 as 23 later if needed.
+                        stack.push(CowArray::from(ts_delta(&x, 1)));
                     }
                     _ => return None, // Unknown operator
                 }
-            }
 
-            // Safety check for NaN/Inf (from Python: if torch.isnan(res).any()...)
-            if let Some(top) = stack.last_mut() {
-                top.mapv_inplace(|v| {
-                    if v.is_nan() {
-                        0.0
-                    } else if v.is_infinite() {
-                        if v.is_sign_positive() {
-                            1.0
+                // NaN/Inf sanitization — only after operators (feature data is clean)
+                if let Some(top) = stack.last_mut() {
+                    top.mapv_inplace(|v| {
+                        if v.is_nan() {
+                            0.0
+                        } else if v.is_infinite() {
+                            if v.is_sign_positive() {
+                                1.0
+                            } else {
+                                -1.0
+                            }
                         } else {
-                            -1.0
+                            v
                         }
-                    } else {
-                        v
-                    }
-                });
+                    });
+                }
             }
         }
 
         if stack.len() == 1 {
-            stack.pop()
+            stack.pop().map(CowArray::into_owned)
         } else {
             None
         }
@@ -327,149 +324,196 @@ impl StackVM {
     /// Execute a formula and return both the result and execution statistics.
     /// Tracks how often NaN/Inf sanitization fires per operator, indicating
     /// the genome relies on protected operations rather than clean arithmetic.
-    pub fn execute_with_stats(
+    pub fn execute_with_stats<'f>(
         &self,
         formula_tokens: &[usize],
-        features: &Array3<f64>,
+        features: &'f Array3<f64>,
     ) -> (Option<Array2<f64>>, ExecutionStats) {
-        let mut stack: Vec<Array2<f64>> = Vec::new();
+        let mut stack: Vec<CowArray<'f, f64, Ix2>> = Vec::new();
         let mut stats = ExecutionStats::default();
 
         for &token in formula_tokens {
             if token < self.feat_offset {
-                let feature_slice = features.index_axis(ndarray::Axis(1), token).to_owned();
-                stack.push(feature_slice);
+                // Zero-copy feature loading
+                let feature_view = features.index_axis(ndarray::Axis(1), token);
+                stack.push(CowArray::from(feature_view));
             } else {
                 let op_idx = token - self.feat_offset;
                 stats.total_ops += 1;
 
                 match op_idx {
                     0 => {
-                        if stack.len() < 2 { return (None, stats); }
+                        if stack.len() < 2 {
+                            return (None, stats);
+                        }
                         let y = stack.pop().unwrap();
                         let x = stack.pop().unwrap();
-                        stack.push(op_add(&x, &y));
+                        stack.push(CowArray::from(op_add(&x, &y)));
                     }
                     1 => {
-                        if stack.len() < 2 { return (None, stats); }
+                        if stack.len() < 2 {
+                            return (None, stats);
+                        }
                         let y = stack.pop().unwrap();
                         let x = stack.pop().unwrap();
-                        stack.push(op_sub(&x, &y));
+                        stack.push(CowArray::from(op_sub(&x, &y)));
                     }
                     2 => {
-                        if stack.len() < 2 { return (None, stats); }
+                        if stack.len() < 2 {
+                            return (None, stats);
+                        }
                         let y = stack.pop().unwrap();
                         let x = stack.pop().unwrap();
-                        stack.push(op_mul(&x, &y));
+                        stack.push(CowArray::from(op_mul(&x, &y)));
                     }
                     3 => {
-                        if stack.len() < 2 { return (None, stats); }
+                        if stack.len() < 2 {
+                            return (None, stats);
+                        }
                         let y = stack.pop().unwrap();
                         let x = stack.pop().unwrap();
-                        stack.push(op_div(&x, &y));
+                        stack.push(CowArray::from(op_div(&x, &y)));
                     }
                     4 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(op_neg(&x));
+                        stack.push(CowArray::from(op_neg(&x)));
                     }
                     5 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(op_abs(&x));
+                        stack.push(CowArray::from(op_abs(&x)));
                     }
                     6 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(op_sign(&x));
+                        stack.push(CowArray::from(op_sign(&x)));
                     }
                     7 => {
-                        if stack.len() < 3 { return (None, stats); }
+                        if stack.len() < 3 {
+                            return (None, stats);
+                        }
                         let y = stack.pop().unwrap();
                         let x = stack.pop().unwrap();
                         let cond = stack.pop().unwrap();
-                        stack.push(op_gate(&cond, &x, &y));
+                        stack.push(CowArray::from(op_gate(&cond, &x, &y)));
                     }
                     8 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(op_signed_power(&x));
+                        stack.push(CowArray::from(op_signed_power(&x)));
                     }
                     9 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(op_decay_linear(&x, self.ts_window));
+                        stack.push(CowArray::from(op_decay_linear(&x, self.ts_window)));
                     }
                     10 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_delay(&x, 1));
+                        stack.push(CowArray::from(ts_delay(&x, 1)));
                     }
                     11 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_delay(&x, 5));
+                        stack.push(CowArray::from(ts_delay(&x, 5)));
                     }
                     12 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_mean(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_mean(&x, self.ts_window)));
                     }
                     13 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_std(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_std(&x, self.ts_window)));
                     }
                     14 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_rank(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_rank(&x, self.ts_window)));
                     }
                     15 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_sum(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_sum(&x, self.ts_window)));
                     }
                     16 => {
-                        if stack.len() < 2 { return (None, stats); }
+                        if stack.len() < 2 {
+                            return (None, stats);
+                        }
                         let y = stack.pop().unwrap();
                         let x = stack.pop().unwrap();
-                        stack.push(ts_corr(&x, &y, self.ts_window));
+                        stack.push(CowArray::from(ts_corr(&x, &y, self.ts_window)));
                     }
                     17 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_min(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_min(&x, self.ts_window)));
                     }
                     18 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_max(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_max(&x, self.ts_window)));
                     }
                     19 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(op_log(&x));
+                        stack.push(CowArray::from(op_log(&x)));
                     }
                     20 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(op_sqrt(&x));
+                        stack.push(CowArray::from(op_sqrt(&x)));
                     }
                     21 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_argmax(&x, self.ts_window));
+                        stack.push(CowArray::from(ts_argmax(&x, self.ts_window)));
                     }
                     22 => {
-                        if stack.is_empty() { return (None, stats); }
+                        if stack.is_empty() {
+                            return (None, stats);
+                        }
                         let x = stack.pop().unwrap();
-                        stack.push(ts_delta(&x, 1));
+                        stack.push(CowArray::from(ts_delta(&x, 1)));
                     }
                     _ => return (None, stats),
                 }
 
-                // Count NaN/Inf sanitization triggers
+                // Count NaN/Inf sanitization triggers — only after operators
                 if let Some(top) = stack.last_mut() {
                     let mut triggered = false;
                     top.mapv_inplace(|v| {
@@ -478,7 +522,11 @@ impl StackVM {
                             0.0
                         } else if v.is_infinite() {
                             triggered = true;
-                            if v.is_sign_positive() { 1.0 } else { -1.0 }
+                            if v.is_sign_positive() {
+                                1.0
+                            } else {
+                                -1.0
+                            }
                         } else {
                             v
                         }
@@ -490,7 +538,11 @@ impl StackVM {
             }
         }
 
-        let result = if stack.len() == 1 { stack.pop() } else { None };
+        let result = if stack.len() == 1 {
+            stack.pop().map(CowArray::into_owned)
+        } else {
+            None
+        };
         (result, stats)
     }
 }
@@ -552,12 +604,7 @@ mod tests {
 
     #[test]
     fn execute_with_stats_nan_producing_formula_triggers() {
-        // Build a formula that produces NaN through chained operations.
-        // SUB(feat0, feat0) = 0, then DIV(zero, zero) produces 0/(0+1e-6)=0 (no trigger).
-        // Instead, use LOG of values that include 0.0 in the feature data —
-        // op_log protects near-zero but the result is 0.0 (no NaN). We need actual NaN/Inf output.
-        //
-        // The most reliable way: use MUL to create Inf (1e308 * 1e308 = Inf).
+        // Use MUL to create Inf (1e308 * 1e308 = Inf).
         let vm = make_vm(2);
         let data: Vec<&[f64]> = vec![&[1e308, 1e308, 1e308], &[1e308, 1e308, 1e308]];
         let features = features_1d(&data, 2);
@@ -567,7 +614,10 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(stats.total_ops, 1);
         // 1e308 * 1e308 = Inf → sanitization triggers
-        assert!(stats.protection_triggers > 0, "expected Inf trigger from overflow multiplication");
+        assert!(
+            stats.protection_triggers > 0,
+            "expected Inf trigger from overflow multiplication"
+        );
     }
 
     #[test]
@@ -614,5 +664,38 @@ mod tests {
         assert!(result.is_none());
         // total_ops is incremented before the arity check, so it counts the failed attempt
         assert_eq!(stats.total_ops, 1);
+    }
+
+    #[test]
+    fn execute_zero_copy_produces_correct_results() {
+        // Verify that CowArray zero-copy produces identical results to manual check
+        let vm = make_vm(3);
+        let data: Vec<&[f64]> = vec![
+            &[1.0, 2.0, 3.0, 4.0, 5.0],
+            &[10.0, 20.0, 30.0, 40.0, 50.0],
+            &[0.5, 1.5, 2.5, 3.5, 4.5],
+        ];
+        let features = features_1d(&data, 3);
+        // (feat0 + feat1) * feat2
+        // feat0=3, feat1=3+1=4(ADD), feat2=3+2+1(push 2), then MUL=3+2=5
+        // Actually: tokens [0, 1, 3, 2, 5]
+        // 0=feat0, 1=feat1, 3=ADD(op_idx=0), 2=feat2, 5=MUL(op_idx=2)
+        let tokens = vec![0, 1, 3, 2, 5];
+        let result = vm.execute(&tokens, &features).unwrap();
+
+        // Expected: (feat0 + feat1) * feat2
+        // = ([1,2,3,4,5] + [10,20,30,40,50]) * [0.5,1.5,2.5,3.5,4.5]
+        // = [11,22,33,44,55] * [0.5,1.5,2.5,3.5,4.5]
+        // = [5.5, 33.0, 82.5, 154.0, 247.5]
+        let expected = [5.5, 33.0, 82.5, 154.0, 247.5];
+        for (i, &exp) in expected.iter().enumerate() {
+            assert!(
+                (result[[0, i]] - exp).abs() < 1e-10,
+                "bar {}: got {} expected {}",
+                i,
+                result[[0, i]],
+                exp
+            );
+        }
     }
 }
