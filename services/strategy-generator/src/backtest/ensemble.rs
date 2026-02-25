@@ -68,6 +68,15 @@ pub struct EnsembleConfig {
     /// P6a-F2: Turnover cost rate (fraction of portfolio value per unit turnover).
     #[serde(default = "default_turnover_cost_rate")]
     pub turnover_cost_rate: f64,
+    /// P6b-F3: Enable regime-aware rebalancing.
+    #[serde(default)]
+    pub regime_aware: bool,
+    /// P6b-F3: Annualized vol thresholds [low_upper, normal_upper].
+    #[serde(default = "default_regime_thresholds")]
+    pub regime_thresholds: [f64; 2],
+    /// P6b-F3: Rebalance intervals (minutes) per regime [low, normal, high].
+    #[serde(default = "default_regime_intervals")]
+    pub regime_intervals: [u64; 3],
 }
 
 impl Default for EnsembleConfig {
@@ -84,6 +93,9 @@ impl Default for EnsembleConfig {
             dynamic_weights: DynamicWeightYamlConfig::default(),
             covariance_method: super::hrp::CovarianceMethod::default(),
             turnover_cost_rate: default_turnover_cost_rate(),
+            regime_aware: false,
+            regime_thresholds: default_regime_thresholds(),
+            regime_intervals: default_regime_intervals(),
         }
     }
 }
@@ -145,6 +157,12 @@ fn default_rebalance_interval_minutes() -> u64 {
 fn default_turnover_cost_rate() -> f64 {
     0.0001 // 1 bps
 }
+fn default_regime_thresholds() -> [f64; 2] {
+    [0.15, 0.30]
+}
+fn default_regime_intervals() -> [u64; 3] {
+    [240, 60, 15]
+}
 fn default_psr_reward_scale() -> f64 {
     0.2
 }
@@ -162,6 +180,88 @@ fn default_crowding_penalty_rate() -> f64 {
 }
 fn default_crowding_max_penalty() -> f64 {
     0.8
+}
+
+// ── Regime Detection ──────────────────────────────────────────────────
+
+/// Volatility regime for adaptive rebalance frequency (P6b-F3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum VolRegime {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+}
+
+impl fmt::Display for VolRegime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VolRegime::Low => write!(f, "Low"),
+            VolRegime::Normal => write!(f, "Normal"),
+            VolRegime::High => write!(f, "High"),
+        }
+    }
+}
+
+/// Result of volatility regime detection.
+#[derive(Debug, Clone, Copy)]
+pub struct RegimeInfo {
+    pub regime: VolRegime,
+    pub annualized_vol: f64,
+}
+
+/// Detect the current volatility regime from recent portfolio returns.
+///
+/// Computes annualized volatility from the last `window` returns,
+/// then classifies into Low/Normal/High based on thresholds.
+///
+/// `resolution` controls the annualization factor: "1h" uses √(252×6.5).
+pub fn detect_regime(
+    portfolio_returns: &[f64],
+    resolution: &str,
+    window: usize,
+    thresholds: [f64; 2],
+) -> RegimeInfo {
+    let n = portfolio_returns.len();
+    let start = n.saturating_sub(window);
+    let recent = &portfolio_returns[start..];
+
+    if recent.len() < 5 {
+        return RegimeInfo {
+            regime: VolRegime::Normal,
+            annualized_vol: 0.0,
+        };
+    }
+
+    let mean = recent.iter().sum::<f64>() / recent.len() as f64;
+    let var = recent
+        .iter()
+        .map(|r| (r - mean).powi(2))
+        .sum::<f64>()
+        / (recent.len() as f64 - 1.0);
+    let std = var.sqrt();
+
+    // Annualize: bars_per_year depends on resolution
+    let bars_per_year: f64 = match resolution {
+        "1d" => 252.0,
+        "4h" => 252.0 * 6.5 / 4.0,
+        "1h" => 252.0 * 6.5,
+        "15m" => 252.0 * 6.5 * 4.0,
+        _ => 252.0 * 6.5,
+    };
+    let annualized_vol = std * bars_per_year.sqrt();
+
+    let regime = if annualized_vol < thresholds[0] {
+        VolRegime::Low
+    } else if annualized_vol < thresholds[1] {
+        VolRegime::Normal
+    } else {
+        VolRegime::High
+    };
+
+    RegimeInfo {
+        regime,
+        annualized_vol,
+    }
 }
 
 // ── DB Loading ─────────────────────────────────────────────────────────
@@ -197,10 +297,10 @@ pub async fn load_candidates_from_db(
         let genome: Vec<i32> = row.get("best_genome");
         let metadata: serde_json::Value = row.get("metadata");
 
-        // Extract OOS PSR from metadata -> walk_forward -> aggregate_psr
+        // Extract OOS PSR from metadata -> walk_forward -> mean_psr
         let oos_psr = metadata
             .get("walk_forward")
-            .and_then(|wf| wf.get("aggregate_psr"))
+            .and_then(|wf| wf.get("mean_psr"))
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
@@ -634,6 +734,63 @@ mod tests {
         assert_eq!(config.max_total_strategies, 20);
         assert_eq!(config.correlation_lookback_bars, 500);
         assert_eq!(config.rebalance_interval_minutes, 30);
+        assert!(!config.regime_aware);
+        assert_eq!(config.regime_thresholds, [0.15, 0.30]);
+        assert_eq!(config.regime_intervals, [240, 60, 15]);
+    }
+
+    #[test]
+    fn detect_regime_low_vol() {
+        // Very small returns → low annualized vol
+        let returns: Vec<f64> = (0..30).map(|i| (i as f64 * 0.1).sin() * 0.0001).collect();
+        let info = detect_regime(&returns, "1h", 20, [0.15, 0.30]);
+        assert_eq!(info.regime, VolRegime::Low);
+        assert!(info.annualized_vol < 0.15);
+    }
+
+    #[test]
+    fn detect_regime_high_vol() {
+        // Large alternating returns → high annualized vol
+        let returns: Vec<f64> = (0..30)
+            .map(|i| if i % 2 == 0 { 0.05 } else { -0.05 })
+            .collect();
+        let info = detect_regime(&returns, "1h", 20, [0.15, 0.30]);
+        assert_eq!(info.regime, VolRegime::High);
+        assert!(info.annualized_vol > 0.30);
+    }
+
+    #[test]
+    fn detect_regime_insufficient_data() {
+        let returns = vec![0.01, 0.02];
+        let info = detect_regime(&returns, "1h", 20, [0.15, 0.30]);
+        assert_eq!(info.regime, VolRegime::Normal);
+        assert_eq!(info.annualized_vol, 0.0);
+    }
+
+    #[test]
+    fn detect_regime_uses_window() {
+        // First 20 bars: calm. Last 20 bars: volatile.
+        let mut returns = vec![0.0001; 20];
+        returns.extend(
+            (0..20).map(|i| if i % 2 == 0 { 0.05 } else { -0.05 }),
+        );
+        let info = detect_regime(&returns, "1h", 20, [0.15, 0.30]);
+        // Window=20 uses only the last 20 (volatile) bars
+        assert_eq!(info.regime, VolRegime::High);
+    }
+
+    #[test]
+    fn vol_regime_ordering() {
+        assert!(VolRegime::Low < VolRegime::Normal);
+        assert!(VolRegime::Normal < VolRegime::High);
+        assert!(VolRegime::Low < VolRegime::High);
+    }
+
+    #[test]
+    fn vol_regime_display() {
+        assert_eq!(format!("{}", VolRegime::Low), "Low");
+        assert_eq!(format!("{}", VolRegime::Normal), "Normal");
+        assert_eq!(format!("{}", VolRegime::High), "High");
     }
 
     #[test]

@@ -1495,7 +1495,7 @@ async fn run_ensemble_loop(
         exchange, ensemble_cfg.rebalance_interval_minutes
     );
 
-    let interval = Duration::from_secs(ensemble_cfg.rebalance_interval_minutes * 60);
+    let default_interval = Duration::from_secs(ensemble_cfg.rebalance_interval_minutes * 60);
     let dw_config = DynamicWeightConfig::from_yaml(&ensemble_cfg.dynamic_weights);
     let factor_config = load_factor_config(factor_config_path);
 
@@ -1515,8 +1515,11 @@ async fn run_ensemble_loop(
         version = sqlx::Row::get::<i32, _>(&r, "max_version");
     }
 
+    // P6b-F3: Track previous regime for transition detection
+    let mut prev_regime: Option<ensemble::VolRegime> = None;
+
     loop {
-        match run_ensemble_rebalance(
+        let regime_info = match run_ensemble_rebalance(
             &pool,
             redis_url,
             exchange,
@@ -1530,17 +1533,58 @@ async fn run_ensemble_loop(
         )
         .await
         {
-            Ok(()) => {}
+            Ok(info) => info,
             Err(e) => {
                 error!("[{}] Ensemble rebalance error: {}", exchange, e);
+                None
             }
-        }
+        };
 
-        tokio::time::sleep(interval).await;
+        // P6b-F3: Dynamic interval based on volatility regime
+        let sleep_dur = if ensemble_cfg.regime_aware {
+            if let Some(info) = regime_info {
+                let interval_mins = match info.regime {
+                    ensemble::VolRegime::Low => ensemble_cfg.regime_intervals[0],
+                    ensemble::VolRegime::Normal => ensemble_cfg.regime_intervals[1],
+                    ensemble::VolRegime::High => ensemble_cfg.regime_intervals[2],
+                };
+
+                // Detect regime transition
+                if let Some(prev) = prev_regime {
+                    if prev != info.regime {
+                        info!(
+                            "[{}] Regime transition: {} → {} (vol={:.1}%, interval={}min)",
+                            exchange,
+                            prev,
+                            info.regime,
+                            info.annualized_vol * 100.0,
+                            interval_mins
+                        );
+                        // If volatility escalated, trigger immediate rebalance
+                        if info.regime > prev {
+                            prev_regime = Some(info.regime);
+                            continue;
+                        }
+                    }
+                }
+
+                prev_regime = Some(info.regime);
+                Duration::from_secs(interval_mins * 60)
+            } else {
+                default_interval
+            }
+        } else {
+            default_interval
+        };
+
+        tokio::time::sleep(sleep_dur).await;
     }
 }
 
 /// Execute a single ensemble rebalance cycle.
+///
+/// Returns `Some(RegimeInfo)` on successful rebalance with regime detection,
+/// or `None` if the rebalance was skipped (no candidates, insufficient data, etc.).
 #[allow(clippy::too_many_arguments)]
 async fn run_ensemble_rebalance(
     pool: &PgPool,
@@ -1553,7 +1597,7 @@ async fn run_ensemble_rebalance(
     dw_config: &DynamicWeightConfig,
     factor_config: &backtest_engine::config::FactorConfig,
     version: &mut i32,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<ensemble::RegimeInfo>> {
     // 1. Load candidates
     let candidates = ensemble::load_candidates_from_db(pool, exchange).await?;
     if candidates.is_empty() {
@@ -1561,7 +1605,7 @@ async fn run_ensemble_rebalance(
             "[{}] No strategy candidates found, skipping rebalance",
             exchange
         );
-        return Ok(());
+        return Ok(None);
     }
 
     // 2. Select eligible strategies
@@ -1571,7 +1615,7 @@ async fn run_ensemble_rebalance(
             "[{}] No candidates meet ensemble thresholds, skipping rebalance",
             exchange
         );
-        return Ok(());
+        return Ok(None);
     }
 
     let n = selected.len();
@@ -1643,7 +1687,7 @@ async fn run_ensemble_rebalance(
                 "[{}] No valid strategies with returns, skipping rebalance",
                 exchange
             );
-            return Ok(());
+            return Ok(None);
         }
     }
 
@@ -1654,7 +1698,7 @@ async fn run_ensemble_rebalance(
             "[{}] Return series too short ({} bars), skipping",
             exchange, min_len
         );
-        return Ok(());
+        return Ok(None);
     }
 
     let n_valid = valid_candidates.len();
@@ -1672,7 +1716,7 @@ async fn run_ensemble_rebalance(
         Some(r) => r,
         None => {
             warn!("[{}] HRP allocation failed", exchange);
-            return Ok(());
+            return Ok(None);
         }
     };
 
@@ -1747,7 +1791,15 @@ async fn run_ensemble_rebalance(
         }
     }
 
-    // 7b. P6a-F2: Compute turnover vs previous rebalance weights
+    // 7b. P6b-F3: Detect volatility regime
+    let regime_info = ensemble::detect_regime(
+        &portfolio_returns,
+        resolution,
+        20,
+        ensemble_cfg.regime_thresholds,
+    );
+
+    // 7c. P6a-F2: Compute turnover vs previous rebalance weights
     let new_weights: Vec<(String, f64)> = adjustments
         .iter()
         .enumerate()
@@ -1797,6 +1849,8 @@ async fn run_ensemble_rebalance(
         "turnover_cost": turnover_cost_val,
         "turnover_cost_rate": ensemble_cfg.turnover_cost_rate,
         "covariance_method": format!("{:?}", ensemble_cfg.covariance_method),
+        "regime": format!("{}", regime_info.regime),
+        "annualized_vol": regime_info.annualized_vol,
     });
 
     let hrp_diagnostics = serde_json::json!({
@@ -1921,7 +1975,7 @@ async fn run_ensemble_rebalance(
     }
 
     info!(
-        "[{}] Ensemble v{}: {} strategies, Sharpe={:.3}, MaxDD={:.3}, AvgCorr={:.3}, Crowded={}, Turnover={:.4}, Cost={:.6}",
+        "[{}] Ensemble v{}: {} strategies, Sharpe={:.3}, MaxDD={:.3}, AvgCorr={:.3}, Crowded={}, Turnover={:.4}, Cost={:.6}, Regime={} (vol={:.1}%)",
         exchange,
         version,
         n_valid,
@@ -1931,7 +1985,9 @@ async fn run_ensemble_rebalance(
         crowding_pairs.len(),
         turnover,
         turnover_cost_val,
+        regime_info.regime,
+        regime_info.annualized_vol * 100.0,
     );
 
-    Ok(())
+    Ok(Some(regime_info))
 }

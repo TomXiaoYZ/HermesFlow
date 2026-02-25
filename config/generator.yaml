@@ -61,6 +61,11 @@ ensemble:
     lambda: 0.94
   # P6a-F2: Turnover cost rate per exchange (fraction of portfolio value).
   turnover_cost_rate: 0.0001  # 1 bps for Polygon/IBKR
+  # P6b-F3: Regime-aware rebalancing.
+  # Adjusts rebalance frequency based on annualized portfolio volatility.
+  regime_aware: true
+  regime_thresholds: [0.15, 0.30]  # annualized vol boundaries [low_upper, normal_upper]
+  regime_intervals: [240, 60, 15]  # rebalance interval in minutes [low, normal, high]
   dynamic_weights:
     psr_reward_scale: 0.2
     psr_max_reward: 3.0
