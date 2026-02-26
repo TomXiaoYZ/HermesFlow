@@ -634,6 +634,12 @@ async fn run_symbol_evolution(
         resolution.clone(),
         threshold_config,
     );
+    // Sync the backtester's VM feat_offset with the GA's.  When multi-timeframe
+    // is enabled, the GA uses mtf.feat_offset() (e.g. 75) while the backtester's
+    // VM was initialised from factor_config.feat_offset() (e.g. 25).  Without this
+    // fix every genome token in the [25..75) range is misinterpreted as an operator
+    // instead of a feature index, causing silent wrong results or VM failures.
+    backtester.vm.feat_offset = feat_offset;
     let mut ga = AlpsGA::new(feat_offset);
 
     // Build walk-forward config from YAML or use defaults

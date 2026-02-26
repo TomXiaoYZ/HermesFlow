@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use tracing::{info, warn};
 
 pub struct PortfolioBacktester {
-    vm: StackVM,
+    pub(crate) vm: StackVM,
     pub(crate) exchange: String,
     pub(crate) resolution: String,
 }

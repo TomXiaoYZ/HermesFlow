@@ -2864,6 +2864,9 @@ impl Backtester {
             self.exchange.clone(),
             self.resolution.clone(),
         );
+        // Propagate the (possibly MTF-overridden) feat_offset so the portfolio
+        // VM interprets genome tokens consistently with the main backtester.
+        pb.vm.feat_offset = self.vm.feat_offset;
         pb.run(genome, &self.cache, days).await
     }
 }
