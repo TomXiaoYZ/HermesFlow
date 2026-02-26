@@ -67,7 +67,7 @@ services:
       - "-c"
       - "max_connections=100"
     volumes:
-      - hermesflow_postgres-data:/var/lib/postgresql/data
+      - /Users/tomxiao/Desktop/HermesFlow-Data.nosync/postgre:/var/lib/postgresql/data
     restart: always
     deploy:
       resources:
@@ -454,8 +454,7 @@ services:
 
 volumes:
   redis_data:
-  hermesflow_postgres-data:
-    external: true
+  # hermesflow_postgres-data: removed — now uses bind mount to host filesystem
   ib_gateway_settings:
   ib_gateway_ls_settings:
   prometheus_data:
