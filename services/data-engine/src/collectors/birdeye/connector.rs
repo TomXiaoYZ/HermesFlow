@@ -113,11 +113,10 @@ impl BirdeyeConnector {
     > {
         let (_tx, rx) = tokio::sync::mpsc::channel(100);
 
-        // Birdeye polling is disabled in favor of Jupiter Price API
+        // Birdeye real-time polling is disabled (API cost optimization)
         // This connector now only serves on-demand history/overview requests
         tokio::spawn(async move {
             info!("Birdeye Collector: Real-time polling is DISABLED (API Cost Optimization).");
-            info!("Using Jupiter Price API for monitoring instead.");
 
             // Keep the task alive just in case, but do nothing
             loop {

@@ -1,7 +1,7 @@
 //! Collector spawning logic extracted from main.rs.
 //!
 //! This module handles starting all market data collectors (Twitter, Polymarket,
-//! Birdeye, Helius, Jupiter, AkShare, Massive/Polygon, OKX, Bybit, Futu) as
+//! Birdeye, Helius, AkShare, Massive/Polygon, OKX, Bybit, Futu) as
 //! background tasks with proper shutdown handling.
 
 use chrono::{TimeZone, Utc};
@@ -16,8 +16,7 @@ use data_engine::{
     collectors::{
         birdeye::meta_collector::BirdeyeMetaCollector, circuit_breaker::CircuitBreaker,
         AkShareCollector, BinanceConnector, BirdeyeConnector, BybitConnector, FutuConnector,
-        HeliusConnector, JupiterPriceCollector, MassiveConnector, OkxConnector,
-        PolymarketCollector, TwitterCollector,
+        HeliusConnector, MassiveConnector, OkxConnector, PolymarketCollector, TwitterCollector,
     },
     config::AppConfig,
     models::StandardMarketData,
@@ -37,7 +36,7 @@ pub type CircuitBreakerMap = Arc<HashMap<String, Arc<CircuitBreaker>>>;
 /// Build the default set of circuit breakers (one per data source).
 pub fn build_circuit_breakers() -> CircuitBreakerMap {
     let sources = [
-        "birdeye", "helius", "jupiter", "akshare", "massive", "okx", "bybit", "futu", "binance",
+        "birdeye", "helius", "akshare", "massive", "okx", "bybit", "futu", "binance",
     ];
     let mut map = HashMap::new();
     for source in sources {
@@ -90,7 +89,6 @@ pub async fn spawn_all_collectors(deps: &CollectorDeps) {
     spawn_polymarket_collector(deps).await;
     spawn_birdeye_collector(deps).await;
     spawn_helius_collector(deps).await;
-    spawn_jupiter_collector(deps).await;
     spawn_akshare_collector(deps).await;
     spawn_massive_collector(deps).await;
     spawn_okx_collector(deps).await;
@@ -304,76 +302,6 @@ async fn spawn_helius_collector(deps: &CollectorDeps) {
                         cb_record_failure(cb, "helius").await;
                     }
                     tracing::error!("Helius Connect failed: {}. Retrying in 5s...", e);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                }
-            }
-        }
-    });
-}
-
-async fn spawn_jupiter_collector(deps: &CollectorDeps) {
-    let Some(jupiter_config) = deps.config.jupiter.clone() else {
-        return;
-    };
-    if !jupiter_config.enabled {
-        return;
-    }
-
-    tracing::info!("Starting Jupiter Price collector");
-
-    let redis_cache_val = if let Some(r) = &deps.redis {
-        Some(r.read().await.clone())
-    } else {
-        None
-    };
-
-    let jupiter_collector = JupiterPriceCollector::new(jupiter_config, redis_cache_val);
-    let mut shutdown_rx = deps.shutdown_tx.subscribe();
-    let repos = Arc::clone(&deps.postgres_repos);
-
-    let redis_publisher = get_redis_publisher(&deps.redis).await;
-    let tx_clone = deps.broadcast_tx.clone();
-
-    let cb = deps.circuit_breakers.get("jupiter").cloned();
-    tokio::spawn(async move {
-        loop {
-            if let Some(ref cb) = cb {
-                if !cb.allow_request().await {
-                    tracing::warn!(source = "jupiter", "Circuit breaker open, skipping connect");
-                    CIRCUIT_BREAKER_STATE
-                        .with_label_values(&["jupiter"])
-                        .set(cb.state_value() as i64);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    continue;
-                }
-            }
-            match jupiter_collector.connect(repos.token.clone()).await {
-                Ok(mut rx) => {
-                    if let Some(ref cb) = cb {
-                        cb_record_success(cb, "jupiter");
-                    }
-                    tracing::info!("Jupiter Price collector connection established");
-                    loop {
-                        tokio::select! {
-                            Some(msg) = rx.recv() => {
-                                if !validate_market_data(&msg, "jupiter") {
-                                    continue;
-                                }
-                                insert_with_retry(&repos, &msg, "jupiter").await;
-                                publish_market_update(&msg, "Jupiter", &tx_clone, &redis_publisher).await;
-                            }
-                            _ = shutdown_rx.recv() => {
-                                let _ = jupiter_collector.disconnect().await;
-                                return;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    if let Some(ref cb) = cb {
-                        cb_record_failure(cb, "jupiter").await;
-                    }
-                    tracing::error!("Jupiter Connect failed: {}. Retrying in 5s...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }

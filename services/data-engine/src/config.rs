@@ -4,7 +4,6 @@ use crate::collectors::bybit::BybitConfig;
 use crate::collectors::dexscreener::DexScreenerConfig;
 use crate::collectors::futu::FutuConfig;
 use crate::collectors::helius::HeliusConfig;
-use crate::collectors::jupiter::JupiterConfig;
 use crate::collectors::okx::OkxConfig;
 use config::{Config, ConfigError, Environment, File};
 use serde::de::{SeqAccess, Visitor};
@@ -32,7 +31,6 @@ pub struct AppConfig {
     pub birdeye: Option<BirdeyeConfig>,
     pub dexscreener: Option<DexScreenerConfig>,
     pub helius: Option<HeliusConfig>,
-    pub jupiter: Option<JupiterConfig>,
     pub performance: PerformanceConfig,
     pub logging: LoggingConfig,
 }

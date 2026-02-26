@@ -558,7 +558,7 @@ impl TaskManager {
                 error!("Agg 15m failed: {}", e);
             }
             // Large resolutions: split by exchange to reduce scanned rows
-            let exchanges = ["Polygon", "Jupiter", "Birdeye", "Binance", "OKX", "Bybit"];
+            let exchanges = ["Polygon", "Birdeye", "Binance", "OKX", "Bybit"];
             for (lookback, res, bucket) in [
                 (120, "1h", 60),
                 (300, "4h", 240),
@@ -694,7 +694,7 @@ impl TaskManager {
                         error!("Agg 15m failed: {}", e);
                     }
                     // 1h: split by exchange but still fast (120min lookback)
-                    let exchanges = ["Polygon", "Jupiter", "Birdeye", "Binance", "OKX", "Bybit"];
+                    let exchanges = ["Polygon", "Birdeye", "Binance", "OKX", "Bybit"];
                     for exchange in &exchanges {
                         if let Err(e) = aggregator
                             .aggregate_candles(120, "1h", 60, Some(exchange))
@@ -720,7 +720,7 @@ impl TaskManager {
                     let mut aggregator =
                         crate::tasks::candle_aggregation::CandleAggregator::new(pool_clone);
 
-                    let exchanges = ["Polygon", "Jupiter", "Birdeye", "Binance", "OKX", "Bybit"];
+                    let exchanges = ["Polygon", "Birdeye", "Binance", "OKX", "Bybit"];
                     for (lookback, res, bucket) in
                         [(300, "4h", 240), (1500, "1d", 1440), (11520, "1w", 10080)]
                     {

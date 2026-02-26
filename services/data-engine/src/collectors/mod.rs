@@ -27,5 +27,3 @@ pub use okx::connector::OkxConnector;
 pub use polygon::{PolygonConfig, PolygonConnector};
 pub use polymarket::PolymarketCollector;
 pub use twitter::TwitterCollector;
-pub mod jupiter;
-pub use jupiter::{JupiterConfig, JupiterPriceCollector};
