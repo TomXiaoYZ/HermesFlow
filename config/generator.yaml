@@ -12,6 +12,14 @@ exchanges:
     multi_timeframe:
       enabled: true
       resolutions: ["1h", "4h", "1d"]
+      # P6-1A: Publication delay per resolution (seconds).
+      # A bar's data is not available until bar_close_timestamp + publication_delay.
+      # Prevents look-ahead bias when aligning lower-frequency bars to higher-frequency.
+      # Example: a 1d bar closing at 16:00 ET has ~900s delay (available ~16:15 ET).
+      publication_delays:
+        "1h": 0
+        "4h": 300
+        "1d": 900
     walk_forward:
       initial_train: 2500
       target_test_window: 1000
@@ -85,6 +93,27 @@ ensemble:
 # Genomes where >15% of ops trigger NaN/Inf sanitization get fitness penalized.
 vm:
   protection_penalty_threshold: 0.15
+
+# P6-1B: Local FDR hypothesis testing with RPN structural clustering.
+# Disabled by default; enable when scaling beyond ~50 symbols.
+lfdr:
+  enabled: false
+  fdr_level: 0.10
+  ngram_size: 3
+  min_cluster_size: 10
+  jaccard_threshold: 0.3
+
+# P6-4A: MCTS symbolic regression
+# Monte Carlo Tree Search for discovering high-fitness RPN formulas.
+# Injects top seeds into ALPS Layer 0 at configurable intervals.
+mcts:
+  enabled: false
+  budget: 1000
+  seeds_per_round: 5
+  interval: 50
+  exploration_c: 1.414
+  max_length: 20
+  use_max_reward: false
 
 # LLM-guided mutation oracle (P2)
 # Invoked when GA stalls (promotion rate drop or high TFT rate).

@@ -7,13 +7,14 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod api;
 mod backtest;
 mod genetic;
 mod genome_decoder;
 mod llm_oracle;
+mod mcts;
 
 use backtest::StrategyMode;
 use backtest::{
@@ -158,6 +159,11 @@ pub struct WalkForwardYamlConfig {
 pub struct MultiTimeframeYamlConfig {
     pub enabled: bool,
     pub resolutions: Vec<String>,
+    /// P6-1A: Publication delay per resolution (seconds).
+    /// A bar's data is not available until `bar_close_timestamp + delay`.
+    /// Prevents look-ahead bias when aligning lower-frequency bars to higher-frequency.
+    #[serde(default)]
+    pub publication_delays: std::collections::HashMap<String, i64>,
 }
 
 /// Per-exchange evolution config, loaded from config/generator.yaml.
@@ -589,6 +595,13 @@ async fn run_symbol_evolution(
         .filter(|m| m.enabled)
         .map(|m| m.resolutions.clone())
         .unwrap_or_default();
+    // P6-1A: Extract per-resolution publication delays (seconds)
+    let publication_delays: std::collections::HashMap<String, i64> = config
+        .multi_timeframe
+        .as_ref()
+        .filter(|m| m.enabled)
+        .map(|m| m.publication_delays.clone())
+        .unwrap_or_default();
 
     let mtf_config = if mtf_enabled {
         Some(MultiTimeframeFactorConfig::new(
@@ -684,6 +697,7 @@ async fn run_symbol_evolution(
                 std::slice::from_ref(&symbol),
                 config.lookback_days,
                 mtf_config.as_ref().unwrap(),
+                &publication_delays,
             )
             .await
         {
@@ -953,9 +967,12 @@ async fn run_symbol_evolution(
             );
 
             // IS-OOS gap monitoring with sentinel awareness
+            // P6-3C: During evolution phase, VM failures and sentinels are expected
+            // (random genomes in ALPS L0 produce NaN/None). Log at DEBUG to avoid
+            // flooding Discord webhook. Only paper/live errors should reach ERROR/WARN.
             let is_oos_gap = best.fitness - oos_psr;
             if best.fitness > 1.0 && is_sentinel(oos_psr) {
-                warn!(
+                debug!(
                     "[{}:{}:{}] Gen {} — OOS sentinel: {} (IS={:.3})",
                     exchange,
                     symbol,
@@ -965,7 +982,7 @@ async fn run_symbol_evolution(
                     best.fitness
                 );
             } else if best.fitness > 1.0 && oos_psr < 0.0 && is_oos_gap > 2.0 {
-                warn!(
+                debug!(
                     "[{}:{}:{}] Gen {} — IS-OOS divergence (IS={:.3}, OOS={:.3}, gap={:.3}, wf_steps={})",
                     exchange, symbol, mode_str, gen, best.fitness, oos_psr, is_oos_gap,
                     wf_result.num_valid_steps

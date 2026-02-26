@@ -80,6 +80,9 @@ pub struct EnsembleConfig {
     /// P6b-C1: Deadzone + L1 regularization for turnover suppression.
     #[serde(default)]
     pub deadzone: DeadzoneConfig,
+    /// P6-1D: Non-linear decay routing buffer configuration.
+    #[serde(default)]
+    pub decay: DecayConfig,
 }
 
 impl Default for EnsembleConfig {
@@ -100,6 +103,7 @@ impl Default for EnsembleConfig {
             regime_thresholds: default_regime_thresholds(),
             regime_intervals: default_regime_intervals(),
             deadzone: DeadzoneConfig::default(),
+            decay: DecayConfig::default(),
         }
     }
 }
@@ -163,6 +167,76 @@ fn default_deadzone_threshold() -> f64 {
 }
 fn default_deadzone_l1_lambda() -> f64 {
     0.01
+}
+
+/// P6-1D: Non-linear decay routing buffer configuration.
+///
+/// When a strategy's rolling OOS PSR drops below `decay_threshold` for
+/// `decay_trigger_periods` consecutive periods, it enters the `decaying` state.
+/// In this state, its ensemble weight is multiplied by `exp(-decay_rate * periods_decaying)`.
+/// Once effective weight < `retire_epsilon`, the strategy transitions to `retired`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecayConfig {
+    /// Enable decay routing (default: true)
+    #[serde(default = "default_decay_enabled")]
+    pub enabled: bool,
+    /// OOS PSR threshold below which decay triggers
+    #[serde(default = "default_decay_threshold")]
+    pub decay_threshold: f64,
+    /// Consecutive periods below threshold before entering decay
+    #[serde(default = "default_decay_trigger_periods")]
+    pub trigger_periods: usize,
+    /// Exponential decay rate per period (larger = faster decay)
+    #[serde(default = "default_decay_rate")]
+    pub decay_rate: f64,
+    /// Weight epsilon below which strategy transitions to retired
+    #[serde(default = "default_retire_epsilon")]
+    pub retire_epsilon: f64,
+}
+
+impl Default for DecayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_decay_enabled(),
+            decay_threshold: default_decay_threshold(),
+            trigger_periods: default_decay_trigger_periods(),
+            decay_rate: default_decay_rate(),
+            retire_epsilon: default_retire_epsilon(),
+        }
+    }
+}
+
+fn default_decay_enabled() -> bool {
+    true
+}
+fn default_decay_threshold() -> f64 {
+    0.3
+}
+fn default_decay_trigger_periods() -> usize {
+    3
+}
+fn default_decay_rate() -> f64 {
+    0.3
+}
+fn default_retire_epsilon() -> f64 {
+    0.01
+}
+
+/// P6-1D: Compute the decay multiplier for a strategy.
+///
+/// Returns a value in (0.0, 1.0] that should multiply the strategy's
+/// ensemble weight. Returns 1.0 for non-decaying strategies.
+#[allow(dead_code)] // Used by strategy-engine when loading deployed_strategies
+pub fn compute_decay_multiplier(
+    decay_state: &str,
+    decay_factor: f64,
+    decay_rate: f64,
+) -> f64 {
+    match decay_state {
+        "decaying" => (decay_factor * (-decay_rate).exp()).max(0.0),
+        "retired" => 0.0,
+        _ => 1.0, // "none" or unknown
+    }
 }
 fn default_enabled() -> bool {
     true
@@ -564,12 +638,65 @@ pub async fn upsert_deployed_strategies(
         .map(|c| (c.id.symbol.clone(), c.id.mode.clone()))
         .collect();
 
-    // Mark previously active strategies as 'replaced' if no longer in ensemble
+    // P6-1D: Instead of immediately marking removed strategies as 'replaced',
+    // transition them to 'decaying' state for smooth weight reduction.
+    // Strategies already in 'decaying' state have their decay_factor updated.
+    // Only strategies with decay_factor below epsilon are set to 'retired'.
+
+    // First: transition active strategies not in ensemble to decaying (not replaced)
     sqlx::query(
         "UPDATE deployed_strategies \
-         SET status = 'replaced', updated_at = NOW() \
-         WHERE exchange = $1 AND status = 'active' \
+         SET decay_state = 'decaying', \
+             decay_started_at = COALESCE(decay_started_at, NOW()), \
+             decay_factor = CASE WHEN decay_state = 'none' THEN 1.0 ELSE decay_factor END, \
+             updated_at = NOW() \
+         WHERE exchange = $1 AND status = 'active' AND decay_state = 'none' \
            AND (symbol, mode) NOT IN (SELECT * FROM UNNEST($2::text[], $3::text[]))",
+    )
+    .bind(exchange)
+    .bind(
+        active_keys
+            .iter()
+            .map(|(s, _)| s.clone())
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        active_keys
+            .iter()
+            .map(|(_, m)| m.clone())
+            .collect::<Vec<_>>(),
+    )
+    .execute(pool)
+    .await?;
+
+    // Second: advance decay factor for already-decaying strategies
+    sqlx::query(
+        "UPDATE deployed_strategies \
+         SET decay_factor = decay_factor * EXP(-0.3), \
+             updated_at = NOW() \
+         WHERE exchange = $1 AND decay_state = 'decaying'",
+    )
+    .bind(exchange)
+    .execute(pool)
+    .await?;
+
+    // Third: retire strategies whose decay_factor has fallen below epsilon
+    sqlx::query(
+        "UPDATE deployed_strategies \
+         SET decay_state = 'retired', status = 'replaced', updated_at = NOW() \
+         WHERE exchange = $1 AND decay_state = 'decaying' AND decay_factor < 0.01",
+    )
+    .bind(exchange)
+    .execute(pool)
+    .await?;
+
+    // Fourth: if a previously decaying strategy is back in ensemble, restore it
+    sqlx::query(
+        "UPDATE deployed_strategies \
+         SET decay_state = 'none', decay_factor = 1.0, decay_started_at = NULL, \
+             updated_at = NOW() \
+         WHERE exchange = $1 AND decay_state IN ('decaying') \
+           AND (symbol, mode) IN (SELECT * FROM UNNEST($2::text[], $3::text[]))",
     )
     .bind(exchange)
     .bind(

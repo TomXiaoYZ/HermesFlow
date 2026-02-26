@@ -17,6 +17,8 @@ pub mod data_frame;
 pub mod ensemble;
 pub mod ensemble_weights;
 pub mod hrp;
+pub mod hypothesis;
+pub mod incremental_pca;
 pub mod portfolio;
 
 // ── OOS Sentinel Values ──────────────────────────────────────────────
@@ -547,28 +549,41 @@ impl UtilizationTracker {
 /// Forward-fill lower-frequency features to align with higher-frequency timestamps.
 ///
 /// For each target (high-frequency) timestamp `t`, finds the most recent low-frequency
-/// bar where `lf_timestamps[j] <= t` and copies its feature row. Bars before the first
-/// low-frequency timestamp are filled with zeros.
+/// bar where `lf_timestamps[j] + publication_delay_secs <= t` and copies its feature row.
+/// Bars before the first available low-frequency timestamp are filled with zeros.
+///
+/// P6-1A: The `publication_delay_secs` parameter enforces temporal causality — a bar
+/// is not considered "available" until its close timestamp + publication delay.
+/// This prevents look-ahead bias (e.g., a 1d bar closing at 16:00 ET should not
+/// be visible to same-day 1h bars that close before 16:00 + delay).
 ///
 /// Uses binary search for O(T_hf * log(T_lf)) complexity.
 pub fn forward_fill_align(
     lf_features: &Array3<f64>,
     lf_timestamps: &[i64],
     hf_timestamps: &[i64],
+    publication_delay_secs: i64,
 ) -> Array3<f64> {
     let n_factors = lf_features.shape()[1];
     let hf_len = hf_timestamps.len();
     let mut out = Array3::<f64>::zeros((1, n_factors, hf_len));
 
     for (i, &t) in hf_timestamps.iter().enumerate() {
-        // Binary search: find rightmost lf index where lf_timestamps[j] <= t
-        let idx = match lf_timestamps.binary_search(&t) {
-            Ok(exact) => Some(exact),
-            Err(insert_pos) => {
-                if insert_pos > 0 {
-                    Some(insert_pos - 1)
-                } else {
-                    None // t is before the first lf timestamp
+        // P6-1A: A low-frequency bar at lf_timestamps[j] is only available when
+        // lf_timestamps[j] + publication_delay_secs <= t (strict causality).
+        // We search for the effective available timestamp.
+        let idx = {
+            // Find rightmost lf index where lf_timestamps[j] + delay <= t
+            // Equivalently: lf_timestamps[j] <= t - delay
+            let effective_t = t - publication_delay_secs;
+            match lf_timestamps.binary_search(&effective_t) {
+                Ok(exact) => Some(exact),
+                Err(insert_pos) => {
+                    if insert_pos > 0 {
+                        Some(insert_pos - 1)
+                    } else {
+                        None // t is before the first lf timestamp + delay
+                    }
                 }
             }
         };
@@ -1002,6 +1017,7 @@ impl Backtester {
         symbols: &[String],
         days: i64,
         mtf_config: &MultiTimeframeFactorConfig,
+        publication_delays: &std::collections::HashMap<String, i64>,
     ) -> anyhow::Result<()> {
         let resolutions = &mtf_config.resolutions;
         let n_factors_per_res = mtf_config.base_feat_count();
@@ -1012,12 +1028,14 @@ impl Backtester {
 
         // Process symbols concurrently (up to 8 at a time to avoid DB pool exhaustion).
         // Each symbol fetches all resolutions in parallel via tokio::try_join!.
+        let pub_delays = publication_delays.clone();
         let results: Vec<Option<(String, CachedData)>> = stream::iter(symbols.iter().cloned())
             .map(|symbol| {
                 let pool = pool.clone();
                 let exchange = exchange.clone();
                 let resolutions = resolutions.clone();
                 let factor_config = factor_config.clone();
+                let pub_delays = pub_delays.clone();
                 async move {
                     // Fetch all resolutions in parallel
                     let mut futures = Vec::with_capacity(resolutions.len());
@@ -1154,7 +1172,12 @@ impl Backtester {
                         let aligned = if res_idx == 0 {
                             features.clone()
                         } else {
-                            forward_fill_align(features, timestamps, hf_timestamps)
+                            // P6-1A: Apply publication delay for temporal causality
+                            let delay = pub_delays
+                                .get(&resolutions[res_idx])
+                                .copied()
+                                .unwrap_or(0);
+                            forward_fill_align(features, timestamps, hf_timestamps, delay)
                         };
 
                         for f in 0..n_factors_per_res {
@@ -3028,21 +3051,21 @@ mod tests {
 
     #[test]
     fn forward_fill_exact_match() {
-        // LF and HF timestamps are identical → output equals input
+        // LF and HF timestamps are identical → output equals input (zero delay)
         let lf = Array3::from_shape_vec((1, 2, 3), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
         let ts = vec![100, 200, 300];
-        let out = forward_fill_align(&lf, &ts, &ts);
+        let out = forward_fill_align(&lf, &ts, &ts, 0);
         assert_eq!(out, lf);
     }
 
     #[test]
     fn forward_fill_4h_to_1h() {
         // 4h bars at t=0, t=400. 1h bars at t=0,100,200,300,400,500.
-        // Expected: bars 0-3 use 4h[0], bars 4-5 use 4h[1].
+        // Expected (no delay): bars 0-3 use 4h[0], bars 4-5 use 4h[1].
         let lf = Array3::from_shape_vec((1, 1, 2), vec![10.0, 20.0]).unwrap();
         let lf_ts = vec![0, 400];
         let hf_ts = vec![0, 100, 200, 300, 400, 500];
-        let out = forward_fill_align(&lf, &lf_ts, &hf_ts);
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts, 0);
         let expected = vec![10.0, 10.0, 10.0, 10.0, 20.0, 20.0];
         assert_eq!(out.as_slice().unwrap(), &expected);
     }
@@ -3053,7 +3076,7 @@ mod tests {
         let lf = Array3::from_shape_vec((1, 1, 2), vec![5.0, 9.0]).unwrap();
         let lf_ts = vec![100, 200];
         let hf_ts = vec![50, 100, 150, 200, 250];
-        let out = forward_fill_align(&lf, &lf_ts, &hf_ts);
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts, 0);
         let expected = vec![0.0, 5.0, 5.0, 9.0, 9.0];
         assert_eq!(out.as_slice().unwrap(), &expected);
     }
@@ -3064,7 +3087,7 @@ mod tests {
         let lf = Array3::from_shape_vec((1, 2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
         let lf_ts = vec![0, 200];
         let hf_ts = vec![0, 100, 200, 300];
-        let out = forward_fill_align(&lf, &lf_ts, &hf_ts);
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts, 0);
         // factor 0: [1, 1, 2, 2], factor 1: [3, 3, 4, 4]
         assert_eq!(out[[0, 0, 0]], 1.0);
         assert_eq!(out[[0, 0, 1]], 1.0);
@@ -3074,6 +3097,62 @@ mod tests {
         assert_eq!(out[[0, 1, 1]], 3.0);
         assert_eq!(out[[0, 1, 2]], 4.0);
         assert_eq!(out[[0, 1, 3]], 4.0);
+    }
+
+    // ── P6-1A: Publication delay tests ───────────────────────────────────────
+
+    #[test]
+    fn forward_fill_4h_to_1h_with_delay() {
+        // 4h bars at t=0, t=14400 (4h=14400s). 1h bars every 3600s.
+        // With 300s delay: 4h bar at t=0 available at t=300, bar at t=14400 at t=14700.
+        // HF timestamps: 0, 3600, 7200, 10800, 14400, 18000
+        // At t=0: 0 < 300, bar[0] NOT available → zero
+        // At t=3600: 3600 >= 300, bar[0] available → 10.0
+        // At t=14400: 14400 < 14700, bar[1] NOT available, bar[0] still used → 10.0
+        // At t=18000: 18000 >= 14700, bar[1] available → 20.0
+        let lf = Array3::from_shape_vec((1, 1, 2), vec![10.0, 20.0]).unwrap();
+        let lf_ts = vec![0, 14400];
+        let hf_ts = vec![0, 3600, 7200, 10800, 14400, 18000];
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts, 300);
+        let expected = vec![0.0, 10.0, 10.0, 10.0, 10.0, 20.0];
+        assert_eq!(out.as_slice().unwrap(), &expected);
+    }
+
+    #[test]
+    fn forward_fill_1d_to_1h_with_delay() {
+        // 1d bar at t=0 (close at 16:00 ET). 1h bars at t=0, t=900, t=1800.
+        // With 900s delay: 1d bar available at t=900.
+        // At t=0: 0 < 900 → zero (bar not yet published)
+        // At t=900: 900 >= 900 → 42.0 (bar just became available)
+        // At t=1800: 1800 >= 900 → 42.0
+        let lf = Array3::from_shape_vec((1, 1, 1), vec![42.0]).unwrap();
+        let lf_ts = vec![0];
+        let hf_ts = vec![0, 900, 1800];
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts, 900);
+        let expected = vec![0.0, 42.0, 42.0];
+        assert_eq!(out.as_slice().unwrap(), &expected);
+    }
+
+    #[test]
+    fn forward_fill_zero_delay_matches_original() {
+        // Zero delay should produce identical results to the original behavior
+        let lf = Array3::from_shape_vec((1, 1, 3), vec![1.0, 2.0, 3.0]).unwrap();
+        let lf_ts = vec![100, 200, 300];
+        let hf_ts = vec![50, 100, 150, 200, 250, 300, 350];
+        let out_no_delay = forward_fill_align(&lf, &lf_ts, &hf_ts, 0);
+        let expected = vec![0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0];
+        assert_eq!(out_no_delay.as_slice().unwrap(), &expected);
+    }
+
+    #[test]
+    fn forward_fill_large_delay_all_zeros() {
+        // If delay is larger than all timestamps, everything is zero
+        let lf = Array3::from_shape_vec((1, 1, 2), vec![5.0, 9.0]).unwrap();
+        let lf_ts = vec![100, 200];
+        let hf_ts = vec![100, 200, 300];
+        let out = forward_fill_align(&lf, &lf_ts, &hf_ts, 10000);
+        let expected = vec![0.0, 0.0, 0.0];
+        assert_eq!(out.as_slice().unwrap(), &expected);
     }
 
     // ── Z-Score / LongShort fix tests ──────────────────────────────────────

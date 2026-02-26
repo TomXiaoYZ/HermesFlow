@@ -5,7 +5,7 @@ use backtest_engine::config::FactorConfig;
 use backtest_engine::vm::vm::StackVM;
 use serde_json::json;
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::info;
 
 pub struct PortfolioBacktester {
     pub(crate) vm: StackVM,
@@ -108,7 +108,9 @@ impl PortfolioBacktester {
             if let Some(signal) = self.vm.execute(&genome_usize, &data.features) {
                 all_signals.insert(symbol.clone(), signal.into_raw_vec());
             } else {
-                warn!("VM execution failed for {}", symbol);
+                // P6-3C: Evolution-phase VM failures are expected (random genomes),
+                // log at debug to avoid Discord alert flooding.
+                tracing::debug!("VM execution failed for {} (evolution phase)", symbol);
             }
         }
 
