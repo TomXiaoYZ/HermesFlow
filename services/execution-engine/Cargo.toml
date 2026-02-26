@@ -13,7 +13,6 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 uuid = { version = "1.0", features = ["serde", "v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-base64 = "0.21"
 clap = { version = "4.4", features = ["derive"] }
 axum = "0.7"
 hyper = "1.0"
@@ -22,22 +21,11 @@ redis = { version = "0.24", features = ["tokio-comp"] }
 # HTTP client
 reqwest = { version = "0.11", features = ["json"] }
 
-# Database (trade persistence — using tokio-postgres directly to avoid sqlx/Solana SDK dep conflicts)
+# Database (trade persistence)
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1"] }
 
-# IBKR (sync feature avoids tokio 1.41+ dep that conflicts with Solana SDK tokio ~1.14)
+# IBKR
 ibapi = { version = "2.8", default-features = false, features = ["sync"] }
-
-# Solana
-solana-client = "1.18"
-solana-sdk = "1.18"
-solana-program = "1.18"
-solana-transaction-status = "1.18"
-spl-token = "3.5"
-spl-associated-token-account = "1.1"
-bs58 = "0.4"
-borsh = "0.10"
-bincode = "1.3"
 
 # Internal
 common = { path = "../common", features = ["health", "heartbeat"] }

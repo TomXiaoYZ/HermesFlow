@@ -9,14 +9,12 @@ use tracing::{error, info, warn};
 use crate::risk::StockRiskEngine;
 use crate::traders::futu_trader::FutuTrader;
 use crate::traders::ibkr_trader::IBKRTrader;
-use crate::traders::solana_trader::SolanaTrader;
 use crate::traders::{BrokerOrderType, OrderParams, OrderResult, TimeInForce, Trader};
 use tokio_postgres::Client as PgClient;
 
 /// Determines which broker should handle a given symbol
 #[derive(Debug, Clone, PartialEq)]
 enum BrokerRoute {
-    Solana,
     Ibkr,
     Futu,
 }
@@ -25,7 +23,6 @@ pub struct CommandListener {
     client: redis::Client,
     db: Option<Arc<PgClient>>,
     risk: StockRiskEngine,
-    pub solana_trader: Option<Arc<SolanaTrader>>,
     /// IBKRTrader for long_only mode (client_id from IBKR_CLIENT_ID_LONG_ONLY)
     pub ibkr_long_only_trader: Option<Arc<IBKRTrader>>,
     /// IBKRTrader for long_short mode (client_id from IBKR_CLIENT_ID_LONG_SHORT)
@@ -57,7 +54,6 @@ impl CommandListener {
             client,
             db,
             risk: StockRiskEngine::new(),
-            solana_trader: None,
             ibkr_long_only_trader: None,
             ibkr_long_short_trader: None,
             futu_trader: None,
@@ -68,12 +64,10 @@ impl CommandListener {
 
     pub fn set_traders(
         &mut self,
-        solana: Option<Arc<SolanaTrader>>,
         ibkr_long_only: Option<Arc<IBKRTrader>>,
         ibkr_long_short: Option<Arc<IBKRTrader>>,
         futu: Option<Arc<FutuTrader>>,
     ) {
-        self.solana_trader = solana;
         self.ibkr_long_only_trader = ibkr_long_only;
         self.ibkr_long_short_trader = ibkr_long_short;
         self.futu_trader = futu;
@@ -97,11 +91,6 @@ impl CommandListener {
             || sym.starts_with("SZ.")
         {
             return BrokerRoute::Futu;
-        }
-
-        // Solana addresses are base58, typically 32-44 chars
-        if sym.len() > 30 || sym == "SOL" {
-            return BrokerRoute::Solana;
         }
 
         // Default: US stock tickers -> IBKR
@@ -170,15 +159,8 @@ impl CommandListener {
     fn asset_type_for(signal: &TradeSignal) -> &'static str {
         match signal.exchange.as_deref() {
             Some("polygon") => "STK",
-            Some("binance") | Some("okx") | Some("bybit") => "CRYPTO",
-            _ => {
-                // Solana addresses are long base58 strings
-                if signal.symbol.len() > 30 || signal.symbol == "SOL" {
-                    "CRYPTO"
-                } else {
-                    "STK"
-                }
-            }
+            Some("binance") | Some("okx") | Some("bybit") => "STK",
+            _ => "STK",
         }
     }
 
@@ -339,66 +321,6 @@ impl CommandListener {
             }
 
             match route {
-                BrokerRoute::Solana => {
-                    if let Some(trader) = &self.solana_trader {
-                        let trader = trader.clone();
-                        let sig = signal.clone();
-                        let redis_client = self.client.clone();
-
-                        tokio::spawn(async move {
-                            let res = match sig.side {
-                                common::events::OrderSide::Buy => {
-                                    trader.buy(&sig.symbol, sig.quantity, 100).await
-                                }
-                                common::events::OrderSide::Sell => {
-                                    trader.sell(&sig.symbol, sig.quantity, 100).await
-                                }
-                            };
-                            match res {
-                                Ok(tx) => {
-                                    info!("Solana execution OK: {}", tx);
-                                    let update = OrderUpdate {
-                                        order_id: tx.clone(),
-                                        signal_id: Some(sig.id),
-                                        symbol: sig.symbol.clone(),
-                                        status: OrderStatus::Filled,
-                                        filled_quantity: sig.quantity,
-                                        filled_avg_price: 0.0,
-                                        timestamp: Utc::now(),
-                                        message: Some(format!("Solana tx: {}", tx)),
-                                    };
-                                    if let Ok(mut conn) = redis_client.get_connection() {
-                                        let json =
-                                            serde_json::to_string(&update).unwrap_or_default();
-                                        let _: std::result::Result<(), _> =
-                                            conn.publish("order_updates", json);
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Solana execution failed: {}", e);
-                                    let update = Self::make_failed_update(&sig, &e.to_string());
-                                    if let Ok(mut conn) = redis_client.get_connection() {
-                                        let json =
-                                            serde_json::to_string(&update).unwrap_or_default();
-                                        let _: std::result::Result<(), _> =
-                                            conn.publish("order_updates", json);
-                                    }
-                                }
-                            }
-                        });
-                    } else {
-                        warn!(
-                            "No Solana trader configured, rejecting signal for {}",
-                            signal.symbol
-                        );
-                        let update =
-                            Self::make_failed_update(&signal, "No Solana trader configured");
-                        if let Err(e) = self.publish_update(&update) {
-                            error!("Failed to publish no-trader rejection: {}", e);
-                        }
-                    }
-                }
-
                 BrokerRoute::Ibkr => {
                     let ibkr_trader = match signal.mode.as_deref() {
                         Some("long_short") => self.ibkr_long_short_trader.as_ref(),

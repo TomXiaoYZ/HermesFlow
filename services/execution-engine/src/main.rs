@@ -6,7 +6,6 @@ use execution_engine::command_listener::CommandListener;
 use execution_engine::reconciliation;
 use execution_engine::traders::futu_trader::FutuTrader;
 use execution_engine::traders::ibkr_trader::IBKRTrader;
-use execution_engine::traders::solana_trader::SolanaTrader;
 use execution_engine::traders::Trader;
 use redis::Commands;
 use std::env;
@@ -26,12 +25,6 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    let solana_rpc = env::var("SOLANA_RPC_URL")
-        .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
-    let priv_key = env::var("SOLANA_PRIVATE_KEY")
-        .ok()
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty());
 
     // ========================================
     // 0. Initialize Database Connection (optional)
@@ -62,30 +55,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ========================================
-    // 1. Initialize Solana Trader
-    // ========================================
-    let solana = match priv_key {
-        Some(ref key) => {
-            info!("Initializing Solana Trader...");
-            match SolanaTrader::new(&solana_rpc, key) {
-                Ok(t) => {
-                    info!("Solana Trader initialized");
-                    Some(Arc::new(t))
-                }
-                Err(e) => {
-                    warn!("Solana Trader not available: {}", e);
-                    None
-                }
-            }
-        }
-        None => {
-            warn!("SOLANA_PRIVATE_KEY not set, Solana trading disabled");
-            None
-        }
-    };
-
-    // ========================================
-    // 2. Initialize IBKR Traders (one per mode)
+    // 1. Initialize IBKR Traders (one per mode)
     // ========================================
     let ibkr_host = env::var("IBKR_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let ibkr_port: u32 = env::var("IBKR_PORT")
@@ -151,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
         };
 
     // ========================================
-    // 2b. Sync order ID counter with DB max to avoid uniqueness conflicts
+    // 1b. Sync order ID counter with DB max to avoid uniqueness conflicts
     // ========================================
     if let Some(ref db_client) = db {
         match db_client
@@ -172,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ========================================
-    // 3. Initialize Futu Trader
+    // 2. Initialize Futu Trader
     // ========================================
     let futu_bridge_url =
         env::var("FUTU_BRIDGE_URL").unwrap_or_else(|_| "http://127.0.0.1:8088".to_string());
@@ -190,71 +160,22 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ========================================
-    // 4. Setup Command Listener
+    // 3. Setup Command Listener
     // ========================================
     let mut listener = CommandListener::new(&redis_url, db.clone())?;
     listener.set_traders(
-        solana.clone(),
         ibkr_long_only.clone(),
         ibkr_long_short.clone(),
         futu.clone(),
     );
 
     // Record status before moves
-    let solana_on = solana.is_some();
     let ibkr_lo_on = ibkr_long_only.is_some();
     let ibkr_ls_on = ibkr_long_short.is_some();
     let futu_on = futu.is_some();
 
     // ========================================
-    // 5. Background: Solana Portfolio Sync
-    // ========================================
-    if let Some(trader) = solana {
-        let redis_url_clone = redis_url.clone();
-        let trader_clone = trader.clone();
-
-        tokio::spawn(async move {
-            info!("Starting Solana Portfolio Sync Task...");
-            let client = match redis::Client::open(redis_url_clone.as_str()) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Failed to create Redis client for Solana sync: {}", e);
-                    return;
-                }
-            };
-            let mut con = match client.get_connection() {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Failed to connect to Redis for Solana sync: {}", e);
-                    return;
-                }
-            };
-
-            loop {
-                match trader_clone.get_balance().await {
-                    Ok(balance) => {
-                        let update = PortfolioUpdate {
-                            timestamp: Utc::now(),
-                            cash: balance,
-                            positions: vec![],
-                            total_equity: balance,
-                        };
-                        if let Ok(json) = serde_json::to_string(&update) {
-                            let _: std::result::Result<(), _> =
-                                con.publish("portfolio_updates", json);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to fetch Solana balance: {}", e);
-                    }
-                }
-                tokio::time::sleep(Duration::from_secs(60)).await;
-            }
-        });
-    }
-
-    // ========================================
-    // 6. Background: IBKR Portfolio Sync (queries both traders for per-account data)
+    // 4. Background: IBKR Portfolio Sync (queries both traders for per-account data)
     // ========================================
     {
         // Collect all available IBKR traders for account summary queries.
@@ -417,7 +338,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ========================================
-    // 6b. Background: Futu Portfolio Sync
+    // 5. Background: Futu Portfolio Sync
     // ========================================
     if let Some(trader) = futu.clone() {
         let redis_url_clone = redis_url.clone();
@@ -467,21 +388,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ========================================
-    // 7. Background: Heartbeat
+    // 6. Background: Heartbeat
     // ========================================
     common::heartbeat::spawn_heartbeat("execution-engine", &redis_url);
 
     info!("Execution Engine Ready. Listening for signals...");
     info!(
-        "  Solana: {}  |  IBKR long_only: {}  |  IBKR long_short: {}  |  Futu: {}",
-        if solana_on { "ON" } else { "OFF" },
+        "  IBKR long_only: {}  |  IBKR long_short: {}  |  Futu: {}",
         if ibkr_lo_on { "ON" } else { "OFF" },
         if ibkr_ls_on { "ON" } else { "OFF" },
         if futu_on { "ON" } else { "OFF" },
     );
 
     // ========================================
-    // 8. Main Loop: Listen for trade signals
+    // 7. Main Loop: Listen for trade signals
     // ========================================
     if let Err(e) = listener.listen_for_signals().await {
         error!("Listener Error: {}", e);

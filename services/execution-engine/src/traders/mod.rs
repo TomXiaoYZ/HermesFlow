@@ -1,7 +1,6 @@
 pub mod futu_trader;
 pub mod ibkr_trader;
-pub mod raydium_trader;
-pub mod solana_trader;
+pub mod paper_trader;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -68,7 +67,7 @@ pub struct BrokerPosition {
     pub account: String,
 }
 
-/// Unified trader trait for all brokers (IBKR, Futu, Solana, etc.)
+/// Unified trader trait for all brokers (IBKR, Futu, Paper, etc.)
 #[async_trait]
 pub trait Trader: Send + Sync {
     fn broker_name(&self) -> &str;

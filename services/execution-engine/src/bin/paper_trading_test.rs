@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
     // 1. Simulate Strategy Engine publishing a signal
     let signal = TradeSignal {
         id: Uuid::new_v4(),
-        symbol: "SOL/USDC".to_string(),
+        symbol: "AAPL".to_string(),
         side: OrderSide::Buy,
         quantity: 1.5,
         price: None,
