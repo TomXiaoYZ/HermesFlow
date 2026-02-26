@@ -106,8 +106,6 @@ services:
       - DATA_ENGINE__SERVER__HOST=0.0.0.0
       - DATA_ENGINE__BIRDEYE__API_KEY=${DATA_ENGINE__BIRDEYE__API_KEY}
       - DATA_ENGINE__HELIUS__API_KEY=${DATA_ENGINE__HELIUS__API_KEY}
-      - DATA_ENGINE__JUPITER__API_KEY=${DATA_ENGINE__JUPITER__API_KEY}
-      - SOLANA_RPC_URL=${SOLANA_RPC_URL}
       - POLYGON_API_KEY=${POLYGON_API_KEY}
       - POLYGON_RATE_LIMIT=${POLYGON_RATE_LIMIT}
       - POLYGON_WS_ENABLED=${POLYGON_WS_ENABLED}
@@ -272,7 +270,6 @@ services:
       - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-password}@timescaledb:5432/hermesflow
       - HTTPS_PROXY=http://host.docker.internal:7897
       - ALL_PROXY=socks5://host.docker.internal:7897
-      - SOLANA_PRIVATE_KEY=${SOLANA_PRIVATE_KEY}
       - IBKR_HOST=${IBKR_HOST:-ib-gateway}
       - IBKR_PORT=${IBKR_PORT:-4004}
       - IBKR_HOST_LS=${IBKR_HOST_LS:-ib-gateway-ls}

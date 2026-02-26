@@ -664,9 +664,7 @@ impl AlpsGA {
                 .iter()
                 .enumerate()
                 .filter(|(i, &t)| {
-                    t >= feat_offset
-                        && token_arity(t, feat_offset) == 1
-                        && !genome.is_blocked(*i)
+                    t >= feat_offset && token_arity(t, feat_offset) == 1 && !genome.is_blocked(*i)
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -1134,7 +1132,7 @@ mod tests {
             assert_eq!(child.fitness, 0.0); // reset
             assert_eq!(child.age, 0); // reset
             assert!(child.tokens.len() <= 20); // truncation limit
-            // Block fields should be sized to match tokens
+                                               // Block fields should be sized to match tokens
             assert_eq!(child.block_mask.len(), child.tokens.len());
             assert_eq!(child.block_age.len(), child.tokens.len());
         }
@@ -1283,8 +1281,7 @@ mod tests {
 
         // Block everything — cuts between blocked tokens should be skipped
         let mask_all = vec![1, 1, 1, 1, 1, 1, 1];
-        let cuts_all_blocked =
-            valid_cut_points_with_mask(&tokens, FEAT_OFFSET_25, Some(&mask_all));
+        let cuts_all_blocked = valid_cut_points_with_mask(&tokens, FEAT_OFFSET_25, Some(&mask_all));
         // Cut at pos 3: mask[2]=1, mask[3]=1 → both blocked → skip
         // Cut at pos 7: mask[6]=1, mask[7] out of bounds → not both → allowed
         assert_eq!(cuts_all_blocked, vec![7]);
@@ -1313,7 +1310,10 @@ mod tests {
                 // The unblocked unary (index 3) was removed.
                 // Blocked tokens may have been point-mutated (same arity) but not structurally removed.
                 // Token at index 0 should still be a feature.
-                assert!(test_g.tokens[0] < FEAT_OFFSET_25, "first token should be a feature");
+                assert!(
+                    test_g.tokens[0] < FEAT_OFFSET_25,
+                    "first token should be a feature"
+                );
                 // Token at index 1 should still be a unary op (may have been point-mutated).
                 assert_eq!(
                     token_arity(test_g.tokens[1], FEAT_OFFSET_25),
@@ -1322,7 +1322,10 @@ mod tests {
                 );
             }
         }
-        assert!(shrink_happened, "shrink should have occurred at least once in 500 trials");
+        assert!(
+            shrink_happened,
+            "shrink should have occurred at least once in 500 trials"
+        );
     }
 
     #[test]
@@ -1360,7 +1363,10 @@ mod tests {
         let mut ga = AlpsGA::new(FEAT_OFFSET_25);
         // Mark a genome in layer 0 as blocked at generation 0
         AlpsGA::mark_block(&mut ga.layers[0].population[0], 0);
-        assert!(ga.layers[0].population[0].block_mask.iter().all(|&b| b == 1));
+        assert!(ga.layers[0].population[0]
+            .block_mask
+            .iter()
+            .all(|&b| b == 1));
 
         // Advance past BLOCK_DECAY_GENS
         ga.generation = BLOCK_DECAY_GENS + 1;
@@ -1377,7 +1383,13 @@ mod tests {
         for g in &ga.layers[0].population {
             if g.block_mask.iter().any(|&b| b == 1) {
                 // If blocks exist, they should have been set after generation BLOCK_DECAY_GENS
-                let min_age = g.block_age.iter().filter(|&&a| a > 0).min().copied().unwrap_or(0);
+                let min_age = g
+                    .block_age
+                    .iter()
+                    .filter(|&&a| a > 0)
+                    .min()
+                    .copied()
+                    .unwrap_or(0);
                 assert!(
                     ga.generation <= min_age + BLOCK_DECAY_GENS + 1,
                     "stale block should have been cleared"

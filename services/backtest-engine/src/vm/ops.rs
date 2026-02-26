@@ -360,13 +360,16 @@ pub fn ts_rank<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f
     for i in 0..d {
         let delayed = ts_delay(x, i);
 
-        let is_smaller = ndarray::Zip::from(x).and(&delayed).map_collect(|&cx, &dx| {
-            if dx < cx {
-                1.0
-            } else {
-                0.0
-            }
-        });
+        let is_smaller =
+            ndarray::Zip::from(x).and(&delayed).map_collect(
+                |&cx, &dx| {
+                    if dx < cx {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                },
+            );
         count = count + is_smaller;
     }
 

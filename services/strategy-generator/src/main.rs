@@ -253,7 +253,11 @@ async fn main() -> anyhow::Result<()> {
             .build()
             .expect("failed to create rayon thread pool"),
     );
-    info!("Created rayon pool: {} threads (CPUs: {})", rayon_threads, num_cpus::get());
+    info!(
+        "Created rayon pool: {} threads (CPUs: {})",
+        rayon_threads,
+        num_cpus::get()
+    );
 
     // Spawn two evolution tasks per (exchange, symbol) pair: long_only + long_short
     let mut handles = Vec::new();
@@ -1499,11 +1503,7 @@ async fn run_daily_backtest_loop(pool: PgPool, exchange: &str) {
     loop {
         // Compute sleep until next 03:00 UTC
         let now = chrono::Utc::now();
-        let today_3am = now
-            .date_naive()
-            .and_hms_opt(3, 0, 0)
-            .unwrap()
-            .and_utc();
+        let today_3am = now.date_naive().and_hms_opt(3, 0, 0).unwrap().and_utc();
         let next_run = if now < today_3am {
             today_3am
         } else {
@@ -1535,10 +1535,7 @@ async fn run_daily_backtest_loop(pool: PgPool, exchange: &str) {
                 }
             }
             Ok(None) => {
-                info!(
-                    "[{}] Insufficient ensemble history for backtest",
-                    exchange
-                );
+                info!("[{}] Insufficient ensemble history for backtest", exchange);
             }
             Err(e) => {
                 error!("[{}] Ensemble backtest failed: {}", exchange, e);
@@ -1782,13 +1779,14 @@ async fn run_ensemble_rebalance(
 
     // 5. Run HRP allocation
     // P6a-F1: Use configurable covariance method (sample or EWMA)
-    let hrp_result = match hrp::allocate_hrp_with_method(&return_matrix, ensemble_cfg.covariance_method) {
-        Some(r) => r,
-        None => {
-            warn!("[{}] HRP allocation failed", exchange);
-            return Ok(None);
-        }
-    };
+    let hrp_result =
+        match hrp::allocate_hrp_with_method(&return_matrix, ensemble_cfg.covariance_method) {
+            Some(r) => r,
+            None => {
+                warn!("[{}] HRP allocation failed", exchange);
+                return Ok(None);
+            }
+        };
 
     // 6. Apply dynamic weight adjustments
     let valid_owned: Vec<StrategyCandidate> =
@@ -1822,7 +1820,10 @@ async fn run_ensemble_rebalance(
             .iter()
             .enumerate()
             .map(|(i, adj)| {
-                let key = format!("{}_{}", valid_candidates[i].id.symbol, valid_candidates[i].id.mode);
+                let key = format!(
+                    "{}_{}",
+                    valid_candidates[i].id.symbol, valid_candidates[i].id.mode
+                );
                 (key, adj.final_weight)
             })
             .collect();
@@ -1831,9 +1832,11 @@ async fn run_ensemble_rebalance(
             // Preliminary regime detection for adaptive lambda
             let preliminary_returns: Vec<f64> = (0..min_len)
                 .map(|i| {
-                    adjustments.iter().enumerate().map(|(j, adj)| {
-                        return_matrix[[i, j]] * adj.final_weight
-                    }).sum::<f64>()
+                    adjustments
+                        .iter()
+                        .enumerate()
+                        .map(|(j, adj)| return_matrix[[i, j]] * adj.final_weight)
+                        .sum::<f64>()
                 })
                 .collect();
             let info = ensemble::detect_regime(
@@ -1935,14 +1938,18 @@ async fn run_ensemble_rebalance(
         .iter()
         .enumerate()
         .map(|(i, adj)| {
-            let key = format!("{}_{}", valid_candidates[i].id.symbol, valid_candidates[i].id.mode);
+            let key = format!(
+                "{}_{}",
+                valid_candidates[i].id.symbol, valid_candidates[i].id.mode
+            );
             (key, adj.final_weight)
         })
         .collect();
 
     // prev_weights loaded in step 6b (shared with deadzone)
     let turnover = ensemble_weights::compute_turnover(&prev_weights, &new_weights);
-    let turnover_cost_val = ensemble_weights::turnover_cost(turnover, ensemble_cfg.turnover_cost_rate);
+    let turnover_cost_val =
+        ensemble_weights::turnover_cost(turnover, ensemble_cfg.turnover_cost_rate);
 
     // Deduct from shadow equity
     equity *= 1.0 - turnover_cost_val;
@@ -2067,10 +2074,7 @@ async fn run_ensemble_rebalance(
     )
     .await
     {
-        error!(
-            "[{}] Failed to upsert deployed strategies: {}",
-            exchange, e
-        );
+        error!("[{}] Failed to upsert deployed strategies: {}", exchange, e);
     }
 
     // 10. Publish to Redis

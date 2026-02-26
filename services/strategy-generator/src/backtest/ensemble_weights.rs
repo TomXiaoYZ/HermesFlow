@@ -179,10 +179,7 @@ pub fn adjust_weights(
 /// 0.0 means no change; 1.0 means complete rebalance.
 /// Old and new vectors may have different lengths (strategies added/removed).
 /// Uses strategy symbol+mode as key for matching.
-pub fn compute_turnover(
-    old_weights: &[(String, f64)],
-    new_weights: &[(String, f64)],
-) -> f64 {
+pub fn compute_turnover(old_weights: &[(String, f64)], new_weights: &[(String, f64)]) -> f64 {
     let old_map: std::collections::HashMap<&str, f64> =
         old_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     let new_map: std::collections::HashMap<&str, f64> =

@@ -281,11 +281,7 @@ pub fn detect_regime(
     }
 
     let mean = recent.iter().sum::<f64>() / recent.len() as f64;
-    let var = recent
-        .iter()
-        .map(|r| (r - mean).powi(2))
-        .sum::<f64>()
-        / (recent.len() as f64 - 1.0);
+    let var = recent.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (recent.len() as f64 - 1.0);
     let std = var.sqrt();
 
     // Annualize: bars_per_year depends on resolution
@@ -1047,9 +1043,7 @@ mod tests {
     fn detect_regime_uses_window() {
         // First 20 bars: calm. Last 20 bars: volatile.
         let mut returns = vec![0.0001; 20];
-        returns.extend(
-            (0..20).map(|i| if i % 2 == 0 { 0.05 } else { -0.05 }),
-        );
+        returns.extend((0..20).map(|i| if i % 2 == 0 { 0.05 } else { -0.05 }));
         let info = detect_regime(&returns, "1h", 20, [0.15, 0.30]);
         // Window=20 uses only the last 20 (volatile) bars
         assert_eq!(info.regime, VolRegime::High);

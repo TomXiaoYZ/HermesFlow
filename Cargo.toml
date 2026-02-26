@@ -7,7 +7,7 @@ members = [
     "services/strategy-engine",
     "services/strategy-generator",
 ]
-# execution-engine excluded: Solana SDK pins tokio ~1.14 which conflicts with workspace tokio 1.35
+# execution-engine excluded: uses tokio-postgres (not sqlx) and ibapi with separate dep tree
 exclude = ["services/execution-engine"]
 resolver = "2"
 

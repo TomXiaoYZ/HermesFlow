@@ -1,5 +1,6 @@
 # Rust
 target/
+target.old/
 **/*.rs.bk
 
 # Per-service Cargo.lock (workspace members use root Cargo.lock)

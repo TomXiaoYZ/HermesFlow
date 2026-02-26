@@ -541,21 +541,16 @@ async fn try_entry(
     signal_score: f64,
     threshold: f64,
 ) {
-    let (shares, exchange) = if is_stock {
-        let s = risk_engine.calculate_stock_entry_shares(price);
-        if s <= 0.0 {
-            debug!("Insufficient price for stock entry: {}", symbol);
-            return;
-        }
-        (s, Some("polygon".to_string()))
-    } else {
-        let amount_sol = risk_engine.calculate_entry_size();
-        if amount_sol <= 0.0 {
-            debug!("Insufficient equity/size for entry.");
-            return;
-        }
-        (amount_sol, None)
-    };
+    if !is_stock {
+        debug!("Non-stock symbol {}, skipping entry", symbol);
+        return;
+    }
+    let shares = risk_engine.calculate_stock_entry_shares(price);
+    if shares <= 0.0 {
+        debug!("Insufficient price for stock entry: {}", symbol);
+        return;
+    }
+    let exchange = Some("polygon".to_string());
 
     let direction_label = match side {
         OrderSide::Buy => "buy",
@@ -601,7 +596,7 @@ async fn try_entry(
         if let Err(e) = event_bus.publish_signal(&signal).await {
             error!("Failed to publish Entry signal: {}", e);
         } else {
-            let amount_held = if is_stock { shares } else { shares / price };
+            let amount_held = shares;
             portfolio.add_position(
                 symbol.to_string(),
                 symbol.to_string(),
