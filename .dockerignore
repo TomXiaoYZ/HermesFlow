@@ -6,7 +6,9 @@
 
 # Dependencies (rebuilt in Docker)
 target/
+target.old/
 **/target/
+**/target.old/
 node_modules/
 **/node_modules/
 .next/
