@@ -118,6 +118,41 @@ fn is_open_cn_market(now: DateTime<Utc>) -> bool {
     time >= open && time < close
 }
 
+/// P6-3B: Returns `true` if any tracked equity market is open at `now`.
+///
+/// Used by the monitoring pipeline to auto-suspend flow-based (non-infrastructure)
+/// alerts when all markets are closed, preventing false alarms during off-hours.
+pub fn is_any_equity_market_open(now: DateTime<Utc>) -> bool {
+    // Check all known equity exchanges
+    is_open_us_market(now) || is_open_hk_market(now) || is_open_cn_market(now)
+}
+
+/// P6-3B: Returns `true` if this is a trading day for the given exchange,
+/// regardless of current time. Used to distinguish "market closed for the day"
+/// from "before/after hours on a trading day".
+pub fn is_trading_day(exchange: &str, now: DateTime<Utc>) -> bool {
+    match exchange.to_lowercase().as_str() {
+        "polymarket" => true,
+        "polygon" | "ibkr" | "alpaca" | "massive" => {
+            let tz: Tz = chrono_tz::America::New_York;
+            let local = now.with_timezone(&tz);
+            !matches!(local.weekday(), Weekday::Sat | Weekday::Sun)
+                && !is_us_holiday(local.date_naive())
+        }
+        "futu" => {
+            let tz: Tz = chrono_tz::Asia::Hong_Kong;
+            let local = now.with_timezone(&tz);
+            !matches!(local.weekday(), Weekday::Sat | Weekday::Sun)
+        }
+        "akshare" => {
+            let tz: Tz = chrono_tz::Asia::Shanghai;
+            let local = now.with_timezone(&tz);
+            !matches!(local.weekday(), Weekday::Sat | Weekday::Sun)
+        }
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +232,47 @@ mod tests {
         let midday_et = Utc.with_ymd_and_hms(2025, 6, 11, 14, 0, 0).unwrap();
         assert!(is_market_open("Polygon", midday_et));
         assert!(is_market_open("POLYMARKET", midday_et));
+    }
+
+    // ── P6-3B: Timezone-aware calendar tests ─────────────────────────────
+
+    #[test]
+    fn any_equity_market_open_during_us_hours() {
+        // Wednesday 2025-06-11 at 14:00 UTC = 10:00 ET (US market open)
+        let us_hours = Utc.with_ymd_and_hms(2025, 6, 11, 14, 0, 0).unwrap();
+        assert!(is_any_equity_market_open(us_hours));
+    }
+
+    #[test]
+    fn any_equity_market_open_during_hk_hours() {
+        // Wednesday 2025-06-11 at 03:00 UTC = 11:00 HKT (HK open, US closed)
+        let hk_hours = Utc.with_ymd_and_hms(2025, 6, 11, 3, 0, 0).unwrap();
+        assert!(is_any_equity_market_open(hk_hours));
+    }
+
+    #[test]
+    fn no_equity_market_open_on_weekend() {
+        // Saturday 2025-06-14 at 12:00 UTC — no equity market is open
+        let weekend = Utc.with_ymd_and_hms(2025, 6, 14, 12, 0, 0).unwrap();
+        assert!(!is_any_equity_market_open(weekend));
+    }
+
+    #[test]
+    fn is_trading_day_weekday() {
+        // Wednesday 2025-06-11 at 02:00 UTC (before US open, but IS a trading day)
+        let before_open = Utc.with_ymd_and_hms(2025, 6, 11, 2, 0, 0).unwrap();
+        assert!(is_trading_day("polygon", before_open));
+    }
+
+    #[test]
+    fn is_not_trading_day_weekend() {
+        let saturday = Utc.with_ymd_and_hms(2025, 6, 14, 14, 0, 0).unwrap();
+        assert!(!is_trading_day("polygon", saturday));
+    }
+
+    #[test]
+    fn is_not_trading_day_holiday() {
+        let july4 = Utc.with_ymd_and_hms(2025, 7, 4, 14, 0, 0).unwrap();
+        assert!(!is_trading_day("polygon", july4));
     }
 }

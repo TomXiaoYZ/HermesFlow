@@ -8,6 +8,7 @@ use crate::monitoring::metrics::{
 use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use tracing::{error, info, warn};
 
 /// Check frequency tier for the data quality pipeline.
@@ -44,6 +45,13 @@ pub struct DataQualityConfig {
     pub volume_anomaly_ratio: f64,
     /// Timestamp drift threshold in seconds (default: 30)
     pub timestamp_drift_threshold_sec: i64,
+    /// P6-3A: Poisson staleness detection threshold.
+    /// Alert only when P(0 ticks in elapsed time) < this value.
+    /// Lower values = fewer false positives for low-liquidity symbols.
+    pub poisson_staleness_threshold: f64,
+    /// P6-3A: EWMA decay factor for tick arrival rate (0.0–1.0).
+    /// Higher = more responsive to recent data; lower = smoother.
+    pub poisson_ewma_alpha: f64,
 }
 
 impl Default for DataQualityConfig {
@@ -55,46 +63,88 @@ impl Default for DataQualityConfig {
             cross_source_divergence_pct: 0.01,
             volume_anomaly_ratio: 0.10,
             timestamp_drift_threshold_sec: 30,
+            poisson_staleness_threshold: 0.001,
+            poisson_ewma_alpha: 0.05,
         }
     }
+}
+
+/// P6-3A: Per-symbol EWMA tick arrival rate for Poisson staleness detection.
+///
+/// Tracks the expected tick arrival rate (λ) as an EWMA of inter-tick intervals.
+/// Staleness is flagged only when P(0 ticks in Δt) = e^(-λ·Δt) < threshold,
+/// automatically adapting to each symbol's normal tick frequency.
+#[derive(Debug, Clone)]
+struct TickRateState {
+    /// EWMA of tick arrival rate (ticks per second)
+    lambda: f64,
+    /// Last observed tick timestamp (epoch seconds)
+    last_tick_epoch: f64,
 }
 
 pub struct DataMonitor {
     pool: PgPool,
     config: DataQualityConfig,
+    /// P6-3A: Per-symbol (exchange:symbol) tick arrival rate tracking
+    tick_rates: Mutex<HashMap<String, TickRateState>>,
 }
 
 impl DataMonitor {
     pub fn new(pool: PgPool, config: DataQualityConfig) -> Self {
-        Self { pool, config }
+        Self {
+            pool,
+            config,
+            tick_rates: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Run quality checks for the given tier.
+    ///
+    /// P6-3B: Flow-based alerts (freshness, gaps, price spikes, cross-source divergence,
+    /// volume anomaly) are auto-suppressed when no equity market is currently open.
+    /// Infrastructure alerts (active count, watchlist, timestamp drift, source scores)
+    /// run 24/7 regardless of market hours.
     pub async fn run_checks(&self, tier: CheckTier) -> Result<(), DataEngineError> {
+        let now = Utc::now();
+        let any_market_open = market_schedule::is_any_equity_market_open(now);
+
+        if !any_market_open {
+            info!(
+                tier = %tier,
+                "All equity markets closed — suppressing flow-based alerts"
+            );
+        }
+
         info!(tier = %tier, "Starting data quality checks");
 
         match tier {
             CheckTier::Critical => {
-                self.update_active_metrics().await?;
-                self.check_freshness().await?;
+                self.update_active_metrics().await?; // infrastructure: always
+                if any_market_open {
+                    self.check_freshness().await?; // flow: market hours only
+                }
             }
             CheckTier::Warning => {
-                self.check_gaps().await?;
-                self.check_price_spikes().await?;
-                self.check_cross_source_divergence().await?;
-                self.check_watchlist_completeness().await?;
+                if any_market_open {
+                    self.check_gaps().await?;
+                    self.check_price_spikes().await?;
+                    self.check_cross_source_divergence().await?;
+                }
+                self.check_watchlist_completeness().await?; // infrastructure: always
             }
             CheckTier::FullAudit => {
-                self.update_active_metrics().await?;
-                self.check_freshness().await?;
-                self.check_gaps().await?;
-                self.check_liquidity().await?;
-                self.check_price_spikes().await?;
-                self.check_cross_source_divergence().await?;
-                self.check_watchlist_completeness().await?;
-                self.check_volume_anomaly().await?;
-                self.check_timestamp_drift().await?;
-                self.calculate_source_scores().await?;
+                self.update_active_metrics().await?; // infrastructure: always
+                if any_market_open {
+                    self.check_freshness().await?;
+                    self.check_gaps().await?;
+                    self.check_liquidity().await?;
+                    self.check_price_spikes().await?;
+                    self.check_cross_source_divergence().await?;
+                    self.check_volume_anomaly().await?;
+                }
+                self.check_watchlist_completeness().await?; // infrastructure: always
+                self.check_timestamp_drift().await?; // infrastructure: always
+                self.calculate_source_scores().await?; // infrastructure: always
             }
         }
 
@@ -117,54 +167,104 @@ impl DataMonitor {
         Ok(())
     }
 
-    // ── Stage 1: Freshness ──────────────────────────────────────────────
+    // ── Stage 1: Freshness (P6-3A Poisson model) ────────────────────────
 
+    /// Check data freshness using adaptive Poisson staleness detection.
+    ///
+    /// P6-3A: Instead of a static "no data for N minutes" threshold, maintains
+    /// a per-symbol EWMA tick arrival rate (λ). Staleness is flagged only when
+    /// P(0 ticks in elapsed time) = e^(-λ·Δt) < poisson_threshold.
+    ///
+    /// This auto-adapts to each symbol's tick frequency:
+    /// - High-frequency stocks (e.g., AAPL): seconds of silence triggers alert
+    /// - Low-liquidity/OTC stocks: hours of silence is normal, auto-suppressed
     async fn check_freshness(&self) -> Result<(), DataEngineError> {
         use sqlx::Row;
 
-        let threshold_minutes = self.config.freshness_threshold_sec / 60;
         let now = Utc::now();
-        let stale_equities_raw = sqlx::query(
+        let now_epoch = now.timestamp() as f64;
+        let alpha = self.config.poisson_ewma_alpha;
+        let poisson_threshold = self.config.poisson_staleness_threshold;
+
+        // Fetch latest tick timestamp per symbol/exchange (active in last 24h)
+        let rows = sqlx::query(
             r#"
             SELECT symbol, exchange, MAX(time) as last_ts
             FROM mkt_equity_snapshots
             WHERE time > NOW() - INTERVAL '24 hours'
             GROUP BY symbol, exchange
-            HAVING MAX(time) < NOW() - make_interval(mins => $1)
             "#,
         )
-        .bind(threshold_minutes as i32)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
             DataEngineError::DatabaseError(format!("Freshness check (equities) failed: {}", e))
         })?;
 
-        // Filter out symbols whose exchange is currently closed (e.g. Polygon at night)
-        let stale_equities: Vec<_> = stale_equities_raw
-            .into_iter()
-            .filter(|r| {
-                let exchange: String = r.get("exchange");
-                market_schedule::is_market_open(&exchange, now)
-            })
-            .collect();
+        let mut poisson_stale: Vec<(String, String, f64, f64)> = Vec::new();
 
-        DQ_STALE_SYMBOLS.set(stale_equities.len() as i64);
+        {
+            let mut tick_rates = self.tick_rates.lock().unwrap_or_else(|e| e.into_inner());
 
-        if !stale_equities.is_empty() {
-            let sample: Vec<String> = stale_equities
+            for row in &rows {
+                let symbol: String = row.get("symbol");
+                let exchange: String = row.get("exchange");
+
+                // Skip symbols whose exchange is currently closed
+                if !market_schedule::is_market_open(&exchange, now) {
+                    continue;
+                }
+
+                let last_ts: chrono::DateTime<chrono::Utc> = row.get("last_ts");
+                let last_epoch = last_ts.timestamp() as f64;
+                let elapsed = (now_epoch - last_epoch).max(0.0);
+
+                let key = format!("{}:{}", exchange, symbol);
+
+                let state = tick_rates.entry(key).or_insert_with(|| TickRateState {
+                    // Initialize with a conservative rate estimate:
+                    // assume 1 tick per freshness_threshold_sec
+                    lambda: 1.0 / self.config.freshness_threshold_sec.max(1) as f64,
+                    last_tick_epoch: last_epoch,
+                });
+
+                // Update EWMA rate if we got a newer tick
+                if last_epoch > state.last_tick_epoch {
+                    let interval = last_epoch - state.last_tick_epoch;
+                    if interval > 0.0 {
+                        let observed_rate = 1.0 / interval;
+                        state.lambda = alpha * observed_rate + (1.0 - alpha) * state.lambda;
+                    }
+                    state.last_tick_epoch = last_epoch;
+                }
+
+                // Poisson probability of zero arrivals in elapsed time:
+                // P(0) = e^(-λ·Δt)
+                let p_zero = (-state.lambda * elapsed).exp();
+
+                if p_zero < poisson_threshold {
+                    poisson_stale.push((symbol, exchange, elapsed, p_zero));
+                }
+            }
+        }
+
+        DQ_STALE_SYMBOLS.set(poisson_stale.len() as i64);
+
+        if !poisson_stale.is_empty() {
+            let sample: Vec<String> = poisson_stale
                 .iter()
                 .take(3)
-                .map(|r| {
-                    let symbol: String = r.get("symbol");
-                    let exchange: String = r.get("exchange");
-                    format!("{}({})", symbol, exchange)
+                .map(|(sym, exch, elapsed, p)| {
+                    format!(
+                        "{}({}) stale {:.0}s P(0)={:.2e}",
+                        sym, exch, elapsed, p
+                    )
                 })
                 .collect();
             warn!(
-                "Stage 1 FRESHNESS ALERT (equities): {} symbols stale (>{}m). Examples: {:?}",
-                stale_equities.len(),
-                threshold_minutes,
+                "Stage 1 FRESHNESS ALERT (Poisson): {} symbols stale (P(0)<{:.0e}). Examples: {:?}",
+                poisson_stale.len(),
+                poisson_threshold,
                 sample
             );
             self.record_incident(
@@ -173,9 +273,9 @@ impl DataMonitor {
                 None,
                 None,
                 Some(serde_json::json!({
-                    "type": "equity",
-                    "stale_count": stale_equities.len(),
-                    "threshold_min": threshold_minutes,
+                    "type": "equity_poisson",
+                    "stale_count": poisson_stale.len(),
+                    "poisson_threshold": poisson_threshold,
                     "sample": sample,
                 })),
             )

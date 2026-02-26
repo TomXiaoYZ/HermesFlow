@@ -259,6 +259,121 @@ pub fn apply_deadzone_l1(
     }
 }
 
+// ── Hysteresis Dead-Zone (P6-2A) ─────────────────────────────────────
+
+/// P6-2A: Per-asset hysteresis dead-zone parameters.
+#[derive(Debug, Clone)]
+pub struct AssetDeadzone {
+    /// Strategy key (symbol:mode)
+    pub key: String,
+    /// Annualized volatility of the strategy's return series
+    pub volatility: f64,
+    /// Transaction fee rate (one-way, as fraction)
+    pub fee_rate: f64,
+    /// Bid-ask spread as fraction of price (e.g., 0.0002 = 2 bps)
+    pub spread: f64,
+}
+
+/// P6-2A: Compute per-asset no-trade threshold.
+///
+/// The threshold is proportional to the expected cost of a round-trip:
+/// `δ_i = base_threshold + fee_multiplier * (2 * fee_rate + spread) * sqrt(vol_i)`
+///
+/// Higher volatility + higher costs → wider dead-zone (fewer trades).
+pub fn compute_asset_threshold(
+    asset: &AssetDeadzone,
+    base_threshold: f64,
+    fee_multiplier: f64,
+) -> f64 {
+    let cost = 2.0 * asset.fee_rate + asset.spread;
+    base_threshold + fee_multiplier * cost * asset.volatility.sqrt().max(0.01)
+}
+
+/// P6-2A: Apply per-asset hysteresis dead-zone with partial rebalancing.
+///
+/// For each asset:
+/// 1. Compute per-asset no-trade threshold δ_i
+/// 2. If |w_target - w_current| <= δ_i → keep current weight
+/// 3. If |w_target - w_current| > δ_i → trade to dead-zone BOUNDARY, not exact target
+///    New weight = w_current + (delta - δ_i * sign(delta))
+///
+/// This avoids micro-rebalancing that destroys alpha through transaction costs.
+///
+/// Returns (adjusted_weights, deadzone_metadata) where metadata includes
+/// per-asset threshold and whether a trade was triggered.
+pub fn apply_hysteresis_deadzone(
+    old_weights: &[(String, f64)],
+    new_weights: &mut [(String, f64)],
+    asset_params: &[AssetDeadzone],
+    base_threshold: f64,
+    fee_multiplier: f64,
+) -> Vec<DeadzoneMetadata> {
+    let old_map: std::collections::HashMap<&str, f64> =
+        old_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+
+    let param_map: std::collections::HashMap<&str, &AssetDeadzone> =
+        asset_params.iter().map(|a| (a.key.as_str(), a)).collect();
+
+    let mut metadata = Vec::with_capacity(new_weights.len());
+
+    for (key, weight) in new_weights.iter_mut() {
+        let old_w = old_map.get(key.as_str()).copied().unwrap_or(0.0);
+        let delta = *weight - old_w;
+
+        // Compute per-asset threshold
+        let threshold = if let Some(params) = param_map.get(key.as_str()) {
+            compute_asset_threshold(params, base_threshold, fee_multiplier)
+        } else {
+            base_threshold // fallback for unknown assets
+        };
+
+        let triggered = delta.abs() > threshold;
+
+        if !triggered {
+            // Within dead-zone: no trade
+            *weight = old_w;
+            metadata.push(DeadzoneMetadata {
+                key: key.clone(),
+                threshold,
+                delta_before: delta,
+                delta_after: 0.0,
+                triggered: false,
+            });
+        } else {
+            // Beyond dead-zone: partial rebalance to boundary
+            let boundary_delta = delta - threshold * delta.signum();
+            *weight = old_w + boundary_delta;
+            metadata.push(DeadzoneMetadata {
+                key: key.clone(),
+                threshold,
+                delta_before: delta,
+                delta_after: boundary_delta,
+                triggered: true,
+            });
+        }
+    }
+
+    // Renormalize
+    let total: f64 = new_weights.iter().map(|(_, w)| *w).sum();
+    if total > 1e-12 {
+        for (_, w) in new_weights.iter_mut() {
+            *w /= total;
+        }
+    }
+
+    metadata
+}
+
+/// P6-2A: Per-asset dead-zone metadata for monitoring and Redis publication.
+#[derive(Debug, Clone)]
+pub struct DeadzoneMetadata {
+    pub key: String,
+    pub threshold: f64,
+    pub delta_before: f64,
+    pub delta_after: f64,
+    pub triggered: bool,
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -532,5 +647,64 @@ mod tests {
         assert!(approx_eq(adj[0].psr_factor, adj[1].psr_factor, 1e-10));
         // Factor should be 1 + 0.2 * 3.0 = 1.6
         assert!(approx_eq(adj[0].psr_factor, 1.6, 1e-10));
+    }
+
+    // ── Hysteresis dead-zone tests (P6-2A) ──────────────────────────
+
+    fn make_asset(key: &str, vol: f64) -> AssetDeadzone {
+        AssetDeadzone {
+            key: key.to_string(),
+            volatility: vol,
+            fee_rate: 0.0001,  // 1 bps
+            spread: 0.0002,    // 2 bps
+        }
+    }
+
+    #[test]
+    fn asset_threshold_proportional_to_vol() {
+        let low_vol = make_asset("SPY", 0.10);
+        let high_vol = make_asset("TSLA", 0.50);
+        let t_low = compute_asset_threshold(&low_vol, 0.005, 2.0);
+        let t_high = compute_asset_threshold(&high_vol, 0.005, 2.0);
+        assert!(t_high > t_low, "Higher vol should have wider dead-zone");
+    }
+
+    #[test]
+    fn hysteresis_suppresses_small_delta() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let mut new = vec![("SPY_lo".to_string(), 0.51), ("GLD_lo".to_string(), 0.49)];
+        let assets = vec![make_asset("SPY_lo", 0.15), make_asset("GLD_lo", 0.12)];
+
+        let meta = apply_hysteresis_deadzone(&old, &mut new, &assets, 0.02, 2.0);
+
+        // Delta = 0.01 < threshold (~0.02+), should NOT trigger
+        assert!(!meta[0].triggered);
+        assert!(!meta[1].triggered);
+    }
+
+    #[test]
+    fn hysteresis_trades_to_boundary() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let mut new = vec![("SPY_lo".to_string(), 0.7), ("GLD_lo".to_string(), 0.3)];
+        let assets = vec![make_asset("SPY_lo", 0.15), make_asset("GLD_lo", 0.15)];
+
+        let meta = apply_hysteresis_deadzone(&old, &mut new, &assets, 0.005, 2.0);
+
+        // Delta = 0.2 > threshold, should trigger
+        assert!(meta[0].triggered);
+        // The delta_after should be less than delta_before (partial rebalance)
+        assert!(meta[0].delta_after.abs() < meta[0].delta_before.abs());
+    }
+
+    #[test]
+    fn hysteresis_weights_renormalize() {
+        let old = vec![("SPY_lo".to_string(), 0.5), ("GLD_lo".to_string(), 0.5)];
+        let mut new = vec![("SPY_lo".to_string(), 0.7), ("GLD_lo".to_string(), 0.3)];
+        let assets = vec![make_asset("SPY_lo", 0.15), make_asset("GLD_lo", 0.15)];
+
+        apply_hysteresis_deadzone(&old, &mut new, &assets, 0.005, 2.0);
+
+        let sum: f64 = new.iter().map(|(_, w)| *w).sum();
+        assert!(approx_eq(sum, 1.0, 1e-10));
     }
 }
