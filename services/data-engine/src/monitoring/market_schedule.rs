@@ -41,12 +41,12 @@ const US_HOLIDAYS: &[(i32, u32, u32)] = &[
 
 /// Returns `true` if the exchange is expected to produce live data at `now`.
 ///
-/// Crypto exchanges (Binance, OKX, Bybit, Birdeye, Helius, Polymarket)
-/// are 24/7. Traditional markets respect their local trading hours and holidays.
+/// Polymarket is 24/7. Traditional equity markets respect their local
+/// trading hours and holidays.
 pub fn is_market_open(exchange: &str, now: DateTime<Utc>) -> bool {
     match exchange.to_lowercase().as_str() {
-        // Crypto: 24/7
-        "binance" | "okx" | "bybit" | "birdeye" | "helius" | "polymarket" => true,
+        // Prediction markets: 24/7
+        "polymarket" => true,
 
         // US equities: 09:30-16:00 ET, Mon-Fri, excl. US holidays
         "polygon" | "ibkr" | "alpaca" | "massive" => is_open_us_market(now),
@@ -124,13 +124,8 @@ mod tests {
     use chrono::TimeZone;
 
     #[test]
-    fn crypto_always_open() {
+    fn polymarket_always_open() {
         let saturday_midnight = Utc.with_ymd_and_hms(2025, 6, 14, 0, 0, 0).unwrap(); // Saturday
-        assert!(is_market_open("binance", saturday_midnight));
-        assert!(is_market_open("okx", saturday_midnight));
-        assert!(is_market_open("bybit", saturday_midnight));
-        assert!(is_market_open("birdeye", saturday_midnight));
-        assert!(is_market_open("helius", saturday_midnight));
         assert!(is_market_open("polymarket", saturday_midnight));
     }
 
@@ -201,6 +196,6 @@ mod tests {
     fn case_insensitive_exchange_name() {
         let midday_et = Utc.with_ymd_and_hms(2025, 6, 11, 14, 0, 0).unwrap();
         assert!(is_market_open("Polygon", midday_et));
-        assert!(is_market_open("BINANCE", midday_et));
+        assert!(is_market_open("POLYMARKET", midday_et));
     }
 }

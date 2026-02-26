@@ -120,29 +120,7 @@ impl DataMonitor {
     // ── Stage 1: Freshness ──────────────────────────────────────────────
 
     async fn check_freshness(&self) -> Result<(), DataEngineError> {
-        let threshold = Utc::now() - Duration::seconds(self.config.freshness_threshold_sec);
-
         use sqlx::Row;
-
-        let stale_tokens = sqlx::query(
-            r#"
-            SELECT a.address as symbol, NULL::timestamptz as timestamp
-            FROM active_tokens a
-            WHERE a.is_active = true
-            AND NOT EXISTS (
-                SELECT 1 FROM mkt_equity_snapshots s
-                WHERE s.symbol = a.address
-                AND s.time >= $1
-            )
-            LIMIT 100
-            "#,
-        )
-        .bind(threshold)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| {
-            DataEngineError::DatabaseError(format!("Freshness check (tokens) failed: {}", e))
-        })?;
 
         let threshold_minutes = self.config.freshness_threshold_sec / 60;
         let now = Utc::now();
@@ -171,35 +149,7 @@ impl DataMonitor {
             })
             .collect();
 
-        let total_stale = stale_tokens.len() + stale_equities.len();
-        DQ_STALE_SYMBOLS.set(total_stale as i64);
-
-        if !stale_tokens.is_empty() {
-            let sample: Vec<String> = stale_tokens
-                .iter()
-                .take(3)
-                .map(|r| r.get::<String, _>("symbol"))
-                .collect();
-            warn!(
-                "Stage 1 FRESHNESS ALERT (tokens): {} symbols stale (>{}s). Examples: {:?}",
-                stale_tokens.len(),
-                self.config.freshness_threshold_sec,
-                sample
-            );
-            self.record_incident(
-                "freshness",
-                "critical",
-                None,
-                None,
-                Some(serde_json::json!({
-                    "type": "token",
-                    "stale_count": stale_tokens.len(),
-                    "threshold_sec": self.config.freshness_threshold_sec,
-                    "sample": sample,
-                })),
-            )
-            .await;
-        }
+        DQ_STALE_SYMBOLS.set(stale_equities.len() as i64);
 
         if !stale_equities.is_empty() {
             let sample: Vec<String> = stale_equities
