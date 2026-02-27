@@ -18,6 +18,8 @@ src/
   shadow.rs            # P6-2B: Shadow trading with trading-day isolation
                        #   - TradingDayCounter (NYSE calendar, excludes weekends + holidays)
                        #   - 7 trading days mandatory before paper promotion
+                       #   P7-3C: Extended holidays to 2028, check_holiday_coverage() at startup
+                       #   P7-4B: Shadow scope documentation (per exchange/symbol/mode, not per genome)
   reconciliation.rs    # Post-trade reconciliation: DB vs broker position sync
   health.rs            # /health endpoint (port 8083)
 

@@ -137,7 +137,10 @@ src/
 - **StandardMarketData**: Unified type using `rust_decimal::Decimal` for financial precision
 - **7-Stage Quality Pipeline** (`monitoring/quality.rs`): Active count, freshness, gap detection, liquidity guard, price spike, cross-source divergence, volume anomaly
   - P6-3A: Poisson-based dynamic staleness detection (per-symbol EWMA tick arrival rate λ_i)
+  - P7-0A: Corrected alert semantics ("symbol-exchange pairs" instead of "symbols")
+  - P7-0B: EWMA tick_rates reset on market open transition (prevents Monday false positives)
 - **Market Calendar** (`monitoring/market_schedule.rs`): P6-3B timezone-aware NYSE calendar, auto-suspend flow alerts during off-hours
+  - P7-0B: Extended holidays to 2028, check_holiday_coverage() at startup, DST edge-case tests
 - **Tiered Scheduling**: Critical (30s), warning (5m), full audit (1h)
 
 ## Dependencies

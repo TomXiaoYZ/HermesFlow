@@ -7,10 +7,18 @@
 ```
 src/
   main.rs              # Entry point: config load, DB init, evolution loop spawn, API server
+                       #   P7-1A: MctsYamlConfig + LfdrConfig deserialization from YAML
+                       #   P7-1B: Dedicated MCTS Rayon thread pool (2 threads default)
+                       #   P7-1C: MCTS integration into evolution loop (inject seeds → ALPS L0)
+                       #   P7-2B: CCIPCA diagnostic (lazy init, zero-copy ArrayView)
+                       #   P7-3A: Removed hardcoded DATABASE_URL fallback
+                       #   P7-3B: 16MiB payload size guard before DB persist
+                       #   P7-5B: Genome diversity (Hamming) logging every 50 gens
   genetic.rs           # Core GA: ALPS layers, selection, crossover, mutation, promotion
                        #   - ALPS: 5 layers [5,13,34,89,500 gens], 100 genomes/layer
                        #   - Dual-mode: long_only + long_short per (exchange, symbol)
                        #   - Operator pruning: 14/23 opcodes for new genomes
+                       #   P7-5B: hamming_distance() + layer_diversity() metrics
   genome_decoder.rs    # Decodes integer genome → RPN formula string (human-readable)
   factor_loader.rs     # Loads factor definitions from YAML config
   llm_oracle.rs        # LLM-guided mutation (P2): Bedrock/Claude generates RPN formulas
@@ -27,24 +35,32 @@ src/
     portfolio.rs       # Simulated portfolio for backtest (P&L, drawdown, Sharpe)
     ensemble.rs        # P5: Portfolio ensemble selection (top strategies per exchange)
                        #   P6-1D: Non-linear decay routing buffer (active→decaying→retired)
+                       #   P7-2A: select_candidates_with_lfdr() — lFDR filtering before selection
     ensemble_weights.rs # P5: Dynamic weight adjustments (PSR reward, utilization, crowding)
                        #   P6-2A: Hysteresis dead-zone with per-asset thresholds
+                       #   P7-3D: debug! tracing for dead-zone trigger/suppress decisions
     hrp.rs             # P5: Hierarchical Risk Parity allocation
     hypothesis.rs      # P6-1B: Local FDR hypothesis testing with n-gram Jaccard clustering
-                       #   [Feature gate: lfdr.enabled=false]
+                       #   P7-2A: LfdrConfig #[derive(Deserialize)] for YAML config
+                       #   [Feature gate: lfdr.enabled, wired into ensemble selection]
     incremental_pca.rs # P6-1C: CCIPCA incremental PCA, O(n·k), ndarray::Zip zero-alloc
-                       #   [Feature gate: pca_enabled=false]
+                       #   P7-2B: update_view(ArrayView1) zero-copy method
+                       #   [Active as diagnostic; token remapping deferred to P8]
+    factor_importance.rs # P7-5A: Permutation-based factor importance attribution
+                       #   Shuffles each factor, measures PSR drop, returns sorted importances
 
-  mcts/                # P6-4A: LLM-Prior MCTS Symbolic Regression
+  mcts/                # P6-4A→P7-1: MCTS Symbolic Regression (integrated in P7)
     mod.rs             #   Module entry: re-exports arena, state, search, policy
     arena.rs           #   Arena allocator: Vec<Node> + u32 indices (zero Rc/Arc)
+                       #   P7-1A: debug_assert! overflow guard on alloc()
     state.rs           #   RPN formula state: partial tokens + stack depth, ActionSpace
     search.rs          #   MCTS search: select→expand→simulate→backprop, DeceptionSuppressor
-                       #   P6-4B: Extreme bandit PUCT (max_reward variant)
+                       #   P6-4B: Extreme bandit PUCT (max_reward variant, P7 default=true)
                        #   P6-4D: 3/4-gram deception suppression via FNV-1a hashing
+                       #   P7-1D: Integration tests (valid genomes, token conversion)
     policy.rs          #   Policy trait: UniformPolicy, HeuristicPolicy, LlmCachedPolicy
                        #   P6-4C: LLM semantic prior with HashMap cache
-                       #   [Feature gate: mcts.enabled=false]
+                       #   [Gate: mcts.enabled; wired into evolution loop via dedicated Rayon pool]
 ```
 
 ## Key Algorithms
@@ -88,12 +104,20 @@ src/
 - **Decay Routing** (P6-1D): Smooth exponential weight decay (active→decaying→retired)
 - **Hysteresis Dead-Zone** (P6-2A): Per-asset no-trade threshold to reduce micro-rebalancing
 
-### P6 MCTS Symbolic Regression (Phase 4)
+### P6→P7 MCTS Symbolic Regression
 - Arena-allocated tree: contiguous Vec<Node> with u32 indices, zero-cost GC
-- PUCT selector: configurable mean vs max reward (extreme bandit variant)
+- PUCT selector: configurable mean vs max reward (Extreme Bandit default in P7)
 - LLM cached policy: prior P(next_token|partial_RPN) with HashMap cache
 - Deception suppression: FNV-1a n-gram hashing with exponential decay penalty
-- Integration: MCTS seeds inject into ALPS Layer 0 via `inject_genomes`
+- P7 Integration: dedicated Rayon pool, runs every `interval` generations, positive-PSR seeds inject into ALPS L0
+
+### P7 Additions
+- **lFDR Ensemble Filtering** (P7-2A): RPN n-gram Jaccard clustering applied before ensemble candidate selection
+- **CCIPCA Diagnostic** (P7-2B): Zero-copy ArrayView, lazy-initialized per symbol, explained variance logging
+- **Factor Importance** (P7-5A): Permutation importance — shuffle factor column, measure PSR drop
+- **Genome Diversity** (P7-5B): Per-ALPS-layer Hamming distance, sampled max 50 pairs, logged every 50 gens
+- **Security** (P7-3A/3B): Removed hardcoded DB credentials, 16MiB sqlx payload guard
+- **Dead-Zone Tracing** (P7-3D): debug! per-asset threshold/delta/triggered logging in hysteresis
 
 ## Dependencies
 - `common`, `backtest-engine` (workspace crates)

@@ -108,8 +108,8 @@ graph TB
 | [data-engine](services/data-engine/) | Rust | 8081→8080 | Market data aggregation, 12+ data source connectors, candle aggregation, data quality monitoring | `src/main.rs` |
 | [gateway](services/gateway/) | Rust | 8080 | API gateway, WebSocket router, JWT auth, CORS, rate limiting, reverse proxy | `src/main.rs` |
 | [strategy-engine](services/strategy-engine/) | Rust | 8082 | Real-time strategy execution, event-driven signals via Redis Pub/Sub, portfolio management | `src/main.rs` |
-| [strategy-generator](services/strategy-generator/) | Rust | 8082→8084 | GA strategy evolution, ALPS, PSR fitness, LLM oracle, MCTS symbolic regression (P6) | `src/main.rs` |
-| [execution-engine](services/execution-engine/) | Rust | 8083 | Trade execution (IBKR, Futu, Solana); risk checks, shadow trading (P6), execution quality | `src/main.rs` |
+| [strategy-generator](services/strategy-generator/) | Rust | 8082→8084 | GA strategy evolution, ALPS, PSR fitness, LLM oracle, MCTS integration (P7), lFDR/CCIPCA (P7) | `src/main.rs` |
+| [execution-engine](services/execution-engine/) | Rust | 8083 | Trade execution (IBKR, Futu, Solana); risk checks, shadow trading (P6), shadow promotion guard (P7) | `src/main.rs` |
 | [backtest-engine](services/backtest-engine/) | Rust | (library) | Factor computation (ATR, MACD, Bollinger, etc.), VM-based strategy execution | `src/lib.rs` |
 | [common](services/common/) | Rust | (library) | Shared types, event bus, health endpoints, metrics, telemetry | `src/lib.rs` |
 | [user-management](services/user-management/) | Java | 8086 | RBAC, JWT auth, multi-tenancy (Spring Boot 3.2) | `UserManagementApplication.java` |
@@ -152,7 +152,7 @@ graph LR
 | All Rust services | TimescaleDB | PostgreSQL | Persistent storage |
 | Vector | ClickHouse | HTTP | Log aggregation |
 
-## Database Schema (34 migrations)
+## Database Schema (39 migrations)
 
 ### TimescaleDB (PostgreSQL)
 - `001-006`: Core schema, market data, trading system, active tokens
@@ -171,6 +171,8 @@ graph LR
 - `035`: P6-1D Strategy decay routing (decay_state, decay_factor columns)
 - `036`: P6-2B Shadow trading signals table + shadow status columns
 - `037`: P6-2C Execution quality metrics table
+- `038`: P7-4A Shadow promotion guard (7-trading-day trigger)
+- `039`: P7-4C Auto-demotion logic (consecutive underperformance tracking)
 
 ### ClickHouse
 - `002`: Ticks table (time-series)
@@ -231,8 +233,10 @@ graph LR
 - **LLM Oracle** (P2): Bedrock/Claude-guided mutation on GA stagnation
 - **Local FDR** (P6): n-gram Jaccard clustering with per-cluster lFDR hypothesis testing
 - **CCIPCA** (P6): O(n·k) incremental PCA for high-dimensional feature reduction
-- **MCTS Symbolic Regression** (P6): Arena-allocated Monte Carlo Tree Search for RPN formula discovery
+- **MCTS Symbolic Regression** (P6→P7): Arena-allocated MCTS for RPN formula discovery, integrated into evolution loop with dedicated Rayon pool (P7)
 - **Poisson Staleness Detection** (P6): Per-symbol EWMA tick rate with dynamic alert thresholds
+- **Permutation Factor Importance** (P7): Shuffle each factor column, measure PSR drop for attribution
+- **Genome Diversity Metrics** (P7): Per-ALPS-layer Hamming distance monitoring every 50 generations
 
 ## File Statistics
 
@@ -242,6 +246,6 @@ graph LR
 | TypeScript/TSX files | 23 |
 | Python files | 6 |
 | Java files | 15 |
-| SQL migrations | 39 |
+| SQL migrations | 41 |
 | Terraform files | 21 |
 | Docker services | 19 |
