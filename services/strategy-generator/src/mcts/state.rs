@@ -1,3 +1,4 @@
+#![allow(dead_code)] // P6-4A: not yet integrated into ALPS evolution loop
 //! RPN formula state for MCTS.
 //!
 //! States represent partial RPN formulas. Actions are legal next tokens.

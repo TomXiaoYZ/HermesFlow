@@ -260,8 +260,10 @@ pub fn apply_deadzone_l1(
 }
 
 // ── Hysteresis Dead-Zone (P6-2A) ─────────────────────────────────────
+// Not yet integrated into ensemble routing pipeline.
 
 /// P6-2A: Per-asset hysteresis dead-zone parameters.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AssetDeadzone {
     /// Strategy key (symbol:mode)
@@ -280,6 +282,7 @@ pub struct AssetDeadzone {
 /// `δ_i = base_threshold + fee_multiplier * (2 * fee_rate + spread) * sqrt(vol_i)`
 ///
 /// Higher volatility + higher costs → wider dead-zone (fewer trades).
+#[allow(dead_code)]
 pub fn compute_asset_threshold(
     asset: &AssetDeadzone,
     base_threshold: f64,
@@ -301,6 +304,7 @@ pub fn compute_asset_threshold(
 ///
 /// Returns (adjusted_weights, deadzone_metadata) where metadata includes
 /// per-asset threshold and whether a trade was triggered.
+#[allow(dead_code)]
 pub fn apply_hysteresis_deadzone(
     old_weights: &[(String, f64)],
     new_weights: &mut [(String, f64)],
@@ -365,6 +369,7 @@ pub fn apply_hysteresis_deadzone(
 }
 
 /// P6-2A: Per-asset dead-zone metadata for monitoring and Redis publication.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DeadzoneMetadata {
     pub key: String,

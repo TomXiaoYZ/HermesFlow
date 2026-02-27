@@ -1,3 +1,4 @@
+#![allow(dead_code)] // P6-4A: not yet integrated into ALPS evolution loop
 //! MCTS search algorithm: select → expand → simulate → backpropagate.
 //!
 //! Uses arena-allocated tree (zero Rc/Arc) and pluggable policy.

@@ -1,3 +1,4 @@
+#![allow(dead_code)] // P6-4A: not yet integrated into ALPS evolution loop
 //! Arena allocator for MCTS tree nodes.
 //!
 //! All nodes live in a contiguous `Vec<Node>`. Parent/child relationships

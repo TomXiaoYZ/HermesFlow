@@ -1,3 +1,4 @@
+#![allow(dead_code)] // P6-4A: not yet integrated into ALPS evolution loop
 //! Policy network for MCTS action selection.
 //!
 //! Provides prior probability distributions over legal actions.

@@ -1,3 +1,4 @@
+#![allow(dead_code)] // P6-1B: not yet integrated into main evolution loop
 //! P6-1B: Local FDR (lFDR) hypothesis testing with RPN structural clustering.
 //!
 //! Global BH at FDR=0.10 causes threshold masking at scale — correlated ALPS

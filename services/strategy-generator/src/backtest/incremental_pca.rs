@@ -1,3 +1,4 @@
+#![allow(dead_code)] // P6-1C: not yet integrated into ensemble pipeline
 //! P6-1C: Candid Covariance-free Incremental PCA (CCIPCA).
 //!
 //! Maintains O(n·k) rolling principal components without storing or inverting
@@ -83,7 +84,7 @@ impl CcipcaState {
         // mean(n) = mean(n-1) + (x - mean(n-1)) / n
         let mut residual = observation.clone();
         Zip::from(&mut self.mean)
-            .and(&*observation)
+            .and(observation)
             .for_each(|m, &x| {
                 *m += (x - *m) / n;
             });
