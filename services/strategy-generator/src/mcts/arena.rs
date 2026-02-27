@@ -1,4 +1,3 @@
-#![allow(dead_code)] // P6-4A: not yet integrated into ALPS evolution loop
 //! Arena allocator for MCTS tree nodes.
 //!
 //! All nodes live in a contiguous `Vec<Node>`. Parent/child relationships
@@ -62,6 +61,11 @@ impl Arena {
 
     /// Allocate a new node and return its index.
     pub fn alloc(&mut self, node: Node) -> u32 {
+        debug_assert!(
+            self.nodes.len() < u32::MAX as usize,
+            "MCTS arena overflow: {} nodes exceeds u32::MAX",
+            self.nodes.len()
+        );
         let idx = self.nodes.len() as u32;
         self.nodes.push(node);
         idx
@@ -78,12 +82,13 @@ impl Arena {
     }
 
     /// Number of nodes in the arena.
+    #[allow(dead_code)] // P8: used in MCTS diagnostics/logging
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
     /// Whether the arena is empty.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // P8: used in MCTS diagnostics/logging
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }

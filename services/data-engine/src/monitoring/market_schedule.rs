@@ -1,5 +1,6 @@
 use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Utc, Weekday};
 use chrono_tz::Tz;
+use tracing::debug;
 
 /// US market holidays (NYSE/NASDAQ observed) for 2025-2027.
 /// Updated annually; a hardcoded list avoids external dependencies.
@@ -37,6 +38,16 @@ const US_HOLIDAYS: &[(i32, u32, u32)] = &[
     (2027, 9, 6),   // Labor Day
     (2027, 11, 25), // Thanksgiving Day
     (2027, 12, 24), // Christmas Day (observed, Dec 25 is Saturday)
+    // 2028
+    (2028, 1, 17),  // MLK Jr. Day
+    (2028, 2, 21),  // Presidents' Day
+    (2028, 4, 14),  // Good Friday
+    (2028, 5, 29),  // Memorial Day
+    (2028, 6, 19),  // Juneteenth
+    (2028, 7, 4),   // Independence Day
+    (2028, 9, 4),   // Labor Day
+    (2028, 11, 23), // Thanksgiving Day
+    (2028, 12, 25), // Christmas Day
 ];
 
 /// Returns `true` if the exchange is expected to produce live data at `now`.
@@ -123,8 +134,16 @@ fn is_open_cn_market(now: DateTime<Utc>) -> bool {
 /// Used by the monitoring pipeline to auto-suspend flow-based (non-infrastructure)
 /// alerts when all markets are closed, preventing false alarms during off-hours.
 pub fn is_any_equity_market_open(now: DateTime<Utc>) -> bool {
-    // Check all known equity exchanges
-    is_open_us_market(now) || is_open_hk_market(now) || is_open_cn_market(now)
+    let us = is_open_us_market(now);
+    let hk = is_open_hk_market(now);
+    let cn = is_open_cn_market(now);
+    let any = us || hk || cn;
+    debug!(
+        us_open = us, hk_open = hk, cn_open = cn, any_open = any,
+        "Market open check at {}",
+        now.format("%Y-%m-%d %H:%M:%S UTC")
+    );
+    any
 }
 
 /// P6-3B: Returns `true` if this is a trading day for the given exchange,
@@ -151,6 +170,37 @@ pub fn is_trading_day(exchange: &str, now: DateTime<Utc>) -> bool {
         }
         _ => true,
     }
+}
+
+/// Check that the US_HOLIDAYS list covers the current year.
+/// Logs a warning at startup if the current year is not found in the holiday list,
+/// indicating the list needs updating.
+pub fn check_holiday_coverage() {
+    let current_year = Utc::now().year();
+    let covered_years: std::collections::HashSet<i32> =
+        US_HOLIDAYS.iter().map(|&(y, _, _)| y).collect();
+    if !covered_years.contains(&current_year) {
+        tracing::warn!(
+            "US_HOLIDAYS does not cover year {}. Market hours gating may produce false positives on holidays. \
+             Update market_schedule.rs with {} holidays.",
+            current_year, current_year
+        );
+    } else {
+        tracing::info!(
+            "US_HOLIDAYS coverage OK: current year {} is covered (years: {:?})",
+            current_year,
+            {
+                let mut years: Vec<i32> = covered_years.into_iter().collect();
+                years.sort();
+                years
+            }
+        );
+    }
+}
+
+/// Returns the maximum year covered by US_HOLIDAYS.
+pub fn max_holiday_year() -> i32 {
+    US_HOLIDAYS.iter().map(|&(y, _, _)| y).max().unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -274,5 +324,41 @@ mod tests {
     fn is_not_trading_day_holiday() {
         let july4 = Utc.with_ymd_and_hms(2025, 7, 4, 14, 0, 0).unwrap();
         assert!(!is_trading_day("polygon", july4));
+    }
+
+    // ── P7-0B: DST transition edge cases ──────────────────────────────────
+
+    #[test]
+    fn us_market_dst_spring_forward_march() {
+        // 2025-03-09: US clocks spring forward (EST→EDT at 2:00 AM)
+        // At 13:30 UTC: EDT offset is UTC-4, so local = 09:30 ET → market just opened
+        let spring_open = Utc.with_ymd_and_hms(2025, 3, 10, 13, 30, 0).unwrap();
+        assert!(is_open_us_market(spring_open));
+        // At 13:29 UTC: local = 09:29 ET → market not yet open
+        let spring_before = Utc.with_ymd_and_hms(2025, 3, 10, 13, 29, 0).unwrap();
+        assert!(!is_open_us_market(spring_before));
+    }
+
+    #[test]
+    fn us_market_dst_fall_back_november() {
+        // 2025-11-02: US clocks fall back (EDT→EST at 2:00 AM)
+        // At 14:30 UTC on Monday Nov 3: EST offset is UTC-5, so local = 09:30 ET → open
+        let fall_open = Utc.with_ymd_and_hms(2025, 11, 3, 14, 30, 0).unwrap();
+        assert!(is_open_us_market(fall_open));
+        // At 21:00 UTC: EST local = 16:00 ET → market just closed
+        let fall_close = Utc.with_ymd_and_hms(2025, 11, 3, 21, 0, 0).unwrap();
+        assert!(!is_open_us_market(fall_close));
+    }
+
+    #[test]
+    fn holiday_coverage_includes_2028() {
+        assert!(max_holiday_year() >= 2028);
+    }
+
+    #[test]
+    fn us_holiday_2028_independence_day() {
+        // 2028-07-04 is a Tuesday — market should be closed
+        let july4_2028 = Utc.with_ymd_and_hms(2028, 7, 4, 14, 0, 0).unwrap();
+        assert!(!is_market_open("polygon", july4_2028));
     }
 }

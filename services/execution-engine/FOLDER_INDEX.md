@@ -15,11 +15,15 @@ src/
   command_listener.rs  # Redis subscriber: listens for trade signals, dispatches to traders
   risk.rs              # Pre-trade risk checks: max order value, max positions, daily loss limit
                        #   - Per-account limits from trading_accounts table
+  shadow.rs            # P6-2B: Shadow trading with trading-day isolation
+                       #   - TradingDayCounter (NYSE calendar, excludes weekends + holidays)
+                       #   - 7 trading days mandatory before paper promotion
   reconciliation.rs    # Post-trade reconciliation: DB vs broker position sync
   health.rs            # /health endpoint (port 8083)
 
   traders/
     mod.rs             # Trader trait + registry
+                       #   P6-2C: ExecutionQuality struct (slippage_bps, fill_rate, latency_ms)
     ibkr_trader.rs     # IBKR execution via TWS API (TCP)
                        #   - Two instances: long_only + long_short accounts
                        #   - Account summaries cached to DB every 30s
@@ -39,7 +43,9 @@ src/
 ```
 Redis Pub/Sub (trade signals) → command_listener
   → risk.rs (pre-trade checks)
+  → shadow.rs (P6-2B: shadow observation if strategy in shadow mode)
   → traders/{ibkr,solana,raydium,futu}_trader
+  → ExecutionQuality metrics (P6-2C: slippage, fill rate, latency)
   → reconciliation.rs (post-trade DB sync)
 ```
 

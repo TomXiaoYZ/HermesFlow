@@ -304,7 +304,7 @@ pub fn compute_asset_threshold(
 ///
 /// Returns (adjusted_weights, deadzone_metadata) where metadata includes
 /// per-asset threshold and whether a trade was triggered.
-#[allow(dead_code)]
+#[allow(dead_code)] // P7-3D validated; wired into ensemble rebalance in P8
 pub fn apply_hysteresis_deadzone(
     old_weights: &[(String, f64)],
     new_weights: &mut [(String, f64)],
@@ -335,6 +335,9 @@ pub fn apply_hysteresis_deadzone(
 
         if !triggered {
             // Within dead-zone: no trade
+            tracing::debug!(
+                asset = key.as_str(), %threshold, %delta, "dead-zone: suppressed (|delta| <= threshold)"
+            );
             *weight = old_w;
             metadata.push(DeadzoneMetadata {
                 key: key.clone(),
@@ -345,7 +348,12 @@ pub fn apply_hysteresis_deadzone(
             });
         } else {
             // Beyond dead-zone: partial rebalance to boundary
+            // w_new = w_old + sign(Δ) * (|Δ| - δ_i)
             let boundary_delta = delta - threshold * delta.signum();
+            tracing::debug!(
+                asset = key.as_str(), %threshold, %delta, %boundary_delta,
+                "dead-zone: triggered, partial rebalance to boundary"
+            );
             *weight = old_w + boundary_delta;
             metadata.push(DeadzoneMetadata {
                 key: key.clone(),
@@ -369,7 +377,7 @@ pub fn apply_hysteresis_deadzone(
 }
 
 /// P6-2A: Per-asset dead-zone metadata for monitoring and Redis publication.
-#[allow(dead_code)]
+#[allow(dead_code)] // P7-3D validated; used in tests
 #[derive(Debug, Clone)]
 pub struct DeadzoneMetadata {
     pub key: String,

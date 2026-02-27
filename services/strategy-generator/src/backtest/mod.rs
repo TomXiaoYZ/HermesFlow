@@ -16,6 +16,7 @@ use std::str::FromStr;
 pub mod data_frame;
 pub mod ensemble;
 pub mod ensemble_weights;
+pub mod factor_importance;
 pub mod hrp;
 pub mod hypothesis;
 pub mod incremental_pca;

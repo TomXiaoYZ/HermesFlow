@@ -166,6 +166,48 @@ pub struct MultiTimeframeYamlConfig {
     pub publication_delays: std::collections::HashMap<String, i64>,
 }
 
+/// P7-1A: MCTS configuration loaded from generator.yaml `mcts` section.
+/// Defaults match generator.yaml values; `use_max_reward=true` enables
+/// Extreme Bandit PUCT (tracks max OOS-PSR, not mean) per Gemini advisor.
+#[derive(Debug, Deserialize, Clone)]
+pub struct MctsYamlConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_mcts_budget")]
+    pub budget: usize,
+    #[serde(default = "default_mcts_seeds")]
+    pub seeds_per_round: usize,
+    #[serde(default = "default_mcts_interval")]
+    pub interval: usize,
+    #[serde(default = "default_mcts_exploration")]
+    pub exploration_c: f64,
+    #[serde(default = "default_mcts_max_len")]
+    pub max_length: usize,
+    #[serde(default = "default_true")]
+    pub use_max_reward: bool,
+}
+
+fn default_mcts_budget() -> usize { 1000 }
+fn default_mcts_seeds() -> usize { 5 }
+fn default_mcts_interval() -> usize { 50 }
+fn default_mcts_exploration() -> f64 { 1.414 }
+fn default_mcts_max_len() -> usize { 20 }
+fn default_true() -> bool { true }
+
+impl Default for MctsYamlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            budget: default_mcts_budget(),
+            seeds_per_round: default_mcts_seeds(),
+            interval: default_mcts_interval(),
+            exploration_c: default_mcts_exploration(),
+            max_length: default_mcts_max_len(),
+            use_max_reward: default_true(),
+        }
+    }
+}
+
 /// Per-exchange evolution config, loaded from config/generator.yaml.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ExchangeConfig {
@@ -186,6 +228,10 @@ struct GeneratorConfig {
     threshold_config: ThresholdConfig,
     #[serde(default)]
     ensemble: backtest::ensemble::EnsembleConfig,
+    #[serde(default)]
+    mcts: MctsYamlConfig,
+    #[serde(default)]
+    lfdr: backtest::hypothesis::LfdrConfig,
 }
 
 #[tokio::main]
@@ -200,8 +246,7 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Infrastructure
-    let db_url = env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://postgres:hermesflow@localhost:5432/hermesflow".to_string());
+    let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
 
     let pool = PgPoolOptions::new()
@@ -214,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
     // Load generator config
     let config_path =
         env::var("GENERATOR_CONFIG").unwrap_or_else(|_| "config/generator.yaml".to_string());
-    let (exchange_configs, oracle_config, threshold_config, ensemble_config) =
+    let (exchange_configs, oracle_config, threshold_config, ensemble_config, mcts_config, lfdr_config) =
         load_exchange_configs(&config_path);
     info!(
         "Loaded {} exchange configs: {:?}",
@@ -265,6 +310,23 @@ async fn main() -> anyhow::Result<()> {
         num_cpus::get()
     );
 
+    // P7-1B: Dedicated MCTS rayon pool (isolated from genome evaluation)
+    let mcts_threads: usize = env::var("MCTS_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+    let mcts_pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(mcts_threads)
+            .thread_name(|idx| format!("mcts-{}", idx))
+            .build()
+            .expect("failed to create MCTS rayon pool"),
+    );
+    info!("Created MCTS rayon pool: {} threads", mcts_threads);
+
+    let mcts_config = Arc::new(mcts_config);
+    let lfdr_config = Arc::new(lfdr_config);
+
     // Spawn two evolution tasks per (exchange, symbol) pair: long_only + long_short
     let mut handles = Vec::new();
     for ec in &exchange_configs {
@@ -286,6 +348,8 @@ async fn main() -> anyhow::Result<()> {
                 let oracle_cfg = oracle_config.clone();
                 let thresh_cfg = threshold_config.clone();
                 let rayon_pool = rayon_pool.clone();
+                let mcts_pool = mcts_pool.clone();
+                let mcts_cfg = mcts_config.clone();
                 let sym = symbol.clone();
                 let ex_name = ec.exchange.clone();
                 let handle = tokio::spawn(async move {
@@ -296,6 +360,8 @@ async fn main() -> anyhow::Result<()> {
                         oracle_cfg,
                         thresh_cfg,
                         rayon_pool,
+                        mcts_pool,
+                        mcts_cfg,
                         sym.clone(),
                         mode,
                     )
@@ -319,6 +385,7 @@ async fn main() -> anyhow::Result<()> {
             let redis_url_ens = redis_url.clone();
             let ens_cfg = ensemble_config.clone();
             let thresh_cfg = threshold_config.clone();
+            let lfdr_cfg = (*lfdr_config).clone();
             let exchange = ec.exchange.clone();
             let resolution = ec.resolution.clone();
             let factor_config_path = ec.factor_config.clone();
@@ -333,6 +400,7 @@ async fn main() -> anyhow::Result<()> {
                     lookback_days,
                     thresh_cfg,
                     ens_cfg,
+                    lfdr_cfg,
                 )
                 .await
                 {
@@ -369,6 +437,8 @@ fn load_exchange_configs(
     LlmOracleConfig,
     ThresholdConfig,
     backtest::ensemble::EnsembleConfig,
+    MctsYamlConfig,
+    backtest::hypothesis::LfdrConfig,
 ) {
     match std::fs::read_to_string(path) {
         Ok(content) => match serde_yaml::from_str::<GeneratorConfig>(&content) {
@@ -390,11 +460,22 @@ fn load_exchange_configs(
                     cfg.ensemble.max_total_strategies,
                     cfg.ensemble.rebalance_interval_minutes
                 );
+                info!(
+                    "MCTS config: enabled={}, budget={}, interval={}, seeds={}, use_max_reward={}",
+                    cfg.mcts.enabled, cfg.mcts.budget, cfg.mcts.interval,
+                    cfg.mcts.seeds_per_round, cfg.mcts.use_max_reward
+                );
+                info!(
+                    "lFDR config: enabled={}, fdr_level={}, min_cluster_size={}",
+                    cfg.lfdr.enabled, cfg.lfdr.fdr_level, cfg.lfdr.min_cluster_size
+                );
                 (
                     cfg.exchanges,
                     cfg.llm_oracle,
                     cfg.threshold_config,
                     cfg.ensemble,
+                    cfg.mcts,
+                    cfg.lfdr,
                 )
             }
             Err(e) => {
@@ -404,6 +485,8 @@ fn load_exchange_configs(
                     LlmOracleConfig::default(),
                     ThresholdConfig::default(),
                     backtest::ensemble::EnsembleConfig::default(),
+                    MctsYamlConfig::default(),
+                    backtest::hypothesis::LfdrConfig::default(),
                 )
             }
         },
@@ -433,6 +516,8 @@ fn load_exchange_configs(
                 LlmOracleConfig::default(),
                 ThresholdConfig::default(),
                 backtest::ensemble::EnsembleConfig::default(),
+                MctsYamlConfig::default(),
+                backtest::hypothesis::LfdrConfig::default(),
             )
         }
     }
@@ -568,6 +653,8 @@ async fn run_symbol_evolution(
     oracle_config: LlmOracleConfig,
     threshold_config: ThresholdConfig,
     rayon_pool: Arc<rayon::ThreadPool>,
+    mcts_pool: Arc<rayon::ThreadPool>,
+    mcts_config: Arc<MctsYamlConfig>,
     symbol: String,
     mode: StrategyMode,
 ) -> anyhow::Result<()> {
@@ -654,6 +741,10 @@ async fn run_symbol_evolution(
     // instead of a feature index, causing silent wrong results or VM failures.
     backtester.vm.feat_offset = feat_offset;
     let mut ga = AlpsGA::new(feat_offset);
+
+    // P7-2B: CCIPCA diagnostic — tracks feature orthogonality per symbol
+    // Initialized lazily after we know actual feature dimension from cache
+    let mut ccipca: Option<backtest::incremental_pca::CcipcaState> = None;
 
     // Build walk-forward config from YAML or use defaults
     let wf_config = match &config.walk_forward {
@@ -900,6 +991,44 @@ async fn run_symbol_evolution(
     let mut oracle_invocations: usize = 0;
     let mut oracle_injected_total: usize = 0;
 
+    // P7-2B: Feed CCIPCA with cached feature data (diagnostic only)
+    // Features shape: (n_symbols=1, n_factors, n_bars)
+    if let Some(cached) = backtester.cache.get(&symbol) {
+        let features = &cached.features;
+        let n_feat = features.shape()[1].min(feat_offset); // axis 1 = factors
+        let n_bars = features.shape()[2];                   // axis 2 = bars
+        if n_feat >= 2 {
+            // Lazily initialize CCIPCA with actual feature dimension
+            let pca = ccipca.get_or_insert_with(|| {
+                backtest::incremental_pca::CcipcaState::new(
+                    n_feat,
+                    backtest::incremental_pca::CcipcaConfig {
+                        n_components: 5.min(n_feat),
+                        amnesic: 2.0,
+                        min_observations: 50,
+                        enabled: true,
+                    },
+                )
+            });
+            // Feed last 200 bars (or all if fewer) as observations to CCIPCA
+            let start_bar = n_bars.saturating_sub(200);
+            for bar in start_bar..n_bars {
+                let obs: Vec<f64> = (0..n_feat).map(|f| features[[0, f, bar]]).collect();
+                let obs_arr = ndarray::Array1::from_vec(obs);
+                pca.update_view(obs_arr.view());
+            }
+            if pca.is_valid() {
+                let ev = pca.explained_variance();
+                let total_var: f64 = ev.iter().sum();
+                let ratios: Vec<f64> = ev.iter().map(|&v| if total_var > 0.0 { v / total_var } else { 0.0 }).collect();
+                info!(
+                    "[{}:{}:{}] CCIPCA: {} observations, top-{} explained variance ratios: {:?}",
+                    exchange, symbol, mode_str, pca.n_observations(), ev.len(), ratios
+                );
+            }
+        }
+    }
+
     // Evolution loop
     loop {
         let gen = ga.generation;
@@ -918,6 +1047,74 @@ async fn run_symbol_evolution(
         });
         let promo_stats = ga.evolve();
         promo_tracker.push(promo_stats.clone());
+
+        // ═══ P7-1C: MCTS Seed Injection ═══
+        let mut mcts_injected_this_gen = 0usize;
+        if mcts_config.enabled && gen > 0 && gen.is_multiple_of(mcts_config.interval) {
+            let action_space = mcts::state::ActionSpace::new(feat_offset);
+            let policy = mcts::policy::UniformPolicy;
+            let search_config = mcts::search::MctsConfig {
+                budget: mcts_config.budget,
+                exploration_c: mcts_config.exploration_c,
+                seeds_per_round: mcts_config.seeds_per_round,
+                max_length: mcts_config.max_length,
+                use_max_reward: mcts_config.use_max_reward,
+                deception_ngram_size: 0,
+                deception_decay: 0.1,
+            };
+
+            let backtester_ref = &backtester;
+            let symbol_ref = &symbol;
+            let result = mcts_pool.install(|| {
+                mcts::search::run_mcts_round(
+                    &action_space,
+                    &policy,
+                    &search_config,
+                    |tokens: &[u32]| {
+                        let usize_tokens: Vec<usize> = tokens.iter().map(|&t| t as usize).collect();
+                        let len = usize_tokens.len();
+                        let mut temp = genetic::Genome {
+                            tokens: usize_tokens,
+                            fitness: 0.0,
+                            age: 0,
+                            block_mask: vec![0; len],
+                            block_age: vec![0; len],
+                        };
+                        backtester_ref.evaluate_symbol_kfold(&mut temp, symbol_ref, k, mode);
+                        temp.fitness
+                    },
+                )
+            });
+
+            // Filter positive-PSR seeds, convert to Genome, inject into ALPS L0
+            let seeds: Vec<genetic::Genome> = result
+                .formulas
+                .iter()
+                .zip(result.scores.iter())
+                .filter(|(_, &score)| score > 0.0)
+                .map(|(formula, _)| {
+                    let tokens: Vec<usize> = formula.iter().map(|&t| t as usize).collect();
+                    let len = tokens.len();
+                    genetic::Genome {
+                        tokens,
+                        fitness: 0.0,
+                        age: 0,
+                        block_mask: vec![0; len],
+                        block_age: vec![0; len],
+                    }
+                })
+                .collect();
+
+            mcts_injected_this_gen = seeds.len();
+            if !seeds.is_empty() {
+                ga.inject_genomes(0, seeds);
+                info!(
+                    "[{}:{}:{}] Gen {} MCTS: injected {}/{} seeds into L0 (budget={}, unique={})",
+                    exchange, symbol, mode_str, gen, mcts_injected_this_gen,
+                    result.formulas.len(), result.total_rollouts, result.unique_terminals
+                );
+            }
+        }
 
         // Log ALPS layer summary + promotion rates periodically
         if gen.is_multiple_of(10) {
@@ -943,6 +1140,19 @@ async fn run_symbol_evolution(
                 promo_stats.top_purged,
                 ga.total_population()
             );
+
+            // P7-5B: Log genome diversity every 50 gens
+            if gen.is_multiple_of(50) {
+                let diversity = ga.layer_diversity();
+                let div_strs: Vec<String> = diversity
+                    .iter()
+                    .map(|(i, n, d)| format!("L{}:{:.2}(n={})", i, d, n))
+                    .collect();
+                info!(
+                    "[{}:{}:{}] Gen {} diversity (Hamming): [{}]",
+                    exchange, symbol, mode_str, gen, div_strs.join(", ")
+                );
+            }
         }
 
         if let Some(best) = ga.best_genome.clone() {
@@ -1189,6 +1399,13 @@ async fn run_symbol_evolution(
                     log: &oracle_log,
                     cross_symbol_elites: &oracle_cross_elites,
                 }),
+                "mcts": {
+                    "enabled": mcts_config.enabled,
+                    "injected_this_gen": mcts_injected_this_gen,
+                    "interval": mcts_config.interval,
+                    "budget": mcts_config.budget,
+                    "use_max_reward": mcts_config.use_max_reward,
+                },
                 "utilization": {
                     "long_ratio": util_tracker.long_ratio(),
                     "short_ratio": util_tracker.short_ratio(),
@@ -1201,6 +1418,15 @@ async fn run_symbol_evolution(
                 }
             });
             let payload_str = payload.to_string();
+
+            // P7-3B: Defense-in-depth payload size guard (RUSTSEC-2024-0363 mitigation)
+            const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024; // 16 MiB — our payloads are typically <10 KiB
+            if payload_str.len() > MAX_PAYLOAD_BYTES {
+                error!(
+                    "[{}:{}:{}] Gen {} payload exceeds {}B limit ({}B) — skipping DB persist",
+                    exchange, symbol, mode_str, gen, MAX_PAYLOAD_BYTES, payload_str.len()
+                );
+            }
 
             // Redis pub/sub + state
             let _: () = redis_conn
@@ -1579,6 +1805,7 @@ async fn run_ensemble_loop(
     lookback_days: i64,
     threshold_config: ThresholdConfig,
     ensemble_cfg: EnsembleConfig,
+    lfdr_config: backtest::hypothesis::LfdrConfig,
 ) -> anyhow::Result<()> {
     info!(
         "[{}] Starting ensemble rebalance loop (interval={}min)",
@@ -1619,6 +1846,7 @@ async fn run_ensemble_loop(
             &ensemble_cfg,
             &dw_config,
             &factor_config,
+            &lfdr_config,
             &mut version,
         )
         .await
@@ -1686,6 +1914,7 @@ async fn run_ensemble_rebalance(
     ensemble_cfg: &EnsembleConfig,
     dw_config: &DynamicWeightConfig,
     factor_config: &backtest_engine::config::FactorConfig,
+    lfdr_config: &backtest::hypothesis::LfdrConfig,
     version: &mut i32,
 ) -> anyhow::Result<Option<ensemble::RegimeInfo>> {
     // 1. Load candidates
@@ -1699,7 +1928,7 @@ async fn run_ensemble_rebalance(
     }
 
     // 2. Select eligible strategies
-    let selected = ensemble::select_candidates(candidates, ensemble_cfg);
+    let selected = ensemble::select_candidates_with_lfdr(candidates, ensemble_cfg, lfdr_config);
     if selected.is_empty() {
         info!(
             "[{}] No candidates meet ensemble thresholds, skipping rebalance",
@@ -2134,4 +2363,40 @@ async fn run_ensemble_rebalance(
     );
 
     Ok(Some(regime_info))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mcts_config_deserialization_defaults() {
+        // Verify MctsYamlConfig defaults match documentation
+        let config = MctsYamlConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.budget, 1000);
+        assert_eq!(config.seeds_per_round, 5);
+        assert_eq!(config.interval, 50);
+        assert!((config.exploration_c - 1.414).abs() < 1e-3);
+        assert_eq!(config.max_length, 20);
+        assert!(config.use_max_reward, "Extreme Bandit PUCT should default to true");
+    }
+
+    #[test]
+    fn test_mcts_config_from_yaml() {
+        let yaml = r#"
+            enabled: true
+            budget: 500
+            seeds_per_round: 3
+            use_max_reward: false
+        "#;
+        let config: MctsYamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.budget, 500);
+        assert_eq!(config.seeds_per_round, 3);
+        assert!(!config.use_max_reward);
+        // Defaults for unspecified fields
+        assert_eq!(config.interval, 50);
+        assert_eq!(config.max_length, 20);
+    }
 }

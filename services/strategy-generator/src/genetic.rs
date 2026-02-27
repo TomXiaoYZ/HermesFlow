@@ -277,6 +277,25 @@ pub struct AlpsGA {
     pub feat_offset: usize,
 }
 
+/// P7-5B: Normalized Hamming distance between two token sequences.
+///
+/// Compares element-wise, treating different lengths as mismatches for
+/// the excess portion. Returns value in [0.0, 1.0].
+fn hamming_distance(a: &[usize], b: &[usize]) -> f64 {
+    let max_len = a.len().max(b.len());
+    if max_len == 0 {
+        return 0.0;
+    }
+    let min_len = a.len().min(b.len());
+    let mut diffs = (max_len - min_len) as f64; // excess tokens are all mismatches
+    for i in 0..min_len {
+        if a[i] != b[i] {
+            diffs += 1.0;
+        }
+    }
+    diffs / max_len as f64
+}
+
 impl AlpsGA {
     pub fn new(feat_offset: usize) -> Self {
         let layers: Vec<AlpsLayer> = ALPS_LAYER_MAX_AGES
@@ -359,6 +378,43 @@ impl AlpsGA {
                     .map(|g| g.fitness)
                     .fold(f64::NEG_INFINITY, f64::max);
                 (i, layer.population.len(), best_fit)
+            })
+            .collect()
+    }
+
+    /// P7-5B: Compute mean pairwise Hamming distance per ALPS layer.
+    ///
+    /// Returns `Vec<(layer_index, population_size, mean_hamming_distance)>`.
+    /// Higher diversity = more distinct token sequences = healthier exploration.
+    /// Samples up to 50 pairs per layer for O(1) computation.
+    pub fn layer_diversity(&self) -> Vec<(usize, usize, f64)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .map(|(i, layer)| {
+                let pop = &layer.population;
+                let n = pop.len();
+                if n < 2 {
+                    return (i, n, 0.0);
+                }
+                let max_pairs = 50usize;
+                let mut total_dist = 0.0;
+                let mut count = 0usize;
+                'outer: for a in 0..n {
+                    for b in (a + 1)..n {
+                        if count >= max_pairs {
+                            break 'outer;
+                        }
+                        total_dist += hamming_distance(&pop[a].tokens, &pop[b].tokens);
+                        count += 1;
+                    }
+                }
+                let mean = if count > 0 {
+                    total_dist / count as f64
+                } else {
+                    0.0
+                };
+                (i, n, mean)
             })
             .collect()
     }

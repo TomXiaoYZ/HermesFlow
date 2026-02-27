@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Connect to database
     let database_url = std::env::var("TIMESCALE_URL")
         .or_else(|_| std::env::var("DATABASE_URL"))
-        .unwrap_or_else(|_| "postgresql://postgres:password@localhost:5432/hermesflow".to_string());
+        .expect("TIMESCALE_URL or DATABASE_URL must be set");
 
     info!("Connecting to database: {}", database_url);
     let pool = PgPool::connect(&database_url).await?;

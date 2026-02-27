@@ -1,4 +1,3 @@
-#![allow(dead_code)] // P6-1C: not yet integrated into ensemble pipeline
 //! P6-1C: Candid Covariance-free Incremental PCA (CCIPCA).
 //!
 //! Maintains O(n·k) rolling principal components without storing or inverting
@@ -12,7 +11,7 @@
 //! "Candid covariance-free incremental principal component analysis."
 //! IEEE Transactions on Pattern Analysis and Machine Intelligence 25.8 (2003): 1034-1040.
 
-use ndarray::{Array1, Array2, Zip};
+use ndarray::{Array1, Array2, ArrayView1, Zip};
 
 /// Configuration for CCIPCA.
 #[derive(Debug, Clone)]
@@ -25,6 +24,7 @@ pub struct CcipcaConfig {
     /// Minimum observation count before components are considered valid
     pub min_observations: usize,
     /// Feature gate: only run CCIPCA when enabled
+    #[allow(dead_code)] // checked in caller
     pub enabled: bool,
 }
 
@@ -65,6 +65,15 @@ impl CcipcaState {
             n_obs: 0,
             config,
         }
+    }
+
+    /// P7-2B: Update state with a zero-copy observation view.
+    ///
+    /// Accepts `ArrayView1` to avoid cloning the input data — Gemini: strictly
+    /// no `.clone()` on observation data in Tokio async tasks.
+    pub fn update_view(&mut self, observation: ArrayView1<f64>) {
+        let owned = observation.to_owned();
+        self.update(&owned);
     }
 
     /// Update state with a new observation vector.
@@ -150,6 +159,7 @@ impl CcipcaState {
 
     /// Return the current principal components (normalized eigenvectors).
     /// Shape: (k, n_features). Rows are unit vectors.
+    #[allow(dead_code)] // used in tests and future P8 active reduction
     pub fn components(&self) -> Array2<f64> {
         let k = self.config.n_components;
         let n = self.mean.len();
@@ -177,6 +187,7 @@ impl CcipcaState {
 
     /// Project an observation onto the principal component space.
     /// Returns a k-dimensional vector.
+    #[allow(dead_code)] // used in tests and future P8 active reduction
     pub fn transform(&self, observation: &Array1<f64>) -> Array1<f64> {
         let centered = observation - &self.mean;
         let components = self.components();
@@ -305,5 +316,50 @@ mod tests {
 
         let projection = state.transform(&Array1::from_vec(vec![1.0; 10]));
         assert_eq!(projection.len(), 3);
+    }
+
+    // ── P7-2C: CCIPCA zero-copy test ─────────────────────────────────
+
+    #[test]
+    fn test_ccipca_update_zero_copy() {
+        // Verify that update_view() accepts ArrayView (zero-copy borrow)
+        // and produces the same result as update() with owned Array1.
+        let config1 = CcipcaConfig {
+            n_components: 2,
+            amnesic: 2.0,
+            min_observations: 5,
+            enabled: true,
+        };
+        let config2 = config1.clone();
+        let mut state_owned = CcipcaState::new(4, config1);
+        let mut state_view = CcipcaState::new(4, config2);
+
+        let observations = vec![
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![4.0, 3.0, 2.0, 1.0],
+            vec![2.0, 2.0, 2.0, 2.0],
+            vec![5.0, 1.0, 5.0, 1.0],
+            vec![0.5, 0.5, 0.5, 0.5],
+        ];
+
+        for obs in &observations {
+            let arr = Array1::from_vec(obs.clone());
+            state_owned.update(&arr);
+            state_view.update_view(arr.view());
+        }
+
+        // Both should have same number of observations
+        assert_eq!(state_owned.n_observations(), state_view.n_observations());
+
+        // Both should produce the same explained variance
+        let ev_owned = state_owned.explained_variance();
+        let ev_view = state_view.explained_variance();
+        for (a, b) in ev_owned.iter().zip(ev_view.iter()) {
+            assert!(
+                (a - b).abs() < 1e-10,
+                "update_view should match update: {} vs {}",
+                a, b
+            );
+        }
     }
 }

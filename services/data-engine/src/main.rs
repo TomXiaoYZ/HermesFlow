@@ -102,6 +102,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("Failed to run Postgres migrations: {}. Continuing...", e);
     }
 
+    // P7-0B: Check holiday coverage at startup
+    data_engine::monitoring::market_schedule::check_holiday_coverage();
+
     // Initialize health monitor
     let health_monitor = HealthMonitor::new();
 

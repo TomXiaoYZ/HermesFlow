@@ -136,6 +136,8 @@ src/
 - **Collector Trait** (`traits/connector.rs`): All 12+ data sources implement `DataCollector`
 - **StandardMarketData**: Unified type using `rust_decimal::Decimal` for financial precision
 - **7-Stage Quality Pipeline** (`monitoring/quality.rs`): Active count, freshness, gap detection, liquidity guard, price spike, cross-source divergence, volume anomaly
+  - P6-3A: Poisson-based dynamic staleness detection (per-symbol EWMA tick arrival rate λ_i)
+- **Market Calendar** (`monitoring/market_schedule.rs`): P6-3B timezone-aware NYSE calendar, auto-suspend flow alerts during off-hours
 - **Tiered Scheduling**: Critical (30s), warning (5m), full audit (1h)
 
 ## Dependencies

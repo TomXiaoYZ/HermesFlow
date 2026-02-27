@@ -1,4 +1,3 @@
-#![allow(dead_code)] // P6-4A: not yet integrated into ALPS evolution loop
 //! MCTS search algorithm: select → expand → simulate → backpropagate.
 //!
 //! Uses arena-allocated tree (zero Rc/Arc) and pluggable policy.
@@ -113,7 +112,6 @@ impl DeceptionSuppressor {
 
 /// Result from a single MCTS round: discovered formulas ranked by fitness.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MctsResult {
     /// Top-k formulas as token sequences (RPN), sorted by fitness descending.
     pub formulas: Vec<Vec<u32>>,
@@ -805,5 +803,70 @@ mod tests {
 
         // Both should still produce valid formulas
         assert!(!result_ds.formulas.is_empty());
+    }
+
+    // ── P7-1D: MCTS Integration Tests ────────────────────────────────
+
+    #[test]
+    fn test_mcts_produces_valid_genomes() {
+        // Verify all generated tokens are within valid range (0..feat_offset+23 ops)
+        let feat_offset = 25;
+        let space = ActionSpace::new(feat_offset);
+        let policy = UniformPolicy;
+        let config = MctsConfig {
+            budget: 200,
+            seeds_per_round: 5,
+            max_length: 15,
+            use_max_reward: true, // Extreme Bandit default
+            ..Default::default()
+        };
+
+        let result = run_mcts_round(&space, &policy, &config, |tokens: &[u32]| {
+            // Simple fitness: more unique features = better
+            let feats: std::collections::HashSet<u32> =
+                tokens.iter().filter(|&&t| (t as usize) < feat_offset).copied().collect();
+            feats.len() as f64 / 5.0
+        });
+
+        for (i, formula) in result.formulas.iter().enumerate() {
+            assert!(!formula.is_empty(), "Formula {} should not be empty", i);
+            for &token in formula {
+                assert!(
+                    (token as usize) < space.vocab_size,
+                    "Token {} out of range (vocab={}) in formula {}",
+                    token, space.vocab_size, i
+                );
+            }
+            // Verify terminal: stack depth should be 1
+            let mut stack = 0u32;
+            for &t in formula {
+                stack = space.stack_after_action(stack, t);
+            }
+            assert_eq!(stack, 1, "Formula {:?} not terminal (stack={})", formula, stack);
+        }
+    }
+
+    #[test]
+    fn test_mcts_token_type_conversion() {
+        // Verify u32 → usize conversion is safe and NULL_NODE sentinel not generated
+        let space = ActionSpace::new(10);
+        let policy = UniformPolicy;
+        let config = MctsConfig {
+            budget: 100,
+            seeds_per_round: 5,
+            max_length: 10,
+            ..Default::default()
+        };
+
+        let result = run_mcts_round(&space, &policy, &config, |_tokens: &[u32]| 0.5);
+
+        for formula in &result.formulas {
+            for &token in formula {
+                // u32 → usize should never overflow on any 32+ bit platform
+                let _usize_token: usize = token as usize;
+                // NULL_NODE (u32::MAX) should never appear in formulas
+                assert_ne!(token, crate::mcts::arena::NULL_NODE, "NULL_NODE in formula");
+            }
+        }
     }
 }

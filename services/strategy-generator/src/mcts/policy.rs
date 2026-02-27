@@ -1,4 +1,3 @@
-#![allow(dead_code)] // P6-4A: not yet integrated into ALPS evolution loop
 //! Policy network for MCTS action selection.
 //!
 //! Provides prior probability distributions over legal actions.
@@ -33,11 +32,13 @@ impl Policy for UniformPolicy {
 
 /// Feature-biased policy: slightly favors features over operators in early positions,
 /// and binary operators when stack is deep. A simple heuristic before LLM prior.
+#[allow(dead_code)] // P8: planned for production use with LLM prior
 pub struct HeuristicPolicy {
     feat_offset: usize,
 }
 
 impl HeuristicPolicy {
+    #[allow(dead_code)] // P8: planned for production use
     pub fn new(action_space: &ActionSpace) -> Self {
         Self {
             feat_offset: action_space.feat_offset,
@@ -95,6 +96,7 @@ pub struct LlmCachedPolicy {
 
 impl LlmCachedPolicy {
     /// Create an empty LLM policy cache.
+    #[allow(dead_code)] // P8: planned for LLM prior integration
     pub fn new(vocab_size: usize) -> Self {
         Self {
             cache: HashMap::new(),
@@ -104,6 +106,7 @@ impl LlmCachedPolicy {
 
     /// Insert a prior distribution for a given partial state.
     /// `weights` should have length `vocab_size`, with unnormalized weights per token.
+    #[allow(dead_code)] // P8: planned for LLM prior integration
     pub fn insert(&mut self, tokens: &[u32], stack_depth: u32, weights: Vec<f64>) {
         let key = Self::hash_state(tokens, stack_depth);
         self.cache.insert(key, weights);

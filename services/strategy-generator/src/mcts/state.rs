@@ -1,4 +1,3 @@
-#![allow(dead_code)] // P6-4A: not yet integrated into ALPS evolution loop
 //! RPN formula state for MCTS.
 //!
 //! States represent partial RPN formulas. Actions are legal next tokens.
@@ -10,6 +9,7 @@ pub struct ActionSpace {
     /// Feature token indices: 0..feat_offset
     pub feat_offset: usize,
     /// Total vocabulary size: feat_offset + n_operators
+    #[allow(dead_code)] // P8: used in LLM prior policy token distribution
     pub vocab_size: usize,
     /// Arity of each operator (index = token - feat_offset): 1=unary, 2=binary
     pub operator_arities: Vec<u32>,

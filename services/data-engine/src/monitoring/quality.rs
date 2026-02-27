@@ -9,7 +9,7 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Check frequency tier for the data quality pipeline.
 ///
@@ -87,6 +87,10 @@ pub struct DataMonitor {
     config: DataQualityConfig,
     /// P6-3A: Per-symbol (exchange:symbol) tick arrival rate tracking
     tick_rates: Mutex<HashMap<String, TickRateState>>,
+    /// P7-0B: Track whether any market was open on last check.
+    /// On closed→open transition, tick_rates EWMA is reset to prevent
+    /// stale lambda values from weekend causing Monday false positives.
+    was_market_open: Mutex<bool>,
 }
 
 impl DataMonitor {
@@ -95,6 +99,7 @@ impl DataMonitor {
             pool,
             config,
             tick_rates: Mutex::new(HashMap::new()),
+            was_market_open: Mutex::new(false),
         }
     }
 
@@ -108,8 +113,24 @@ impl DataMonitor {
         let now = Utc::now();
         let any_market_open = market_schedule::is_any_equity_market_open(now);
 
+        // P7-0B: Detect closed→open transition and reset EWMA tick rates
+        // to prevent stale lambda values from weekend/holiday causing false positives.
+        {
+            let mut was_open = self.was_market_open.lock().unwrap_or_else(|e| e.into_inner());
+            if any_market_open && !*was_open {
+                let mut tick_rates = self.tick_rates.lock().unwrap_or_else(|e| e.into_inner());
+                let count = tick_rates.len();
+                tick_rates.clear();
+                info!(
+                    "Market open transition detected — reset {} tick rate EWMA entries",
+                    count
+                );
+            }
+            *was_open = any_market_open;
+        }
+
         if !any_market_open {
-            info!(
+            debug!(
                 tier = %tier,
                 "All equity markets closed — suppressing flow-based alerts"
             );
@@ -262,7 +283,7 @@ impl DataMonitor {
                 })
                 .collect();
             warn!(
-                "Stage 1 FRESHNESS ALERT (Poisson): {} symbols stale (P(0)<{:.0e}). Examples: {:?}",
+                "Stage 1 FRESHNESS ALERT (Poisson): {} symbol-exchange pairs stale (P(0)<{:.0e}). Examples: {:?}",
                 poisson_stale.len(),
                 poisson_threshold,
                 sample
@@ -348,7 +369,7 @@ impl DataMonitor {
                     })
                     .collect();
                 warn!(
-                    "Stage 2 GAP ALERT [{}]: {} symbols missing candles in last {}h (expected >= {}). Examples: {:?}",
+                    "Stage 2 GAP ALERT [{}]: {} symbol-exchange pairs below expected candle count in last {}h (expected >= {}). Examples: {:?}",
                     resolution,
                     filtered.len(),
                     lookback_hours,

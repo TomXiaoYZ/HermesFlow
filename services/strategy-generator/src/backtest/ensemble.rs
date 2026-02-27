@@ -459,11 +459,22 @@ pub async fn load_candidates_from_db(
 /// Filter and rank candidates according to ensemble config.
 ///
 /// Filters: min OOS PSR, min utilization, min walk-forward steps.
+/// Optionally applies lFDR hypothesis testing to filter correlated strategies.
 /// Then keeps the top candidate per symbol (by OOS PSR desc),
 /// and caps total strategies at max_total_strategies.
+#[allow(dead_code)] // convenience wrapper; production uses select_candidates_with_lfdr
 pub fn select_candidates(
     candidates: Vec<StrategyCandidate>,
     config: &EnsembleConfig,
+) -> Vec<StrategyCandidate> {
+    select_candidates_with_lfdr(candidates, config, &super::hypothesis::LfdrConfig::default())
+}
+
+/// P7-2A: select_candidates with explicit lFDR config for testing and production.
+pub fn select_candidates_with_lfdr(
+    candidates: Vec<StrategyCandidate>,
+    config: &EnsembleConfig,
+    lfdr_config: &super::hypothesis::LfdrConfig,
 ) -> Vec<StrategyCandidate> {
     // Filter by quality thresholds
     let mut filtered: Vec<StrategyCandidate> = candidates
@@ -474,6 +485,36 @@ pub fn select_candidates(
                 && c.walk_forward_steps >= config.min_wf_steps
         })
         .collect();
+
+    // P7-2A: Apply lFDR filtering to remove correlated false positives
+    if lfdr_config.enabled && filtered.len() > lfdr_config.min_cluster_size {
+        let hyp_candidates: Vec<super::hypothesis::HypothesisCandidate> = filtered
+            .iter()
+            .map(|c| super::hypothesis::HypothesisCandidate {
+                id: format!("{}:{}:{}", c.id.symbol, c.id.mode, c.id.generation),
+                tokens: c.genome.iter().map(|&t| t as usize).collect(),
+                oos_psr: c.oos_psr,
+            })
+            .collect();
+
+        let results = super::hypothesis::run_lfdr_test(&hyp_candidates, lfdr_config);
+        let passing: std::collections::HashSet<String> = results
+            .iter()
+            .filter(|r| r.passes)
+            .map(|r| r.id.clone())
+            .collect();
+
+        let before = filtered.len();
+        filtered.retain(|c| {
+            passing.contains(&format!("{}:{}:{}", c.id.symbol, c.id.mode, c.id.generation))
+        });
+        tracing::info!(
+            "lFDR filter: {}/{} candidates passed (fdr_level={})",
+            filtered.len(),
+            before,
+            lfdr_config.fdr_level
+        );
+    }
 
     // Sort by OOS PSR descending (best first)
     filtered.sort_by(|a, b| {

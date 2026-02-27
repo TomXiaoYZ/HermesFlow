@@ -1,6 +1,6 @@
 # PROJECT_INDEX.md - HermesFlow
 
-> Auto-generated project index. Last updated: 2026-02-23
+> Auto-generated project index. Last updated: 2026-02-27
 
 ## Overview
 
@@ -108,8 +108,8 @@ graph TB
 | [data-engine](services/data-engine/) | Rust | 8081→8080 | Market data aggregation, 12+ data source connectors, candle aggregation, data quality monitoring | `src/main.rs` |
 | [gateway](services/gateway/) | Rust | 8080 | API gateway, WebSocket router, JWT auth, CORS, rate limiting, reverse proxy | `src/main.rs` |
 | [strategy-engine](services/strategy-engine/) | Rust | 8082 | Real-time strategy execution, event-driven signals via Redis Pub/Sub, portfolio management | `src/main.rs` |
-| [strategy-generator](services/strategy-generator/) | Rust | 8082→8084 | Genetic algorithm strategy evolution, ALPS population, backtest fitness (PSR), LLM oracle | `src/main.rs` |
-| [execution-engine](services/execution-engine/) | Rust | 8083 | Trade execution across Solana/Raydium, IBKR, Futu; risk checks, reconciliation | `src/main.rs` |
+| [strategy-generator](services/strategy-generator/) | Rust | 8082→8084 | GA strategy evolution, ALPS, PSR fitness, LLM oracle, MCTS symbolic regression (P6) | `src/main.rs` |
+| [execution-engine](services/execution-engine/) | Rust | 8083 | Trade execution (IBKR, Futu, Solana); risk checks, shadow trading (P6), execution quality | `src/main.rs` |
 | [backtest-engine](services/backtest-engine/) | Rust | (library) | Factor computation (ATR, MACD, Bollinger, etc.), VM-based strategy execution | `src/lib.rs` |
 | [common](services/common/) | Rust | (library) | Shared types, event bus, health endpoints, metrics, telemetry | `src/lib.rs` |
 | [user-management](services/user-management/) | Java | 8086 | RBAC, JWT auth, multi-tenancy (Spring Boot 3.2) | `UserManagementApplication.java` |
@@ -152,7 +152,7 @@ graph LR
 | All Rust services | TimescaleDB | PostgreSQL | Persistent storage |
 | Vector | ClickHouse | HTTP | Log aggregation |
 
-## Database Schema (31 migrations)
+## Database Schema (34 migrations)
 
 ### TimescaleDB (PostgreSQL)
 - `001-006`: Core schema, market data, trading system, active tokens
@@ -168,6 +168,9 @@ graph LR
 - `029`: Backtest retention policy
 - `030`: Portfolio ensemble (HRP allocation, shadow equity)
 - `031`: Parameterize trading accounts (remove hardcoded IDs)
+- `035`: P6-1D Strategy decay routing (decay_state, decay_factor columns)
+- `036`: P6-2B Shadow trading signals table + shadow status columns
+- `037`: P6-2C Execution quality metrics table
 
 ### ClickHouse
 - `002`: Ticks table (time-series)
@@ -182,7 +185,7 @@ graph LR
 |------|---------|
 | `config/factors.yaml` | Factor definitions for crypto backtest/strategy engines |
 | `config/factors-stock.yaml` | 25 factor definitions for stock (Polygon) evolution |
-| `config/generator.yaml` | Strategy generator: exchanges, multi-timeframe, thresholds, LLM oracle, ensemble |
+| `config/generator.yaml` | Strategy generator: exchanges, multi-timeframe, thresholds, LLM oracle, ensemble, MCTS, lFDR |
 | `Cargo.toml` | Rust workspace definition + shared dependencies |
 | `docker-compose.yml` | Full service orchestration (19 containers) |
 | `docker-compose.prod.yml` | Production overrides |
@@ -226,15 +229,19 @@ graph LR
 - **Adaptive Thresholds** (P4): Percentile-based signal thresholds with utilization feedback
 - **HRP Allocation** (P5): Hierarchical Risk Parity for portfolio ensemble
 - **LLM Oracle** (P2): Bedrock/Claude-guided mutation on GA stagnation
+- **Local FDR** (P6): n-gram Jaccard clustering with per-cluster lFDR hypothesis testing
+- **CCIPCA** (P6): O(n·k) incremental PCA for high-dimensional feature reduction
+- **MCTS Symbolic Regression** (P6): Arena-allocated Monte Carlo Tree Search for RPN formula discovery
+- **Poisson Staleness Detection** (P6): Per-symbol EWMA tick rate with dynamic alert thresholds
 
 ## File Statistics
 
 | Category | Count |
 |----------|-------|
-| Rust source files | ~160 |
+| Rust source files | ~168 |
 | TypeScript/TSX files | 23 |
 | Python files | 6 |
 | Java files | 15 |
-| SQL migrations | 36 |
+| SQL migrations | 39 |
 | Terraform files | 21 |
 | Docker services | 19 |

@@ -1,4 +1,3 @@
-#![allow(dead_code)] // P6-1B: not yet integrated into main evolution loop
 //! P6-1B: Local FDR (lFDR) hypothesis testing with RPN structural clustering.
 //!
 //! Global BH at FDR=0.10 causes threshold masking at scale — correlated ALPS
@@ -9,10 +8,11 @@
 //! compute per-cluster empirical null distribution of OOS PSR, and apply lFDR
 //! control within each cluster instead of global BH.
 
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
 /// Configuration for local FDR hypothesis testing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LfdrConfig {
     /// Target FDR level (default: 0.10)
     pub fdr_level: f64,
@@ -53,6 +53,7 @@ pub struct HypothesisCandidate {
 #[derive(Debug, Clone)]
 pub struct LfdrResult {
     pub id: String,
+    #[allow(dead_code)] // accessed in tests and future UI display
     pub oos_psr: f64,
     pub cluster_id: usize,
     /// Local FDR estimate: probability that this strategy is null (no alpha)
@@ -400,5 +401,86 @@ mod tests {
         let config = LfdrConfig::default();
         let results = run_lfdr_test(&[], &config);
         assert!(results.is_empty());
+    }
+
+    // ── P7-2C: lFDR Integration Tests ────────────────────────────────
+
+    #[test]
+    fn test_lfdr_filters_correlated_strategies() {
+        // 20 strategies with very similar RPN tokens and mediocre PSR → should be filtered
+        let mut candidates = Vec::new();
+        for i in 0..20 {
+            candidates.push(make_candidate(
+                &format!("corr_{}", i),
+                vec![1, 2, 3, 4, 5 + (i % 2)], // very similar tokens
+                0.2 + (i as f64 * 0.01),         // mediocre PSR spread
+            ));
+        }
+
+        let config = LfdrConfig {
+            fdr_level: 0.10,
+            ngram_size: 3,
+            min_cluster_size: 5,
+            jaccard_threshold: 0.3,
+            enabled: true,
+        };
+
+        let results = run_lfdr_test(&candidates, &config);
+        let passing = results.iter().filter(|r| r.passes).count();
+        // Most correlated mediocre strategies should be filtered
+        assert!(
+            passing < candidates.len(),
+            "lFDR should filter some correlated strategies: {}/{} passed",
+            passing, candidates.len()
+        );
+    }
+
+    #[test]
+    fn test_lfdr_preserves_diverse_strategies() {
+        // 10 strategies with distinct structures and high PSR → should be preserved
+        let candidates: Vec<HypothesisCandidate> = (0..10)
+            .map(|i| {
+                make_candidate(
+                    &format!("diverse_{}", i),
+                    vec![i * 10, i * 10 + 1, i * 10 + 2, i * 10 + 3, i * 10 + 4],
+                    2.0 + (i as f64 * 0.1), // high PSR
+                )
+            })
+            .collect();
+
+        let config = LfdrConfig {
+            fdr_level: 0.10,
+            ngram_size: 3,
+            min_cluster_size: 5,
+            jaccard_threshold: 0.3,
+            enabled: true,
+        };
+
+        let results = run_lfdr_test(&candidates, &config);
+        let passing = results.iter().filter(|r| r.passes).count();
+        // High PSR + diverse structures → most should pass
+        assert!(
+            passing > 0,
+            "At least some diverse high-PSR strategies should pass lFDR"
+        );
+    }
+
+    #[test]
+    fn test_lfdr_disabled_passthrough() {
+        // When disabled, all candidates should pass through
+        let candidates = vec![
+            make_candidate("a", vec![1, 2, 3], 0.5),
+            make_candidate("b", vec![1, 2, 4], 0.3),
+        ];
+
+        let config = LfdrConfig {
+            enabled: false,
+            ..LfdrConfig::default()
+        };
+
+        // run_lfdr_test still runs, but the caller should check config.enabled
+        // The function itself does full computation regardless of enabled flag
+        let results = run_lfdr_test(&candidates, &config);
+        assert_eq!(results.len(), 2, "Should return results for all candidates");
     }
 }

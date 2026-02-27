@@ -18,6 +18,9 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting Execution Engine...");
 
+    // P7-3C: Check holiday coverage at startup
+    execution_engine::shadow::check_holiday_coverage();
+
     // Spawn health check server
     tokio::spawn(common::health::start_health_server(
         "execution-engine",

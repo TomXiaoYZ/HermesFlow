@@ -3,12 +3,18 @@
 //! Subscribes to Redis trade signals and logs them without executing.
 //! Strategies must complete 7 **trading days** (excluding weekends and holidays)
 //! in shadow mode before promotion to paper trading.
+//!
+//! **Scoping**: Shadow period is per (exchange, symbol, mode) — NOT per-genome.
+//! A single strategy slot (e.g., binance:BTCUSDT:long_only) earns shadow days,
+//! and the best genome within that slot can be swapped without resetting the clock.
+//! This is correct: the observation period validates the (exchange, symbol, mode)
+//! pipeline, not the specific genome weights.
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc, Weekday};
 use tokio_postgres::Client;
 use tracing::{info, warn};
 
-/// US market holidays for shadow trading-day counting (2025-2027).
+/// US market holidays for shadow trading-day counting (2025-2028).
 const US_HOLIDAYS: &[(i32, u32, u32)] = &[
     (2025, 1, 1),
     (2025, 1, 20),
@@ -40,10 +46,35 @@ const US_HOLIDAYS: &[(i32, u32, u32)] = &[
     (2027, 9, 6),
     (2027, 11, 25),
     (2027, 12, 24),
+    // 2028
+    (2028, 1, 17),
+    (2028, 2, 21),
+    (2028, 4, 14),
+    (2028, 5, 29),
+    (2028, 6, 19),
+    (2028, 7, 4),
+    (2028, 9, 4),
+    (2028, 11, 23),
+    (2028, 12, 25),
 ];
 
 /// Minimum trading days in shadow mode before paper promotion.
 pub const MIN_SHADOW_TRADING_DAYS: i32 = 7;
+
+/// P7-3C: Check that US_HOLIDAYS covers the current year.
+/// Call at execution-engine startup.
+pub fn check_holiday_coverage() {
+    let current_year = Utc::now().year();
+    let has_current = US_HOLIDAYS.iter().any(|&(y, _, _)| y == current_year);
+    if !has_current {
+        warn!(
+            "Shadow US_HOLIDAYS does not cover year {}. Trading day count may be inaccurate.",
+            current_year
+        );
+    } else {
+        info!("Shadow US_HOLIDAYS coverage OK for year {}", current_year);
+    }
+}
 
 /// Record a shadow signal observation (no execution).
 #[allow(clippy::too_many_arguments)]
