@@ -220,6 +220,7 @@ graph LR
 | `docs/CODE_CONVENTIONS.md` | Error handling, config patterns |
 | `docs/DEVELOPMENT_ROADMAP.md` | Feature roadmap |
 | `docs/P0-P5_*.md` | Phase implementation reports |
+| `docs/P8_ARCHITECTURE_DESIGN.md` | P8 architecture design (Gemini review response) |
 | `docs/prd/` | Product requirements (8 modules) |
 
 ## Key Algorithms
@@ -237,6 +238,9 @@ graph LR
 - **Poisson Staleness Detection** (P6): Per-symbol EWMA tick rate with dynamic alert thresholds
 - **Permutation Factor Importance** (P7): Shuffle each factor column, measure PSR drop for attribution
 - **Genome Diversity Metrics** (P7): Per-ALPS-layer Hamming distance monitoring every 50 generations
+- **LLM-Guided MCTS Prior** (P8, planned): Factor-importance-weighted policy prior for semantic MCTS search
+- **CCIPCA Active Remapping** (P8, planned): PC feature augmentation (75→80 features) from incremental PCA
+- **Diversity-Triggered Injection** (P8, planned): Active feedback loop from passive Hamming diversity logging
 
 ## File Statistics
 

@@ -119,6 +119,13 @@ src/
 - **Security** (P7-3A/3B): Removed hardcoded DB credentials, 16MiB sqlx payload guard
 - **Dead-Zone Tracing** (P7-3D): debug! per-asset threshold/delta/triggered logging in hysteresis
 
+### P8 Planned (Architecture Design complete, implementation pending)
+- **LLM-Guided MCTS Prior** (P8-0): Wire FactorImportance → LlmCachedPolicy; replace UniformPolicy with semantic prior
+- **CCIPCA Active Remapping** (P8-1): project_features() augments 75→80 features (5 PC columns)
+- **Diversity-Triggered Injection** (P8-2): L3/L4 Hamming diversity triggers emergency MCTS + Oracle
+- **VM Hot Path Optimization** (P8-3): Pre-execution shape guard, ndarray::Zip TS ops, conditional NaN sanitization
+- **sqlx 0.8 + Decimal** (P8-4): RUSTSEC-2024-0363 fix, f64→Decimal in ensemble_weights/shadow paths
+
 ## Dependencies
 - `common`, `backtest-engine` (workspace crates)
 - `aws-sdk-bedrockruntime` (LLM oracle)
