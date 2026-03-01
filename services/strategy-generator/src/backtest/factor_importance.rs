@@ -1,8 +1,8 @@
-//! P7-5A: Permutation-based factor importance attribution.
+//! Permutation-based factor importance attribution (P7-5A, activated P8-0A).
 //!
 //! For a given genome, shuffles each factor column independently and measures
 //! PSR drop. Factors whose shuffling causes the largest drop are most important.
-//! Top-5 stored in generation metadata; future P8 enriches LLM Oracle prompt.
+//! Top-10 + Bottom-10 injected into LLM Oracle prompt (P8-0B).
 
 use crate::backtest::Backtester;
 use crate::genetic::Genome;
@@ -10,7 +10,6 @@ use crate::backtest::StrategyMode;
 
 /// Result of permutation importance analysis for a single factor.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // P7-5A: used in tests; production wiring in P8
 pub struct FactorImportance {
     pub factor_index: usize,
     pub factor_name: String,
@@ -27,7 +26,6 @@ pub struct FactorImportance {
 /// 4. Importance = baseline_PSR - shuffled_PSR
 ///
 /// Returns sorted by importance descending (most important first).
-#[allow(dead_code)] // P7-5A: production wiring in P8
 pub fn compute_permutation_importance(
     backtester: &Backtester,
     genome: &Genome,
@@ -94,10 +92,19 @@ pub fn compute_permutation_importance(
 }
 
 /// Extract top-N factor importances as a formatted string for logging/metadata.
-#[allow(dead_code)] // P7-5A: production wiring in P8
 pub fn top_n_summary(importances: &[FactorImportance], n: usize) -> Vec<(String, f64)> {
     importances
         .iter()
+        .take(n)
+        .map(|fi| (fi.factor_name.clone(), fi.importance))
+        .collect()
+}
+
+/// Extract bottom-N factor importances (lowest impact, sorted ascending).
+pub fn bottom_n_summary(importances: &[FactorImportance], n: usize) -> Vec<(String, f64)> {
+    importances
+        .iter()
+        .rev()
         .take(n)
         .map(|fi| (fi.factor_name.clone(), fi.importance))
         .collect()
@@ -125,5 +132,19 @@ mod tests {
         assert_eq!(summary.len(), 2);
         assert_eq!(summary[0].0, "ATR");
         assert_eq!(summary[1].0, "MACD");
+    }
+
+    #[test]
+    fn test_bottom_n_summary() {
+        let importances = vec![
+            FactorImportance { factor_index: 0, factor_name: "ATR".to_string(), importance: 0.5 },
+            FactorImportance { factor_index: 1, factor_name: "MACD".to_string(), importance: 0.3 },
+            FactorImportance { factor_index: 2, factor_name: "RSI".to_string(), importance: 0.1 },
+            FactorImportance { factor_index: 3, factor_name: "OBV".to_string(), importance: 0.02 },
+        ];
+        let summary = bottom_n_summary(&importances, 2);
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0].0, "OBV");
+        assert_eq!(summary[1].0, "RSI");
     }
 }

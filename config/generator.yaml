@@ -115,6 +115,16 @@ mcts:
   max_length: 20
   use_max_reward: false
 
+# P8-0: LLM-guided MCTS prior
+# Transforms blind MCTS exploration into semantically guided search
+# by biasing action selection toward factors identified as important.
+llm_mcts_prior:
+  enabled: true
+  importance_recompute_interval: 500  # Gens between importance recalculation
+  importance_boost_scale: 0.5         # Weight boost per unit of PSR drop
+  operator_boost_scale: 0.2           # Weight boost for elite-observed operators
+  min_importance_threshold: 0.05      # Skip factors below this PSR drop
+
 # LLM-guided mutation oracle (P2)
 # Invoked when GA stalls (promotion rate drop or high TFT rate).
 # Generates semantically meaningful formulas via LLM, injects into Layer 0.

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use crate::backtest::factor_importance::FactorImportance;
 use crate::genetic::Genome;
 use crate::genome_decoder;
 
@@ -131,6 +132,8 @@ pub struct OracleContext {
     pub elites: Vec<EliteContext>,
     pub genomes_requested: usize,
     pub cross_symbol_elites: Vec<CrossSymbolElite>,
+    /// P8-0B: Factor importance rankings for prompt enrichment.
+    pub factor_importance: Option<Vec<FactorImportance>>,
 }
 
 /// Result of a single oracle invocation.
@@ -196,6 +199,42 @@ pub fn build_prompt(ctx: &OracleContext) -> String {
         prompt.push_str(&format!("- {} (id: {})\n", name, i));
     }
     prompt.push('\n');
+
+    // P8-0B: Factor importance rankings (Top-10 + Bottom-10)
+    if let Some(ref importance) = ctx.factor_importance {
+        if !importance.is_empty() {
+            prompt.push_str("## Top Important Factors (by PSR impact)\n");
+            prompt.push_str("The following factors have the highest impact on strategy fitness:\n");
+            for (i, fi) in importance.iter().take(10).enumerate() {
+                prompt.push_str(&format!(
+                    "{}. {} (index {}): {:.3} PSR drop when shuffled\n",
+                    i + 1,
+                    fi.factor_name,
+                    fi.factor_index,
+                    fi.importance
+                ));
+            }
+            prompt.push('\n');
+
+            prompt.push_str("## Low-Impact Factors (avoid these)\n");
+            prompt.push_str(
+                "The following factors add noise without meaningful signal:\n",
+            );
+            for (i, fi) in importance.iter().rev().take(10).enumerate() {
+                prompt.push_str(&format!(
+                    "{}. {} (index {}): {:.3} PSR drop\n",
+                    i + 1,
+                    fi.factor_name,
+                    fi.factor_index,
+                    fi.importance
+                ));
+            }
+            prompt.push_str(
+                "\nGenerate formulas that primarily combine top factors.\n\
+                 Explicitly avoid bottom factors as they add noise.\n\n",
+            );
+        }
+    }
 
     // Available operators
     prompt.push_str("## Available Operators (RPN / postfix notation)\n");
@@ -724,6 +763,10 @@ mod tests {
                 is_psr: 1.80,
                 oos_psr: 1.256,
             }],
+            factor_importance: Some(vec![
+                FactorImportance { factor_index: 0, factor_name: "return".to_string(), importance: 0.45 },
+                FactorImportance { factor_index: 6, factor_name: "momentum".to_string(), importance: 0.38 },
+            ]),
         };
 
         let prompt = build_prompt(&ctx);
@@ -737,6 +780,10 @@ mod tests {
         assert!(prompt.contains("Cross-Symbol Successful Formulas"));
         assert!(prompt.contains("TSLA"));
         assert!(prompt.contains("return TS_STD close TS_MEAN DIV"));
+        // P8-0B: Factor importance sections
+        assert!(prompt.contains("Top Important Factors"));
+        assert!(prompt.contains("0.450 PSR drop"));
+        assert!(prompt.contains("Low-Impact Factors"));
     }
 
     #[test]

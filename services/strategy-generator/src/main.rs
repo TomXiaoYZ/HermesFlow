@@ -208,6 +208,44 @@ impl Default for MctsYamlConfig {
     }
 }
 
+/// P8-0F: LLM-guided MCTS prior configuration.
+/// Transforms blind MCTS exploration into semantically guided search
+/// by biasing action selection toward factors identified as important.
+#[derive(Debug, Deserialize, Clone)]
+pub struct LlmMctsPriorConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Generations between factor importance recalculation.
+    #[serde(default = "default_importance_interval")]
+    pub importance_recompute_interval: usize,
+    /// Weight boost per unit of PSR drop for important factors.
+    #[serde(default = "default_importance_boost")]
+    pub importance_boost_scale: f64,
+    /// Weight boost for operators observed in elite formulas.
+    #[serde(default = "default_operator_boost")]
+    pub operator_boost_scale: f64,
+    /// Skip factors below this PSR drop threshold.
+    #[serde(default = "default_min_importance")]
+    pub min_importance_threshold: f64,
+}
+
+fn default_importance_interval() -> usize { 500 }
+fn default_importance_boost() -> f64 { 0.5 }
+fn default_operator_boost() -> f64 { 0.2 }
+fn default_min_importance() -> f64 { 0.05 }
+
+impl Default for LlmMctsPriorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            importance_recompute_interval: default_importance_interval(),
+            importance_boost_scale: default_importance_boost(),
+            operator_boost_scale: default_operator_boost(),
+            min_importance_threshold: default_min_importance(),
+        }
+    }
+}
+
 /// Per-exchange evolution config, loaded from config/generator.yaml.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ExchangeConfig {
@@ -232,6 +270,8 @@ struct GeneratorConfig {
     mcts: MctsYamlConfig,
     #[serde(default)]
     lfdr: backtest::hypothesis::LfdrConfig,
+    #[serde(default)]
+    llm_mcts_prior: LlmMctsPriorConfig,
 }
 
 #[tokio::main]
@@ -259,7 +299,7 @@ async fn main() -> anyhow::Result<()> {
     // Load generator config
     let config_path =
         env::var("GENERATOR_CONFIG").unwrap_or_else(|_| "config/generator.yaml".to_string());
-    let (exchange_configs, oracle_config, threshold_config, ensemble_config, mcts_config, lfdr_config) =
+    let (exchange_configs, oracle_config, threshold_config, ensemble_config, mcts_config, lfdr_config, llm_prior_config) =
         load_exchange_configs(&config_path);
     info!(
         "Loaded {} exchange configs: {:?}",
@@ -326,6 +366,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mcts_config = Arc::new(mcts_config);
     let lfdr_config = Arc::new(lfdr_config);
+    let llm_prior_config = Arc::new(llm_prior_config);
 
     // Spawn two evolution tasks per (exchange, symbol) pair: long_only + long_short
     let mut handles = Vec::new();
@@ -350,6 +391,7 @@ async fn main() -> anyhow::Result<()> {
                 let rayon_pool = rayon_pool.clone();
                 let mcts_pool = mcts_pool.clone();
                 let mcts_cfg = mcts_config.clone();
+                let llm_prior_cfg = llm_prior_config.clone();
                 let sym = symbol.clone();
                 let ex_name = ec.exchange.clone();
                 let handle = tokio::spawn(async move {
@@ -362,6 +404,7 @@ async fn main() -> anyhow::Result<()> {
                         rayon_pool,
                         mcts_pool,
                         mcts_cfg,
+                        llm_prior_cfg,
                         sym.clone(),
                         mode,
                     )
@@ -439,6 +482,7 @@ fn load_exchange_configs(
     backtest::ensemble::EnsembleConfig,
     MctsYamlConfig,
     backtest::hypothesis::LfdrConfig,
+    LlmMctsPriorConfig,
 ) {
     match std::fs::read_to_string(path) {
         Ok(content) => match serde_yaml::from_str::<GeneratorConfig>(&content) {
@@ -469,6 +513,14 @@ fn load_exchange_configs(
                     "lFDR config: enabled={}, fdr_level={}, min_cluster_size={}",
                     cfg.lfdr.enabled, cfg.lfdr.fdr_level, cfg.lfdr.min_cluster_size
                 );
+                info!(
+                    "LLM MCTS prior: enabled={}, interval={}, boost={}, op_boost={}, min_threshold={}",
+                    cfg.llm_mcts_prior.enabled,
+                    cfg.llm_mcts_prior.importance_recompute_interval,
+                    cfg.llm_mcts_prior.importance_boost_scale,
+                    cfg.llm_mcts_prior.operator_boost_scale,
+                    cfg.llm_mcts_prior.min_importance_threshold
+                );
                 (
                     cfg.exchanges,
                     cfg.llm_oracle,
@@ -476,6 +528,7 @@ fn load_exchange_configs(
                     cfg.ensemble,
                     cfg.mcts,
                     cfg.lfdr,
+                    cfg.llm_mcts_prior,
                 )
             }
             Err(e) => {
@@ -487,6 +540,7 @@ fn load_exchange_configs(
                     backtest::ensemble::EnsembleConfig::default(),
                     MctsYamlConfig::default(),
                     backtest::hypothesis::LfdrConfig::default(),
+                    LlmMctsPriorConfig::default(),
                 )
             }
         },
@@ -518,6 +572,7 @@ fn load_exchange_configs(
                 backtest::ensemble::EnsembleConfig::default(),
                 MctsYamlConfig::default(),
                 backtest::hypothesis::LfdrConfig::default(),
+                LlmMctsPriorConfig::default(),
             )
         }
     }
@@ -655,6 +710,7 @@ async fn run_symbol_evolution(
     rayon_pool: Arc<rayon::ThreadPool>,
     mcts_pool: Arc<rayon::ThreadPool>,
     mcts_config: Arc<MctsYamlConfig>,
+    llm_prior_config: Arc<LlmMctsPriorConfig>,
     symbol: String,
     mode: StrategyMode,
 ) -> anyhow::Result<()> {
@@ -991,6 +1047,12 @@ async fn run_symbol_evolution(
     let mut oracle_invocations: usize = 0;
     let mut oracle_injected_total: usize = 0;
 
+    // P8-0A: Factor importance cache — recomputed every importance_interval gens.
+    // Feeds into LLM Oracle prompt (P8-0B) and MCTS prior weights (P8-0D).
+    let mut importance_cache: HashMap<String, Vec<backtest::factor_importance::FactorImportance>> =
+        HashMap::new();
+    let importance_interval: usize = llm_prior_config.importance_recompute_interval;
+
     // P7-2B: Feed CCIPCA with cached feature data (diagnostic only)
     // Features shape: (n_symbols=1, n_factors, n_bars)
     if let Some(cached) = backtester.cache.get(&symbol) {
@@ -1048,11 +1110,44 @@ async fn run_symbol_evolution(
         let promo_stats = ga.evolve();
         promo_tracker.push(promo_stats.clone());
 
-        // ═══ P7-1C: MCTS Seed Injection ═══
+        // ═══ P7-1C / P8-0E: MCTS Seed Injection with LLM-guided prior ═══
         let mut mcts_injected_this_gen = 0usize;
         if mcts_config.enabled && gen > 0 && gen.is_multiple_of(mcts_config.interval) {
             let action_space = mcts::state::ActionSpace::new(feat_offset);
-            let policy = mcts::policy::UniformPolicy;
+            let vocab_size = feat_offset + 23; // 23 operators total
+
+            // P8-0E: Use LlmCachedPolicy when importance data is available
+            let policy: Box<dyn mcts::policy::Policy + Send + Sync> =
+                if llm_prior_config.enabled {
+                    if let Some(importance) = importance_cache.get(&symbol) {
+                        let mut llm_policy =
+                            mcts::policy::LlmCachedPolicy::new(vocab_size, feat_offset);
+                        let elite_tokens: Vec<Vec<usize>> = ga
+                            .collect_elites(3) // 3 per layer × 5 layers = 15 max
+                            .iter()
+                            .take(5)
+                            .map(|(_, g)| g.tokens.clone())
+                            .collect();
+                        mcts::policy::populate_policy_cache(
+                            &mut llm_policy,
+                            importance,
+                            &elite_tokens,
+                            vocab_size,
+                            feat_offset,
+                            &llm_prior_config,
+                        );
+                        info!(
+                            "[{}:{}:{}] Gen {} MCTS: using LLM prior (cache={} entries)",
+                            exchange, symbol, mode_str, gen, llm_policy.cache_size()
+                        );
+                        Box::new(llm_policy)
+                    } else {
+                        Box::new(mcts::policy::UniformPolicy)
+                    }
+                } else {
+                    Box::new(mcts::policy::UniformPolicy)
+                };
+
             let search_config = mcts::search::MctsConfig {
                 budget: mcts_config.budget,
                 exploration_c: mcts_config.exploration_c,
@@ -1068,7 +1163,7 @@ async fn run_symbol_evolution(
             let result = mcts_pool.install(|| {
                 mcts::search::run_mcts_round(
                     &action_space,
-                    &policy,
+                    &*policy,
                     &search_config,
                     |tokens: &[u32]| {
                         let usize_tokens: Vec<usize> = tokens.iter().map(|&t| t as usize).collect();
@@ -1152,6 +1247,22 @@ async fn run_symbol_evolution(
                     "[{}:{}:{}] Gen {} diversity (Hamming): [{}]",
                     exchange, symbol, mode_str, gen, div_strs.join(", ")
                 );
+            }
+        }
+
+        // P8-0A: Recompute factor importance periodically
+        if llm_prior_config.enabled && gen > 0 && gen.is_multiple_of(importance_interval) {
+            if let Some(best) = ga.best_genome.clone() {
+                let fi = backtest::factor_importance::compute_permutation_importance(
+                    &backtester, &best, &symbol, k, mode, &factor_names,
+                );
+                let top_summary = backtest::factor_importance::top_n_summary(&fi, 10);
+                let bottom_summary = backtest::factor_importance::bottom_n_summary(&fi, 10);
+                info!(
+                    "[{}:{}:{}] Gen {} factor importance: top-10={:?} bottom-10={:?}",
+                    exchange, symbol, mode_str, gen, top_summary, bottom_summary
+                );
+                importance_cache.insert(symbol.clone(), fi);
             }
         }
 
@@ -1311,6 +1422,7 @@ async fn run_symbol_evolution(
                         elites,
                         genomes_requested: oracle_config.genomes_per_invocation,
                         cross_symbol_elites,
+                        factor_importance: importance_cache.get(&symbol).cloned(),
                     };
 
                     match llm_oracle::generate_mutations(&oracle_config, &ctx, &existing_tokens)
