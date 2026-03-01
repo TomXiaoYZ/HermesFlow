@@ -259,22 +259,52 @@ mod tests {
     }
 }
 
-/// Time-series Mean
+/// Time-series Mean — P8-3B: row-wise running sum avoids d allocations.
+///
+/// Computes a rolling mean over the last `d` periods along axis 1 (time).
+/// Uses a single-pass running sum per row instead of creating d delayed arrays.
 pub fn ts_mean<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
-    let mut sum = Array2::zeros(x.dim());
-    for i in 0..d {
-        sum = sum + ts_delay(x, i);
+    let (batch, time) = x.dim();
+    if d == 0 {
+        return Array2::zeros((batch, time));
     }
-    sum / (d as f64)
+    let mut out = Array2::zeros((batch, time));
+    let inv_d = 1.0 / d as f64;
+
+    for b in 0..batch {
+        let mut running_sum = 0.0;
+        for t in 0..time {
+            running_sum += x[[b, t]];
+            if t >= d {
+                running_sum -= x[[b, t - d]];
+            }
+            // Before the full window is available, we still divide by d
+            // (zero-padded past values, matching the original delay-based behavior)
+            out[[b, t]] = running_sum * inv_d;
+        }
+    }
+    out
 }
 
-/// Time-series Sum
+/// Time-series Sum — P8-3B: row-wise running sum avoids d allocations.
 pub fn ts_sum<S: Data<Elem = f64>>(x: &ArrayBase<S, Ix2>, d: usize) -> Array2<f64> {
-    let mut sum = Array2::zeros(x.dim());
-    for i in 0..d {
-        sum = sum + ts_delay(x, i);
+    let (batch, time) = x.dim();
+    if d == 0 {
+        return Array2::zeros((batch, time));
     }
-    sum
+    let mut out = Array2::zeros((batch, time));
+
+    for b in 0..batch {
+        let mut running_sum = 0.0;
+        for t in 0..time {
+            running_sum += x[[b, t]];
+            if t >= d {
+                running_sum -= x[[b, t - d]];
+            }
+            out[[b, t]] = running_sum;
+        }
+    }
+    out
 }
 
 /// Time-series Standard Deviation
