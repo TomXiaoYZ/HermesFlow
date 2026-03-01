@@ -10,6 +10,8 @@
 
 P8 基于 Gemini 顾问对 P7 交付物的审查意见，聚焦五个核心改进方向。经过代码验证和事实核查，我们确认其中四项建议有效（一项存在事实错误），并据此设计了五阶段实施方案。
 
+**2026-03-01 更新**: 整合 Gemini 第二轮评审（P7阶段架构分析与评审）的有效建议。经逐项核查，采纳 4 项建议（0B 扩展因子注入、0C canonical RPN hash、2B 精英替换、4C 移除限流门控），拒绝 2 项建议（Phase 1 空间隔离、Phase 3 unsafe uget）。五阶段结构不变，总工期从 11 天调整为 12 天。
+
 **核心目标**：将盲目的 MCTS 搜索升级为语义引导搜索，激活沉睡的降维能力，并构建从被动监控到主动干预的多样性闭环。
 
 ### 交付物概览
@@ -56,6 +58,19 @@ axum::serve(listener, app).await.unwrap();
 - `grep -r "actix" services/strategy-generator/` → 零匹配
 - `Cargo.toml` 无 actix 依赖
 - 所有 HermesFlow 服务统一使用 Axum 0.7，无需框架统一迁移
+
+### 1.2 第二轮评审核查（P7阶段架构分析与评审）
+
+Gemini 在审阅 P7 交付物后提交了第二轮深度评审报告，对 P8 五个 Phase 提出了具体实施建议。逐项核查结果如下：
+
+| Gemini 建议 | 采纳状态 | 理由 |
+|------------|---------|------|
+| 0C: AST 规范化哈希 | **部分采纳** | 无 AST 基础设施（~200-300 LOC 新增），改用轻量 canonical RPN 排序；仅排序 ADD/MUL/TS_CORR 操作数 |
+| 0B: Top-10/Bottom-10 因子 | **采纳** | 增强 LLM prompt 质量，提供正反两面因子信息 |
+| 1: 禁止 PC 追加，双轨变异 | **拒绝** | GA 不计算协方差矩阵，VM 栈模型将特征视为不透明数组。双轨变异破坏均匀抽象，增加热路径分支，违反"变异盲目"原则。P3 多时间框架拼接已证明 append 模式可行。详见 4.1.1 |
+| 2B: 精英替换注入 | **采纳** | 比纯随机注入更有效打破僵局，抹杀 L0 最低 10% 后注入 MCTS/Oracle 种子 |
+| 3B: unsafe uget() | **拒绝** | 每公式仅 2 次 `index_axis()`，非每 time-step。LTO+opt-level=3 已启用。违反 CLAUDE.md "No unsafe without documented justification"。详见 6.0 |
+| 4B: 移除 16MiB 限流 | **采纳** | sqlx 0.8 从根本修复 RUSTSEC-2024-0363，P7 临时门控可安全移除。新增 P8-4C |
 
 ---
 
@@ -170,7 +185,7 @@ if gen > 0 && gen.is_multiple_of(importance_interval) {
         let fi = backtest::factor_importance::compute_permutation_importance(
             &backtester, &best, &symbol, k, mode, &factor_names,
         );
-        let summary = backtest::factor_importance::top_n_summary(&fi, 5);
+        let summary = backtest::factor_importance::top_n_summary(&fi, 10);
         info!(
             "[{}:{}:{}] Gen {} factor importance: {:?}",
             exchange, symbol, mode_str, gen, summary
@@ -190,23 +205,75 @@ if gen > 0 && gen.is_multiple_of(importance_interval) {
 1. 扩展 `OracleContext` 添加 `factor_importance: Option<Vec<FactorImportance>>` 字段
 2. 在 `build_prompt()` 中新增 "Top Important Factors" 段落
 
-**Prompt 新增段落**:
+**Prompt 新增段落**（第二轮评审后扩展为 Top-10 + Bottom-10）:
 ```
 ## Top Important Factors (by PSR impact)
-The following factors have the highest impact on strategy fitness:
+The following 10 factors have the highest impact on strategy fitness:
 1. return_1h (index 0): 0.45 PSR drop when shuffled — most impactful
 2. atr_pct_4h (index 30): 0.38 PSR drop — volatility regime signal
 3. momentum_1d (index 50): 0.31 PSR drop — daily trend strength
 4. volume_ratio_1h (index 3): 0.22 PSR drop — liquidity signal
 5. bb_width_4h (index 34): 0.18 PSR drop — Bollinger squeeze
+6-10: [Next 5 factors with PSR drop values]
 
-Generate formulas that primarily combine these high-impact factors.
-Avoid factors with < 0.05 PSR drop as they add noise without signal.
+## Low-Impact Factors (avoid these)
+The following 10 factors add noise without meaningful signal:
+1-10: [Bottom-10 factors with PSR drop < 0.05]
+
+Generate formulas that primarily combine top factors.
+Explicitly avoid bottom factors as they add noise.
 ```
 
-**效果**: LLM 将生成偏向高重要性因子的公式，替代当前无差别参考所有 75 个因子。
+**效果**: LLM 同时获得正面（高重要性）和反面（噪音）因子信息，生成的公式质量更高。原 Top-5 扩展为 Top-10 重要因子 + Bottom-10 噪音因子，基于 Gemini 第二轮评审建议。
 
-#### P8-0C: LlmCachedPolicy 缓存填充
+#### P8-0C: Canonical RPN Hash（第二轮评审新增）
+
+**文件**: `strategy-generator/src/mcts/policy.rs`（`LlmCachedPolicy::hash_state()`）
+
+**背景**: Gemini 建议使用 AST 规范化哈希（解析 RPN→AST，交换律子节点排序）来提升缓存命中率。经评估，代码库无 AST 基础设施（需新增 ~200-300 LOC），且在 MCTS 紧密循环中 AST 构建的 O(n) 开销可能影响延迟。采用轻量替代方案：在哈希前对 RPN token 序列中交换律算子的操作数按 token 值排序，形成 canonical 形式。
+
+**核心思路**: 对交换律二元算子（ADD=0, MUL=2, TS_CORR=16），确保 `left_operand <= right_operand`，使数学等价表达式产生相同 hash。
+
+```rust
+/// Normalize commutative binary ops in RPN before hashing.
+/// For ADD/MUL/TS_CORR: ensure left_operand <= right_operand.
+fn canonicalize_tokens(tokens: &[u32], feat_offset: u32) -> Vec<u32> {
+    let mut result = tokens.to_vec();
+    let commutative = [0u32, 2, 16]; // ADD, MUL, TS_CORR
+    for i in 0..result.len() {
+        let op = result[i];
+        if op >= feat_offset && commutative.contains(&(op - feat_offset)) {
+            // Find the two operand sub-expressions and sort
+            if let Some((left_start, right_start)) = find_binary_operands(&result, i) {
+                if result[left_start] > result[right_start] {
+                    // Swap operand sub-trees
+                    swap_subtrees(&mut result, left_start, right_start, i);
+                }
+            }
+        }
+    }
+    result
+}
+```
+
+**集成**: 修改 `hash_state()` 在 FNV1a 哈希前先调用 `canonicalize_tokens()`：
+```rust
+fn hash_state(&self, tokens: &[u32], stack_depth: u32) -> u64 {
+    let canonical = canonicalize_tokens(tokens, self.feat_offset);
+    let mut hasher = FnvHasher::default();
+    for &t in &canonical {
+        hasher.write_u32(t);
+    }
+    hasher.write_u32(stack_depth);
+    hasher.finish()
+}
+```
+
+**效果**: 数学等价表达式（如 `A B ADD` 和 `B A ADD`）产生相同 hash，提升缓存命中率。
+
+**不建 AST 的原因**: 代码库无 AST 基础设施（~200-300 LOC 新增），且在 MCTS 紧密循环中 AST 构建的 O(n) 开销可能影响延迟。轻量 canonical RPN 排序在 O(n) 内完成且无额外内存分配（原地排序）。
+
+#### P8-0D: LlmCachedPolicy 缓存填充
 
 **文件**: `strategy-generator/src/mcts/policy.rs` (新增辅助函数), `strategy-generator/src/main.rs`
 
@@ -263,7 +330,7 @@ fn build_llm_prior_weights(
   - prefix `[0, 25]` + stack_depth 2 → 权重向量（偏向二元算子）
 - 典型缓存大小: 50-200 条目（受限于精英数量 × 公式长度）
 
-#### P8-0D: 替换 UniformPolicy
+#### P8-0E: 替换 UniformPolicy
 
 **文件**: `strategy-generator/src/main.rs:1051-1117`
 
@@ -296,7 +363,7 @@ let policy: Box<dyn mcts::policy::Policy> = if let Some(importance) = importance
 
 **兼容性**: 首 500 代（尚无 importance 数据时）自动退化为 UniformPolicy。
 
-#### P8-0E: 配置
+#### P8-0F: 配置
 
 **文件**: `config/generator.yaml`
 
@@ -358,6 +425,16 @@ P7 已部署 CCIPCA (Covariance-free Incremental PCA) 用于诊断监控。Phase
 - 零向后兼容问题（现有基因组 token 0-74 仍然有效）
 - GA 可以自然发现 PC 特征的价值（如果有用，进化会选择它们）
 - 如果 PC 特征无用，不会影响现有性能
+
+#### 4.1.1 设计决策：为什么拒绝"空间隔离 + 双轨变异"
+
+Gemini 第二轮评审建议禁止将 PC 追加到原始特征后，理由是"混用会使协方差矩阵陷入奇异状态，引发适应度景观欺骗"。经代码验证，该论点不成立：
+
+1. **GA 不计算协方差矩阵** — 适应度由 PSR（Walk-Forward OOS 评估）决定，不涉及特征空间的协方差。
+2. **VM 栈模型将特征视为不透明数组** — `index_axis(Axis(1), token)` 对所有 feature token 一视同仁，无"空间"概念。
+3. **P3 先例** — 多时间框架拼接（25×3=75）已证明 append 模式对 VM/GA 完全兼容，且无共线性问题。
+4. **双轨变异破坏核心抽象** — RPN 栈 VM 的优雅之处在于"features are features, operators are operators, mutation is blind"。添加空间标记违反此原则。
+5. **热路径性能** — 双轨方案在 VM `execute()` 中添加额外分支判断，增加分支预测失败开销。
 
 ### 4.2 实施细节
 
@@ -534,6 +611,7 @@ diversity_trigger:
   trigger_action: "mcts_and_oracle"  # "mcts_only" | "oracle_only" | "mcts_and_oracle"
   cooldown_gens: 100           # Min gens between emergency injections
   random_injection_count: 10   # Extra random genomes injected into L0 on trigger
+  elitist_cull_ratio: 0.10     # Fraction of L0 weakest to cull on trigger (second review)
 ```
 
 #### P8-2B: Trigger Logic
@@ -583,6 +661,16 @@ if gen.is_multiple_of(50) {
                 effective_feat_offset,
             );
             ga.inject_genomes(0, random_genomes);
+
+            // P8-2B: Elitist replacement — kill lowest 10% in L0, inject MCTS seeds
+            let cull_count = (ga.layer_size(0) as f64
+                * diversity_trigger_config.elitist_cull_ratio).ceil() as usize;
+            ga.cull_weakest(0, cull_count);
+            info!(
+                "[{}:{}:{}] Gen {} DIVERSITY: culled {} weakest from L0",
+                exchange, symbol, mode_str, gen, cull_count
+            );
+
             gens_since_diversity_trigger = 0;
         } else {
             gens_since_diversity_trigger += 50;
@@ -633,6 +721,17 @@ if token < self.feat_offset {
 ```
 
 `ndarray::index_axis()` 在 debug 模式下有 bounds check，release 模式下编译器可能优化掉。**未发现任何运行时 panic 证据**。
+
+#### Gemini 第二轮建议：unsafe uget() — 再次拒绝
+
+Gemini 在第二轮评审中再次建议使用 `unsafe { arr.uget() }` 消除边界检查。经量化分析：
+
+- **热路径频率**: 每个公式执行仅 2 次 `index_axis()`（非每 time-step）
+- **编译优化**: `Cargo.toml` 已配置 `lto = true, opt-level = 3, codegen-units = 1`
+- **安全规则**: CLAUDE.md 明确规定 "No unsafe without documented justification"
+- **无性能证据**: 未发现任何 panic 或性能瓶颈报告
+
+如果未来性能分析（flamegraph）证实 bounds check 占比 >1%，可在 P9 中以 SAFETY 注释 + wrapper 函数形式引入。
 
 **实际优化机会**:
 1. 在进入热循环前一次性验证所有 token（避免每次迭代检查）
@@ -802,6 +901,16 @@ let psr_factor = Decimal::ONE
         .min(Decimal::from_f64(config.psr_max_reward).unwrap_or(dec!(3.0)));
 ```
 
+#### P8-4C: 移除 P7 临时 16MiB 序列化限流门控（第二轮评审新增）
+
+**文件**: `strategy-generator/src/main.rs`（搜索 `16_000_000`）
+
+**背景**: P7 为缓解 RUSTSEC-2024-0363 在持久化路径设立了 16MiB 负载门控。sqlx 0.8 从根本上修复了长度前缀截断溢出漏洞。
+
+**变更**: 升级完成并验证后，移除该门控代码，释放数据库最大存取吞吐力。
+
+**验证**: 发送 >16MiB 的测试负载，确认 sqlx 0.8 正确处理。
+
 ### 7.2 验证计划
 
 1. **编译测试**: `cargo build --workspace` 无错误
@@ -861,7 +970,8 @@ mkt_equity_candles (1h/4h/1d)
 
 | 项目 | 推迟原因 |
 |------|---------|
-| unsafe `uget()` in VM | 风险大于收益，当前无 panic 证据 |
+| unsafe `uget()` in VM | 风险大于收益，当前无 panic 证据。需 flamegraph 证实 bounds check 占比 >1% 后再考虑（以 SAFETY 注释 + wrapper 函数形式引入） |
+| 完整 AST 规范化哈希 | P8-0C 采用轻量 canonical RPN 排序。当 LLM 缓存命中率证明不足时，再考虑建立 AST 基础设施（~200-300 LOC） |
 | 全局 f64→Decimal (VM 内部) | ndarray 不支持 Decimal，需重写 VM |
 | CCIPCA 自适应 k 选择 | 需要更多运行数据确定最优 k |
 | 多 symbol 共享 PC 空间 | 需要跨 symbol 协方差分析 |
@@ -872,20 +982,21 @@ mkt_equity_candles (1h/4h/1d)
 ## 11. 实施排期
 
 ```
-Phase 0 (LLM Prior):           ~3 天
+Phase 0 (LLM Prior):           ~3.5 天
   P8-0A Factor Importance 接入   1 天
-  P8-0B LLM Prompt 增强          0.5 天
-  P8-0C Policy 缓存填充           1 天
-  P8-0D UniformPolicy 替换        0.5 天
+  P8-0B LLM Prompt 增强 (Top-10/Bottom-10)  0.5 天
+  P8-0C Canonical RPN Hash (新增) 0.5 天
+  P8-0D Policy 缓存填充           1 天
+  P8-0E UniformPolicy 替换        0.5 天
 
 Phase 1 (CCIPCA Active):       ~2 天
   P8-1A Feature Projection       1 天
   P8-1B Tensor Augmentation      0.5 天
   P8-1C PC Factor Names          0.5 天
 
-Phase 2 (Diversity Trigger):    ~1 天
+Phase 2 (Diversity Trigger):    ~1.25 天
   P8-2A 配置                      0.25 天
-  P8-2B 触发逻辑                  0.5 天
+  P8-2B 触发逻辑 + 精英替换 (新增) 0.75 天
   P8-2C 监控指标                  0.25 天
 
 Phase 3 (VM Optimization):      ~2 天
@@ -893,11 +1004,12 @@ Phase 3 (VM Optimization):      ~2 天
   P8-3B Zip TS Operators          1 天
   P8-3C Conditional Sanitization  0.5 天
 
-Phase 4 (sqlx + Decimal):       ~3 天
+Phase 4 (sqlx + Decimal):       ~3.25 天
   P8-4A sqlx 迁移                 2 天
   P8-4B f64→Decimal               1 天
+  P8-4C 移除 16MiB 限流 (新增)    0.25 天
 
-总计: ~11 天
+总计: ~12 天
 ```
 
 ---
