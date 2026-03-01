@@ -6,6 +6,9 @@
 
 use crate::backtest::ensemble::{DynamicWeightYamlConfig, StrategyCandidate};
 use ndarray::Array2;
+use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 
 /// Per-strategy weight adjustment breakdown.
 #[derive(Debug, Clone)]
@@ -108,63 +111,70 @@ pub fn adjust_weights(
     let n = hrp_weights.len();
     assert_eq!(n, candidates.len());
 
-    let mut adjustments = Vec::with_capacity(n);
-    let mut raw_weights = vec![0.0_f64; n];
+    // P8-4B: Convert to Decimal for financial-grade precision
+    let d_psr_scale = Decimal::from_f64_retain(config.psr_reward_scale).unwrap_or(dec!(0.2));
+    let d_psr_max = Decimal::from_f64_retain(config.psr_max_reward).unwrap_or(dec!(3.0));
+    let d_util_floor = Decimal::from_f64_retain(config.utilization_floor).unwrap_or(dec!(0.3));
+    let d_penalty_rate =
+        Decimal::from_f64_retain(config.crowding_penalty_rate).unwrap_or(dec!(0.3));
+    let d_penalty_max =
+        Decimal::from_f64_retain(config.crowding_max_penalty).unwrap_or(dec!(0.8));
 
-    // Step 1: Compute per-strategy PSR and utilization factors
-    let mut psr_factors = vec![1.0_f64; n];
-    let mut util_factors = vec![1.0_f64; n];
+    let mut adjustments = Vec::with_capacity(n);
+    let mut d_weights = vec![Decimal::ZERO; n];
+
+    // Step 1: Compute per-strategy PSR and utilization factors (Decimal)
+    let mut d_psr_factors = vec![Decimal::ONE; n];
+    let mut d_util_factors = vec![Decimal::ONE; n];
 
     for i in 0..n {
-        // PSR reward: boost proportional to OOS PSR (clamped to [0, max])
-        let clamped_psr = candidates[i].oos_psr.max(0.0).min(config.psr_max_reward);
-        psr_factors[i] = 1.0 + config.psr_reward_scale * clamped_psr;
+        let d_oos_psr =
+            Decimal::from_f64_retain(candidates[i].oos_psr).unwrap_or(Decimal::ZERO);
+        let clamped = d_oos_psr.max(Decimal::ZERO).min(d_psr_max);
+        d_psr_factors[i] = Decimal::ONE + d_psr_scale * clamped;
 
-        // Utilization decay: penalize low-utilization strategies
-        util_factors[i] = candidates[i].utilization.max(config.utilization_floor);
+        let d_util =
+            Decimal::from_f64_retain(candidates[i].utilization).unwrap_or(Decimal::ZERO);
+        d_util_factors[i] = d_util.max(d_util_floor);
     }
 
-    // Step 2: Compute crowding penalties
+    // Step 2: Compute crowding penalties (Decimal)
     let crowding_pairs = detect_crowding(corr_matrix, config.crowding_corr_threshold);
-    let mut crowding_penalties = vec![0.0_f64; n];
+    let mut d_crowding = vec![Decimal::ZERO; n];
 
     for pair in &crowding_pairs {
-        // Penalize the strategy with lower OOS PSR in the pair
         let (weaker, _stronger) = if candidates[pair.idx_i].oos_psr < candidates[pair.idx_j].oos_psr
         {
             (pair.idx_i, pair.idx_j)
         } else {
             (pair.idx_j, pair.idx_i)
         };
-
-        // Accumulate penalty (capped at max)
-        crowding_penalties[weaker] = (crowding_penalties[weaker] + config.crowding_penalty_rate)
-            .min(config.crowding_max_penalty);
+        d_crowding[weaker] = (d_crowding[weaker] + d_penalty_rate).min(d_penalty_max);
     }
 
     // Step 3: Apply all factors multiplicatively
     for i in 0..n {
-        raw_weights[i] =
-            hrp_weights[i] * psr_factors[i] * util_factors[i] * (1.0 - crowding_penalties[i]);
+        let d_hrp = Decimal::from_f64_retain(hrp_weights[i]).unwrap_or(Decimal::ZERO);
+        d_weights[i] = d_hrp * d_psr_factors[i] * d_util_factors[i] * (Decimal::ONE - d_crowding[i]);
     }
 
     // Step 4: Renormalize to sum = 1.0
-    let total: f64 = raw_weights.iter().sum();
-    if total > 1e-12 {
-        for w in &mut raw_weights {
+    let total: Decimal = d_weights.iter().copied().sum();
+    if total > dec!(0.000000000001) {
+        for w in &mut d_weights {
             *w /= total;
         }
     }
 
-    // Build adjustment records
+    // Build adjustment records (convert back to f64 for ndarray compatibility)
     for i in 0..n {
         adjustments.push(WeightAdjustment {
             strategy_idx: i,
             hrp_weight: hrp_weights[i],
-            psr_factor: psr_factors[i],
-            utilization_factor: util_factors[i],
-            crowding_penalty: crowding_penalties[i],
-            final_weight: raw_weights[i],
+            psr_factor: d_psr_factors[i].to_f64().unwrap_or(1.0),
+            utilization_factor: d_util_factors[i].to_f64().unwrap_or(1.0),
+            crowding_penalty: d_crowding[i].to_f64().unwrap_or(0.0),
+            final_weight: d_weights[i].to_f64().unwrap_or(0.0),
         });
     }
 
@@ -180,10 +190,15 @@ pub fn adjust_weights(
 /// Old and new vectors may have different lengths (strategies added/removed).
 /// Uses strategy symbol+mode as key for matching.
 pub fn compute_turnover(old_weights: &[(String, f64)], new_weights: &[(String, f64)]) -> f64 {
-    let old_map: std::collections::HashMap<&str, f64> =
-        old_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    let new_map: std::collections::HashMap<&str, f64> =
-        new_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    // P8-4B: Decimal precision for turnover affecting real money
+    let old_map: std::collections::HashMap<&str, Decimal> = old_weights
+        .iter()
+        .map(|(k, v)| (k.as_str(), Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO)))
+        .collect();
+    let new_map: std::collections::HashMap<&str, Decimal> = new_weights
+        .iter()
+        .map(|(k, v)| (k.as_str(), Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO)))
+        .collect();
 
     let mut all_keys: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (k, _) in old_weights {
@@ -193,22 +208,26 @@ pub fn compute_turnover(old_weights: &[(String, f64)], new_weights: &[(String, f
         all_keys.insert(k.as_str());
     }
 
-    let total_change: f64 = all_keys
+    let total_change: Decimal = all_keys
         .iter()
         .map(|k| {
-            let old_w = old_map.get(k).copied().unwrap_or(0.0);
-            let new_w = new_map.get(k).copied().unwrap_or(0.0);
+            let old_w = old_map.get(k).copied().unwrap_or(Decimal::ZERO);
+            let new_w = new_map.get(k).copied().unwrap_or(Decimal::ZERO);
             (new_w - old_w).abs()
         })
         .sum();
 
-    0.5 * total_change
+    let half = dec!(0.5);
+    (half * total_change).to_f64().unwrap_or(0.0)
 }
 
 /// Compute turnover cost: turnover * cost_rate.
 /// Cost rate is per-exchange (e.g., IBKR=0.0001, Binance=0.001).
 pub fn turnover_cost(turnover: f64, cost_rate: f64) -> f64 {
-    turnover * cost_rate
+    // P8-4B: Decimal precision for cost calculation
+    let d_turnover = Decimal::from_f64_retain(turnover).unwrap_or(Decimal::ZERO);
+    let d_rate = Decimal::from_f64_retain(cost_rate).unwrap_or(Decimal::ZERO);
+    (d_turnover * d_rate).to_f64().unwrap_or(0.0)
 }
 
 // ── Deadzone + L1 Regularization (P6b-C1) ────────────────────────────
@@ -229,25 +248,30 @@ pub fn apply_deadzone_l1(
     l1_lambda: f64,
     regime_multiplier: f64,
 ) {
-    let old_map: std::collections::HashMap<&str, f64> =
-        old_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    // P8-4B: Decimal precision for weight adjustment affecting real money
+    let old_map: std::collections::HashMap<&str, Decimal> = old_weights
+        .iter()
+        .map(|(k, v)| (k.as_str(), Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO)))
+        .collect();
 
-    let effective_lambda = (l1_lambda * regime_multiplier).min(0.5);
+    let d_threshold = Decimal::from_f64_retain(threshold).unwrap_or(Decimal::ZERO);
+    let d_lambda = Decimal::from_f64_retain(l1_lambda).unwrap_or(Decimal::ZERO);
+    let d_multiplier = Decimal::from_f64_retain(regime_multiplier).unwrap_or(Decimal::ONE);
+    let effective_lambda = (d_lambda * d_multiplier).min(dec!(0.5));
 
     for (key, weight) in new_weights.iter_mut() {
         if let Some(&old_w) = old_map.get(key.as_str()) {
-            let delta = *weight - old_w;
+            let d_new = Decimal::from_f64_retain(*weight).unwrap_or(Decimal::ZERO);
+            let delta = d_new - old_w;
 
-            // Deadzone: suppress changes below threshold
-            if delta.abs() < threshold {
-                *weight = old_w;
+            if delta.abs() < d_threshold {
+                *weight = old_w.to_f64().unwrap_or(*weight);
                 continue;
             }
 
-            // L1: shrink delta toward zero
-            *weight = old_w + delta * (1.0 - effective_lambda);
+            let adjusted = old_w + delta * (Decimal::ONE - effective_lambda);
+            *weight = adjusted.to_f64().unwrap_or(*weight);
         }
-        // New strategies (no old weight) keep their target weight unchanged
     }
 
     // Renormalize
@@ -312,8 +336,11 @@ pub fn apply_hysteresis_deadzone(
     base_threshold: f64,
     fee_multiplier: f64,
 ) -> Vec<DeadzoneMetadata> {
-    let old_map: std::collections::HashMap<&str, f64> =
-        old_weights.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    // P8-4B: Decimal precision for weight adjustment affecting real money
+    let old_map: std::collections::HashMap<&str, Decimal> = old_weights
+        .iter()
+        .map(|(k, v)| (k.as_str(), Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO)))
+        .collect();
 
     let param_map: std::collections::HashMap<&str, &AssetDeadzone> =
         asset_params.iter().map(|a| (a.key.as_str(), a)).collect();
@@ -321,45 +348,53 @@ pub fn apply_hysteresis_deadzone(
     let mut metadata = Vec::with_capacity(new_weights.len());
 
     for (key, weight) in new_weights.iter_mut() {
-        let old_w = old_map.get(key.as_str()).copied().unwrap_or(0.0);
-        let delta = *weight - old_w;
+        let d_old = old_map.get(key.as_str()).copied().unwrap_or(Decimal::ZERO);
+        let d_new = Decimal::from_f64_retain(*weight).unwrap_or(Decimal::ZERO);
+        let d_delta = d_new - d_old;
 
-        // Compute per-asset threshold
+        // Compute per-asset threshold (stays f64 — uses sqrt which Decimal lacks)
         let threshold = if let Some(params) = param_map.get(key.as_str()) {
             compute_asset_threshold(params, base_threshold, fee_multiplier)
         } else {
-            base_threshold // fallback for unknown assets
+            base_threshold
         };
+        let d_threshold = Decimal::from_f64_retain(threshold).unwrap_or(Decimal::ZERO);
 
-        let triggered = delta.abs() > threshold;
+        let triggered = d_delta.abs() > d_threshold;
+        let delta_f64 = d_delta.to_f64().unwrap_or(0.0);
 
         if !triggered {
-            // Within dead-zone: no trade
             tracing::debug!(
-                asset = key.as_str(), %threshold, %delta, "dead-zone: suppressed (|delta| <= threshold)"
+                asset = key.as_str(), %threshold, delta = %delta_f64,
+                "dead-zone: suppressed (|delta| <= threshold)"
             );
-            *weight = old_w;
+            *weight = d_old.to_f64().unwrap_or(*weight);
             metadata.push(DeadzoneMetadata {
                 key: key.clone(),
                 threshold,
-                delta_before: delta,
+                delta_before: delta_f64,
                 delta_after: 0.0,
                 triggered: false,
             });
         } else {
-            // Beyond dead-zone: partial rebalance to boundary
-            // w_new = w_old + sign(Δ) * (|Δ| - δ_i)
-            let boundary_delta = delta - threshold * delta.signum();
+            let d_sign = if d_delta > Decimal::ZERO {
+                Decimal::ONE
+            } else {
+                -Decimal::ONE
+            };
+            let boundary_delta = d_delta - d_threshold * d_sign;
+            let boundary_f64 = boundary_delta.to_f64().unwrap_or(0.0);
             tracing::debug!(
-                asset = key.as_str(), %threshold, %delta, %boundary_delta,
+                asset = key.as_str(), %threshold, delta = %delta_f64,
+                boundary_delta = %boundary_f64,
                 "dead-zone: triggered, partial rebalance to boundary"
             );
-            *weight = old_w + boundary_delta;
+            *weight = (d_old + boundary_delta).to_f64().unwrap_or(*weight);
             metadata.push(DeadzoneMetadata {
                 key: key.clone(),
                 threshold,
-                delta_before: delta,
-                delta_after: boundary_delta,
+                delta_before: delta_f64,
+                delta_after: boundary_f64,
                 triggered: true,
             });
         }

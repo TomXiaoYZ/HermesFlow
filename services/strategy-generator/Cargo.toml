@@ -19,6 +19,7 @@ uuid = { workspace = true }
 ndarray = { workspace = true }
 futures = { workspace = true }
 rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }
 axum = { workspace = true }
 hyper = { workspace = true }
 

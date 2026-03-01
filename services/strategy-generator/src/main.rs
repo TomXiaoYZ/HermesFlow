@@ -1675,14 +1675,9 @@ async fn run_symbol_evolution(
             });
             let payload_str = payload.to_string();
 
-            // P7-3B: Defense-in-depth payload size guard (RUSTSEC-2024-0363 mitigation)
-            const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024; // 16 MiB — our payloads are typically <10 KiB
-            if payload_str.len() > MAX_PAYLOAD_BYTES {
-                error!(
-                    "[{}:{}:{}] Gen {} payload exceeds {}B limit ({}B) — skipping DB persist",
-                    exchange, symbol, mode_str, gen, MAX_PAYLOAD_BYTES, payload_str.len()
-                );
-            }
+            // P8-4C: Removed P7-3B 16MiB payload size guard.
+            // sqlx 0.8 fixes RUSTSEC-2024-0363 at the protocol level,
+            // making the defense-in-depth gate unnecessary.
 
             // Redis pub/sub + state
             let _: () = redis_conn
