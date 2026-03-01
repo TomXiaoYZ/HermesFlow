@@ -34,7 +34,10 @@ src/
   vm/
     mod.rs             # VM module exports
     ops.rs             # 23 opcodes: arithmetic, comparison, logic, stack ops
+                       #   P8-3B: ts_mean/ts_sum rewritten as O(n) running-sum (was O(n·d))
     vm.rs              # Stack-based VM: executes RPN genome → signal value
+                       #   P8-3A: Pre-execution shape guard (validates feature token indices)
+                       #   P8-3C: Conditional NaN sanitization (DIV/SIGNED_POWER/TS_CORR/LOG/SQRT only)
     engine.rs          # VM engine: batch evaluation over data frames
 ```
 

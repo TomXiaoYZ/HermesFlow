@@ -12,13 +12,17 @@ src/
                        #   P7-1C: MCTS integration into evolution loop (inject seeds → ALPS L0)
                        #   P7-2B: CCIPCA diagnostic (lazy init, zero-copy ArrayView)
                        #   P7-3A: Removed hardcoded DATABASE_URL fallback
-                       #   P7-3B: 16MiB payload size guard before DB persist
                        #   P7-5B: Genome diversity (Hamming) logging every 50 gens
+                       #   P8-0E: UniformPolicy → LlmCachedPolicy; importance recompute every 500 gens
+                       #   P8-1B: CCIPCA augmentation 75→80 features (PC0..PC4) after 200 obs
+                       #   P8-2B: DiversityTriggerConfig + active L3/L4 intervention + elitist cull
+                       #   P8-4C: Removed P7-3B 16MiB guard (sqlx 0.8 fixes RUSTSEC-2024-0363)
   genetic.rs           # Core GA: ALPS layers, selection, crossover, mutation, promotion
                        #   - ALPS: 5 layers [5,13,34,89,500 gens], 100 genomes/layer
                        #   - Dual-mode: long_only + long_short per (exchange, symbol)
                        #   - Operator pruning: 14/23 opcodes for new genomes
                        #   P7-5B: hamming_distance() + layer_diversity() metrics
+                       #   P8-2C: layer_size(), generate_random_genomes(), cull_weakest()
   genome_decoder.rs    # Decodes integer genome → RPN formula string (human-readable)
   factor_loader.rs     # Loads factor definitions from YAML config
   llm_oracle.rs        # LLM-guided mutation (P2): Bedrock/Claude generates RPN formulas
@@ -39,15 +43,17 @@ src/
     ensemble_weights.rs # P5: Dynamic weight adjustments (PSR reward, utilization, crowding)
                        #   P6-2A: Hysteresis dead-zone with per-asset thresholds
                        #   P7-3D: debug! tracing for dead-zone trigger/suppress decisions
+                       #   P8-4B: Internal calculations converted to rust_decimal::Decimal
     hrp.rs             # P5: Hierarchical Risk Parity allocation
     hypothesis.rs      # P6-1B: Local FDR hypothesis testing with n-gram Jaccard clustering
                        #   P7-2A: LfdrConfig #[derive(Deserialize)] for YAML config
                        #   [Feature gate: lfdr.enabled, wired into ensemble selection]
     incremental_pca.rs # P6-1C: CCIPCA incremental PCA, O(n·k), ndarray::Zip zero-alloc
                        #   P7-2B: update_view(ArrayView1) zero-copy method
-                       #   [Active as diagnostic; token remapping deferred to P8]
+                       #   P8-1A: project_features() augments feature tensor with PC columns
     factor_importance.rs # P7-5A: Permutation-based factor importance attribution
                        #   Shuffles each factor, measures PSR drop, returns sorted importances
+                       #   P8-0A: bottom_n_summary() returns Bottom-10 noise factors
 
   mcts/                # P6-4A→P7-1: MCTS Symbolic Regression (integrated in P7)
     mod.rs             #   Module entry: re-exports arena, state, search, policy
@@ -60,6 +66,9 @@ src/
                        #   P7-1D: Integration tests (valid genomes, token conversion)
     policy.rs          #   Policy trait: UniformPolicy, HeuristicPolicy, LlmCachedPolicy
                        #   P6-4C: LLM semantic prior with HashMap cache
+                       #   P8-0B: build_llm_prior_weights() — factor importance + elite operator prior
+                       #   P8-0C: canonicalize_rpn() — commutative operand sorting for cache hits
+                       #   P8-0D: LlmCachedPolicy wired to semantic prior (replaces UniformPolicy)
                        #   [Gate: mcts.enabled; wired into evolution loop via dedicated Rayon pool]
 ```
 
@@ -116,19 +125,20 @@ src/
 - **CCIPCA Diagnostic** (P7-2B): Zero-copy ArrayView, lazy-initialized per symbol, explained variance logging
 - **Factor Importance** (P7-5A): Permutation importance — shuffle factor column, measure PSR drop
 - **Genome Diversity** (P7-5B): Per-ALPS-layer Hamming distance, sampled max 50 pairs, logged every 50 gens
-- **Security** (P7-3A/3B): Removed hardcoded DB credentials, 16MiB sqlx payload guard
+- **Security** (P7-3A): Removed hardcoded DB credentials
 - **Dead-Zone Tracing** (P7-3D): debug! per-asset threshold/delta/triggered logging in hysteresis
 
-### P8 Planned (Architecture Design complete, implementation pending)
-- **LLM-Guided MCTS Prior** (P8-0): Wire FactorImportance → LlmCachedPolicy; replace UniformPolicy with semantic prior
-- **CCIPCA Active Remapping** (P8-1): project_features() augments 75→80 features (5 PC columns)
-- **Diversity-Triggered Injection** (P8-2): L3/L4 Hamming diversity triggers emergency MCTS + Oracle
-- **VM Hot Path Optimization** (P8-3): Pre-execution shape guard, ndarray::Zip TS ops, conditional NaN sanitization
-- **sqlx 0.8 + Decimal** (P8-4): RUSTSEC-2024-0363 fix, f64→Decimal in ensemble_weights/shadow paths
+### P8 Implemented
+- **LLM-Guided MCTS Prior** (P8-0): FactorImportance → build_llm_prior_weights() → LlmCachedPolicy; canonical RPN hash
+- **CCIPCA Active Remapping** (P8-1): project_features() augments 75→80 features (5 PC columns after 200 obs)
+- **Diversity-Triggered Injection** (P8-2): L3/L4 Hamming diversity triggers random injection + elitist cull
+- **VM Hot Path Optimization** (P8-3): Pre-execution shape guard, O(n) running-sum ts_mean/ts_sum, conditional NaN sanitization
+- **sqlx 0.8 + Decimal** (P8-4): RUSTSEC-2024-0363 fix, f64→Decimal in ensemble_weights, removed 16MiB guard
 
 ## Dependencies
 - `common`, `backtest-engine` (workspace crates)
 - `aws-sdk-bedrockruntime` (LLM oracle)
 - `ndarray` (P6-1C: CCIPCA matrix operations)
+- `rust_decimal`, `rust_decimal_macros` (P8-4B: financial-grade precision)
 - TimescaleDB (strategy persistence, backtest results)
 - Redis (market data subscription)

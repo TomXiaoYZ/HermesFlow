@@ -1,6 +1,6 @@
 # PROJECT_INDEX.md - HermesFlow
 
-> Auto-generated project index. Last updated: 2026-02-27
+> Auto-generated project index. Last updated: 2026-03-01
 
 ## Overview
 
@@ -108,9 +108,9 @@ graph TB
 | [data-engine](services/data-engine/) | Rust | 8081→8080 | Market data aggregation, 12+ data source connectors, candle aggregation, data quality monitoring | `src/main.rs` |
 | [gateway](services/gateway/) | Rust | 8080 | API gateway, WebSocket router, JWT auth, CORS, rate limiting, reverse proxy | `src/main.rs` |
 | [strategy-engine](services/strategy-engine/) | Rust | 8082 | Real-time strategy execution, event-driven signals via Redis Pub/Sub, portfolio management | `src/main.rs` |
-| [strategy-generator](services/strategy-generator/) | Rust | 8082→8084 | GA strategy evolution, ALPS, PSR fitness, LLM oracle, MCTS integration (P7), lFDR/CCIPCA (P7) | `src/main.rs` |
+| [strategy-generator](services/strategy-generator/) | Rust | 8082→8084 | GA strategy evolution, ALPS, PSR fitness, LLM oracle, MCTS semantic prior (P8), CCIPCA augmentation (P8), diversity trigger (P8), Decimal weights (P8) | `src/main.rs` |
 | [execution-engine](services/execution-engine/) | Rust | 8083 | Trade execution (IBKR, Futu, Solana); risk checks, shadow trading (P6), shadow promotion guard (P7) | `src/main.rs` |
-| [backtest-engine](services/backtest-engine/) | Rust | (library) | Factor computation (ATR, MACD, Bollinger, etc.), VM-based strategy execution | `src/lib.rs` |
+| [backtest-engine](services/backtest-engine/) | Rust | (library) | Factor computation (ATR, MACD, Bollinger, etc.), VM-based strategy execution, P8 shape guard + O(n) TS ops | `src/lib.rs` |
 | [common](services/common/) | Rust | (library) | Shared types, event bus, health endpoints, metrics, telemetry | `src/lib.rs` |
 | [user-management](services/user-management/) | Java | 8086 | RBAC, JWT auth, multi-tenancy (Spring Boot 3.2) | `UserManagementApplication.java` |
 | [futu-bridge](services/futu-bridge/) | Python | 8088 | HTTP bridge to Futu OpenD for HK stocks (FastAPI) | `app/main.py` |
@@ -187,7 +187,7 @@ graph LR
 |------|---------|
 | `config/factors.yaml` | Factor definitions for crypto backtest/strategy engines |
 | `config/factors-stock.yaml` | 25 factor definitions for stock (Polygon) evolution |
-| `config/generator.yaml` | Strategy generator: exchanges, multi-timeframe, thresholds, LLM oracle, ensemble, MCTS, lFDR |
+| `config/generator.yaml` | Strategy generator: exchanges, multi-timeframe, thresholds, LLM oracle, ensemble, MCTS, lFDR, diversity_trigger (P8), llm_mcts_prior (P8) |
 | `Cargo.toml` | Rust workspace definition + shared dependencies |
 | `docker-compose.yml` | Full service orchestration (19 containers) |
 | `docker-compose.prod.yml` | Production overrides |
@@ -237,9 +237,11 @@ graph LR
 - **Poisson Staleness Detection** (P6): Per-symbol EWMA tick rate with dynamic alert thresholds
 - **Permutation Factor Importance** (P7): Shuffle each factor column, measure PSR drop for attribution
 - **Genome Diversity Metrics** (P7): Per-ALPS-layer Hamming distance monitoring every 50 generations
-- **LLM-Guided MCTS Prior** (P8, planned): Factor-importance-weighted policy prior for semantic MCTS search
-- **CCIPCA Active Remapping** (P8, planned): PC feature augmentation (75→80 features) from incremental PCA
-- **Diversity-Triggered Injection** (P8, planned): Active feedback loop from passive Hamming diversity logging
+- **LLM-Guided MCTS Prior** (P8): Factor-importance-weighted policy prior with canonical RPN hash for semantic MCTS search
+- **CCIPCA Active Remapping** (P8): PC feature augmentation (75→80 features) from incremental PCA after 200 observations
+- **Diversity-Triggered Injection** (P8): Active L3/L4 Hamming diversity trigger with elitist cull + random injection
+- **VM Shape Guard + O(n) TS Ops** (P8): Pre-execution feature index validation, running-sum ts_mean/ts_sum, conditional NaN sanitization
+- **Decimal Financial Precision** (P8): rust_decimal::Decimal for HRP weights, crowding penalties, turnover cost in ensemble_weights
 
 ## File Statistics
 
