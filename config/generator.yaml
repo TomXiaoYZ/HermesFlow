@@ -125,6 +125,17 @@ llm_mcts_prior:
   operator_boost_scale: 0.2           # Weight boost for elite-observed operators
   min_importance_threshold: 0.05      # Skip factors below this PSR drop
 
+# P8-2: Diversity-triggered emergency injection
+# Converts passive Hamming diversity logging into active intervention
+# when high-age ALPS layers converge excessively (stagnation signal).
+diversity_trigger:
+  enabled: true
+  min_diversity_l3: 0.25       # L3 (age 89) threshold
+  min_diversity_l4: 0.20       # L4 (age 500) threshold
+  cooldown_gens: 100           # Min gens between emergency injections
+  random_injection_count: 10   # Extra random genomes injected into L0 on trigger
+  elitist_cull_ratio: 0.10     # Fraction of L0 weakest to cull on trigger
+
 # LLM-guided mutation oracle (P2)
 # Invoked when GA stalls (promotion rate drop or high TFT rate).
 # Generates semantically meaningful formulas via LLM, injects into Layer 0.

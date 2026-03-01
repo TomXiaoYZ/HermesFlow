@@ -246,6 +246,42 @@ impl Default for LlmMctsPriorConfig {
     }
 }
 
+/// P8-2A: Diversity-triggered emergency injection config.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiversityTriggerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_min_diversity_l3")]
+    pub min_diversity_l3: f64,
+    #[serde(default = "default_min_diversity_l4")]
+    pub min_diversity_l4: f64,
+    #[serde(default = "default_diversity_cooldown")]
+    pub cooldown_gens: usize,
+    #[serde(default = "default_random_injection_count")]
+    pub random_injection_count: usize,
+    #[serde(default = "default_elitist_cull_ratio")]
+    pub elitist_cull_ratio: f64,
+}
+
+fn default_min_diversity_l3() -> f64 { 0.25 }
+fn default_min_diversity_l4() -> f64 { 0.20 }
+fn default_diversity_cooldown() -> usize { 100 }
+fn default_random_injection_count() -> usize { 10 }
+fn default_elitist_cull_ratio() -> f64 { 0.10 }
+
+impl Default for DiversityTriggerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_diversity_l3: default_min_diversity_l3(),
+            min_diversity_l4: default_min_diversity_l4(),
+            cooldown_gens: default_diversity_cooldown(),
+            random_injection_count: default_random_injection_count(),
+            elitist_cull_ratio: default_elitist_cull_ratio(),
+        }
+    }
+}
+
 /// Per-exchange evolution config, loaded from config/generator.yaml.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ExchangeConfig {
@@ -272,6 +308,8 @@ struct GeneratorConfig {
     lfdr: backtest::hypothesis::LfdrConfig,
     #[serde(default)]
     llm_mcts_prior: LlmMctsPriorConfig,
+    #[serde(default)]
+    diversity_trigger: DiversityTriggerConfig,
 }
 
 #[tokio::main]
@@ -299,7 +337,7 @@ async fn main() -> anyhow::Result<()> {
     // Load generator config
     let config_path =
         env::var("GENERATOR_CONFIG").unwrap_or_else(|_| "config/generator.yaml".to_string());
-    let (exchange_configs, oracle_config, threshold_config, ensemble_config, mcts_config, lfdr_config, llm_prior_config) =
+    let (exchange_configs, oracle_config, threshold_config, ensemble_config, mcts_config, lfdr_config, llm_prior_config, diversity_trigger_config) =
         load_exchange_configs(&config_path);
     info!(
         "Loaded {} exchange configs: {:?}",
@@ -367,6 +405,7 @@ async fn main() -> anyhow::Result<()> {
     let mcts_config = Arc::new(mcts_config);
     let lfdr_config = Arc::new(lfdr_config);
     let llm_prior_config = Arc::new(llm_prior_config);
+    let diversity_trigger_config = Arc::new(diversity_trigger_config);
 
     // Spawn two evolution tasks per (exchange, symbol) pair: long_only + long_short
     let mut handles = Vec::new();
@@ -392,6 +431,7 @@ async fn main() -> anyhow::Result<()> {
                 let mcts_pool = mcts_pool.clone();
                 let mcts_cfg = mcts_config.clone();
                 let llm_prior_cfg = llm_prior_config.clone();
+                let diversity_cfg = diversity_trigger_config.clone();
                 let sym = symbol.clone();
                 let ex_name = ec.exchange.clone();
                 let handle = tokio::spawn(async move {
@@ -405,6 +445,7 @@ async fn main() -> anyhow::Result<()> {
                         mcts_pool,
                         mcts_cfg,
                         llm_prior_cfg,
+                        diversity_cfg,
                         sym.clone(),
                         mode,
                     )
@@ -473,6 +514,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 fn load_exchange_configs(
     path: &str,
 ) -> (
@@ -483,6 +525,7 @@ fn load_exchange_configs(
     MctsYamlConfig,
     backtest::hypothesis::LfdrConfig,
     LlmMctsPriorConfig,
+    DiversityTriggerConfig,
 ) {
     match std::fs::read_to_string(path) {
         Ok(content) => match serde_yaml::from_str::<GeneratorConfig>(&content) {
@@ -521,6 +564,14 @@ fn load_exchange_configs(
                     cfg.llm_mcts_prior.operator_boost_scale,
                     cfg.llm_mcts_prior.min_importance_threshold
                 );
+                info!(
+                    "Diversity trigger: enabled={}, L3<{}, L4<{}, cooldown={}, cull_ratio={}",
+                    cfg.diversity_trigger.enabled,
+                    cfg.diversity_trigger.min_diversity_l3,
+                    cfg.diversity_trigger.min_diversity_l4,
+                    cfg.diversity_trigger.cooldown_gens,
+                    cfg.diversity_trigger.elitist_cull_ratio,
+                );
                 (
                     cfg.exchanges,
                     cfg.llm_oracle,
@@ -529,6 +580,7 @@ fn load_exchange_configs(
                     cfg.mcts,
                     cfg.lfdr,
                     cfg.llm_mcts_prior,
+                    cfg.diversity_trigger,
                 )
             }
             Err(e) => {
@@ -541,6 +593,7 @@ fn load_exchange_configs(
                     MctsYamlConfig::default(),
                     backtest::hypothesis::LfdrConfig::default(),
                     LlmMctsPriorConfig::default(),
+                    DiversityTriggerConfig::default(),
                 )
             }
         },
@@ -573,6 +626,7 @@ fn load_exchange_configs(
                 MctsYamlConfig::default(),
                 backtest::hypothesis::LfdrConfig::default(),
                 LlmMctsPriorConfig::default(),
+                DiversityTriggerConfig::default(),
             )
         }
     }
@@ -711,6 +765,7 @@ async fn run_symbol_evolution(
     mcts_pool: Arc<rayon::ThreadPool>,
     mcts_config: Arc<MctsYamlConfig>,
     llm_prior_config: Arc<LlmMctsPriorConfig>,
+    diversity_trigger_config: Arc<DiversityTriggerConfig>,
     symbol: String,
     mode: StrategyMode,
 ) -> anyhow::Result<()> {
@@ -1053,6 +1108,10 @@ async fn run_symbol_evolution(
         HashMap::new();
     let importance_interval: usize = llm_prior_config.importance_recompute_interval;
 
+    // P8-2B: Diversity trigger state — tracks cooldown between triggers
+    let mut gens_since_diversity_trigger: usize = diversity_trigger_config.cooldown_gens + 1;
+    let mut diversity_trigger_count: usize = 0;
+
     // P7-2B / P8-1A/1B/1C: CCIPCA warmup → feature augmentation
     // Features shape: (n_symbols=1, n_factors, n_bars)
     // Compute augmentation in a separate scope to avoid borrow conflicts.
@@ -1275,7 +1334,7 @@ async fn run_symbol_evolution(
                 ga.total_population()
             );
 
-            // P7-5B: Log genome diversity every 50 gens
+            // P8-2B: Diversity monitoring with active trigger (replaces P7-5B passive logging)
             if gen.is_multiple_of(50) {
                 let diversity = ga.layer_diversity();
                 let div_strs: Vec<String> = diversity
@@ -1286,6 +1345,52 @@ async fn run_symbol_evolution(
                     "[{}:{}:{}] Gen {} diversity (Hamming): [{}]",
                     exchange, symbol, mode_str, gen, div_strs.join(", ")
                 );
+
+                if diversity_trigger_config.enabled {
+                    let l3_div = diversity.iter()
+                        .find(|(i, _, _)| *i == 3)
+                        .map(|(_, _, d)| *d)
+                        .unwrap_or(1.0);
+                    let l4_div = diversity.iter()
+                        .find(|(i, _, _)| *i == 4)
+                        .map(|(_, _, d)| *d)
+                        .unwrap_or(1.0);
+
+                    let l3_stagnant = l3_div < diversity_trigger_config.min_diversity_l3;
+                    let l4_stagnant = l4_div < diversity_trigger_config.min_diversity_l4;
+
+                    if (l3_stagnant || l4_stagnant)
+                        && gens_since_diversity_trigger > diversity_trigger_config.cooldown_gens
+                    {
+                        warn!(
+                            "[{}:{}:{}] Gen {} DIVERSITY ALERT: L3={:.3} L4={:.3} — emergency injection",
+                            exchange, symbol, mode_str, gen, l3_div, l4_div
+                        );
+                        diversity_trigger_count += 1;
+
+                        // Inject random genomes into L0
+                        let random_genomes = ga.generate_random_genomes(
+                            diversity_trigger_config.random_injection_count,
+                        );
+                        ga.inject_genomes(0, random_genomes);
+
+                        // Elitist replacement: cull weakest from L0
+                        let cull_count = (ga.layer_size(0) as f64
+                            * diversity_trigger_config.elitist_cull_ratio)
+                            .ceil() as usize;
+                        let culled = ga.cull_weakest(0, cull_count);
+                        info!(
+                            "[{}:{}:{}] Gen {} DIVERSITY: injected {} random + culled {} weakest from L0 (trigger #{})",
+                            exchange, symbol, mode_str, gen,
+                            diversity_trigger_config.random_injection_count,
+                            culled, diversity_trigger_count
+                        );
+
+                        gens_since_diversity_trigger = 0;
+                    } else {
+                        gens_since_diversity_trigger += 50;
+                    }
+                }
             }
         }
 

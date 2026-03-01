@@ -324,6 +324,35 @@ impl AlpsGA {
         self.layers.iter().map(|l| l.population.len()).sum()
     }
 
+    /// Population size of a specific layer.
+    pub fn layer_size(&self, layer_idx: usize) -> usize {
+        self.layers
+            .get(layer_idx)
+            .map(|l| l.population.len())
+            .unwrap_or(0)
+    }
+
+    /// Generate N random genomes suitable for injection.
+    pub fn generate_random_genomes(&self, count: usize) -> Vec<Genome> {
+        (0..count)
+            .map(|_| Genome::new_random(self.feat_offset))
+            .collect()
+    }
+
+    /// P8-2B: Remove the weakest genomes from a layer by fitness.
+    /// Returns the number actually culled.
+    pub fn cull_weakest(&mut self, layer_idx: usize, count: usize) -> usize {
+        if layer_idx >= self.layers.len() || count == 0 {
+            return 0;
+        }
+        let layer = &mut self.layers[layer_idx];
+        layer.sort_by_fitness();
+        let actual = count.min(layer.population.len());
+        // sort_by_fitness puts best first; remove from the end (worst)
+        layer.population.truncate(layer.population.len() - actual);
+        actual
+    }
+
     /// Inject externally-generated genomes into a specific layer.
     /// Used by the LLM mutation oracle to insert guided genomes into Layer 0.
     /// Replaces the worst genomes if the layer is at capacity.
@@ -1482,5 +1511,50 @@ mod tests {
             assert_eq!(child.block_mask.len(), child.tokens.len());
             assert_eq!(child.block_age.len(), child.tokens.len());
         }
+    }
+
+    // ── P8-2B: Diversity trigger support methods ─────────────────────
+
+    #[test]
+    fn test_layer_size() {
+        let ga = AlpsGA::new(FEAT_OFFSET_25);
+        assert_eq!(ga.layer_size(0), 100);
+        assert_eq!(ga.layer_size(4), 100);
+        assert_eq!(ga.layer_size(99), 0); // out of range
+    }
+
+    #[test]
+    fn test_generate_random_genomes() {
+        let ga = AlpsGA::new(FEAT_OFFSET_25);
+        let genomes = ga.generate_random_genomes(5);
+        assert_eq!(genomes.len(), 5);
+        for g in &genomes {
+            assert!(!g.tokens.is_empty());
+            assert_eq!(g.fitness, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_cull_weakest() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        let initial_size = ga.layer_size(0);
+        // Set known fitness values
+        for (i, g) in ga.layers[0].population.iter_mut().enumerate() {
+            g.fitness = i as f64; // 0, 1, 2, ..., 99
+        }
+        let culled = ga.cull_weakest(0, 10);
+        assert_eq!(culled, 10);
+        assert_eq!(ga.layer_size(0), initial_size - 10);
+        // All remaining should have fitness >= 10
+        for g in &ga.layers[0].population {
+            assert!(g.fitness >= 10.0, "Expected >= 10.0, got {}", g.fitness);
+        }
+    }
+
+    #[test]
+    fn test_cull_weakest_out_of_range() {
+        let mut ga = AlpsGA::new(FEAT_OFFSET_25);
+        assert_eq!(ga.cull_weakest(99, 5), 0); // invalid layer
+        assert_eq!(ga.cull_weakest(0, 0), 0);  // zero count
     }
 }
