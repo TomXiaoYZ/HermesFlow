@@ -100,6 +100,15 @@ graph TD
     - **Monitoring**: Full interaction logged to `strategy_generations.metadata` JSONB — prompt, response, parsed/accepted/rejected formulas, rejection reasons, cross-symbol elites. Frontend displays in Oracle Interactions panel.
   - **Multi-Timeframe Factor Stacking** (P3): Computes 25 factors at 3 resolutions (1h, 4h, 1d) → 75 total features. Token layout: 0–24 = 1h, 25–49 = 4h, 50–74 = 1d, 75+ = operators. Lower-frequency data forward-filled to 1h axis via binary search alignment. Parallel loading via `buffer_unordered(8)`. Feature-gated in `config/generator.yaml` → `multi_timeframe.enabled`.
   - **Adaptive Threshold Tuning** (P4): Replaces hardcoded percentile/clamp values with configurable per-symbol `ThresholdConfig` loaded from `config/generator.yaml` → `threshold_config`. `UtilizationTracker` (50-gen rolling window) monitors long/short bar ratios. `adjust_threshold_params` runs every 50 generations: relaxes thresholds when utilization < 30%, tightens when > 80%, corrects long/short asymmetry. Guardrails: percentile bounds (upper 55–85, lower 15–45), minimum 10 data points.
+  - **Portfolio Ensemble** (P5): HRP allocation (5-stage hierarchical risk parity), dynamic weight adjustment (momentum tilt, volatility scaling, drawdown dampening, crowding detection), ensemble selection per (exchange, symbol, mode), shadow equity tracking, 30-minute rebalance interval.
+  - **Statistical Safeguards** (P6): Temporal causality alignment per resolution (`publication_delay`), local FDR hypothesis testing with n-gram Jaccard clustering, CCIPCA incremental PCA O(n·k), non-linear decay routing (active→decaying→retired), hysteresis dead-zone with L1 regularization.
+  - **MCTS Symbolic Regression** (P6→P7): Arena-allocated MCTS for RPN formula discovery. Dedicated Rayon pool (2 threads). Extreme Bandit PUCT. Deception suppression via FNV-1a n-gram hashing. Seeds inject into ALPS L0 every N generations. Feature-gated in `config/generator.yaml` → `mcts`.
+  - **lFDR Ensemble Filtering** (P7): `select_candidates_with_lfdr()` applies RPN n-gram clustering before ensemble candidate selection.
+  - **Shadow Promotion Guard** (P7): 7-trading-day trigger before shadow→live promotion. Auto-demotion on consecutive underperformance.
+  - **LLM-Guided MCTS Prior** (P8): Factor importance → `build_llm_prior_weights()` → `LlmCachedPolicy` replaces UniformPolicy. Canonical RPN hash for commutative operator dedup. Importance recomputed every 500 generations.
+  - **CCIPCA Active Remapping** (P8): `project_features()` augments 75→80 features (5 PC columns) after 200 CCIPCA observations.
+  - **Diversity-Triggered Injection** (P8): L3/L4 Hamming diversity monitoring triggers random injection + elitist cull (weakest 10% of L0).
+  - **Decimal Precision** (P8): `rust_decimal::Decimal` for HRP weights, PSR factors, crowding penalties, turnover cost in ensemble_weights.
   - Exposes REST API: `/overview`, `/generations`, `/generations/:gen`, `/backtest` (re-run), `/exchanges`.
 - **Port**: 8082 (external API), 8084 (internal health).
 
@@ -108,6 +117,9 @@ graph TD
 - **Role**:
   - Computes technical factors: ATR, Bollinger Bands, CCI, MACD, MFI, OBV, Stochastic, VWAP, Williams %R, moving averages.
   - Executes strategy bytecode via a stack-based virtual machine with **configurable TS window** (20 for daily, 10 for hourly, 8 for 15m data).
+  - **VM Shape Guard** (P8): Pre-execution validation of all feature token indices against `n_features` range.
+  - **O(n) TS Ops** (P8): `ts_mean`/`ts_sum` rewritten as running-sum sliding windows (was O(n·d) delay accumulation).
+  - **Conditional NaN Sanitization** (P8): Only DIV/SIGNED_POWER/TS_CORR/LOG/SQRT trigger NaN cleanup; safe ops (ADD/MUL/SUB) skip.
   - Used as a dependency by strategy-engine and strategy-generator.
 
 ### 2.6 Execution Engine (Rust)
@@ -460,15 +472,15 @@ The execution engine connects to **two separate IB Gateway instances** for dual 
 
 ## 10. Development Progress
 
-### Module Completion Status (as of 2026-02-22)
+### Module Completion Status (as of 2026-03-01)
 
 | Module | Status | Completion | Notes |
 |--------|--------|------------|-------|
 | **Data Engine** | Production | 95% | 12+ collectors, 7-stage DQ, circuit breaker, dead letter |
 | **Gateway** | Production | 90% | REST proxy, WebSocket broadcast, metrics. Missing: IBKR-specific endpoints |
 | **Strategy Engine** | Production | 90% | VM execution, stock signal routing, risk checks, portfolio management |
-| **Strategy Generator** | Production | 98% | ALPS evolution (5-layer), PSR fitness, 14-op pruned set, embargo CV, dual-mode (LO/LS), OOS validation, resume logic, LLM-guided mutation oracle (P2), multi-timeframe 75-feature stacking (P3), adaptive per-symbol threshold tuning with utilization feedback (P4) |
-| **Backtest Engine** | Production | 95% | 10+ factors, stack VM with configurable TS window, detailed simulation, equity curve |
+| **Strategy Generator** | Production | 99% | ALPS evolution (5-layer), PSR fitness, 14-op pruned set, embargo CV, dual-mode (LO/LS), OOS validation, resume logic, LLM oracle (P2), MTF 75-feature stacking (P3), adaptive thresholds (P4), HRP ensemble (P5), lFDR/CCIPCA/decay (P6), MCTS integration (P7), LLM-guided MCTS prior + CCIPCA augmentation 75→80 + diversity trigger + Decimal precision (P8) |
+| **Backtest Engine** | Production | 97% | 25 factors, stack VM with configurable TS window, shape guard (P8), O(n) TS ops (P8), conditional NaN sanitization (P8), detailed simulation, equity curve |
 | **Execution Engine** | Functional | 85% | Dual IBKR gateway (LO/LS), Futu/Solana routing, risk engine, trade recording, per-account sync via ibapi v2.8+ |
 | **User Management** | Active | 80% | JWT auth, RBAC, multi-tenancy |
 | **Futu Bridge** | Active | 85% | HK stock bridge via OpenD |

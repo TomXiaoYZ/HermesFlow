@@ -1,7 +1,7 @@
 # HermesFlow Strategy Evolution — Development Roadmap
 
 **Date**: 2026-03-01
-**Current state**: P0–P7 deployed, P8 designed (3 phases)
+**Current state**: P0–P8 deployed
 
 ---
 
@@ -17,7 +17,7 @@
 | **P5** | Strategy Ensemble & Portfolio | Deployed | HRP portfolio ensemble with dynamic weights and crowding detection |
 | **P6** | Full-Stack Evolution Upgrade | Deployed | Temporal causality, lFDR, CCIPCA, MCTS, shadow trading, decay routing |
 | **P7** | Statistical Barriers + MCTS Integration | Deployed | MCTS evolution loop wiring, lFDR filtering, shadow promotion guard |
-| **P8** | Semantic Prior + Active Reduction | Designed | LLM-guided MCTS, CCIPCA augmentation, diversity trigger, VM optimization |
+| **P8** | Semantic Prior + Active Reduction | Deployed | LLM-guided MCTS, CCIPCA augmentation, diversity trigger, VM optimization, sqlx 0.8 |
 
 ---
 
@@ -242,24 +242,31 @@ The original plan discussed three approaches (genome encoding, grid search, Baye
 
 ---
 
-## P8 — Semantic Prior + Active Reduction (DESIGNED)
+## P8 — Semantic Prior + Active Reduction (COMPLETE)
 
+**Commits**: `9bd724d` through `550c223` (6 commits)
 **Design doc**: `docs/P8_ARCHITECTURE_DESIGN.md`
 **Goal**: Transform blind MCTS to semantic search, activate CCIPCA feature reduction, close the diversity feedback loop.
 
-### Five-Phase Architecture
+### Delivered
 
-| Phase | Name | Priority | Description |
-|-------|------|----------|-------------|
-| 0 | LLM-Guided MCTS Policy Prior | HIGHEST | Wire FactorImportance → LlmCachedPolicy; replace UniformPolicy |
-| 1 | CCIPCA Active Token Remapping | HIGH | project_features() augments 75→80 features (5 PC columns) |
-| 2 | ALPS Diversity-Triggered Injection | HIGH | L3/L4 Hamming diversity triggers emergency MCTS + Oracle |
-| 3 | VM Hot Path Optimization | MEDIUM | Pre-execution shape guard, ndarray::Zip TS ops, conditional NaN sanitization |
-| 4 | sqlx 0.8 Migration + Financial Precision | MEDIUM | RUSTSEC-2024-0363 fix, f64→Decimal in ensemble_weights/shadow paths |
+| ID | Component | Description |
+|----|-----------|-------------|
+| P8-0 | LLM-Guided MCTS Policy Prior | FactorImportance → `build_llm_prior_weights()` → `LlmCachedPolicy`; canonical RPN hash for cache dedup; replaces UniformPolicy |
+| P8-1 | CCIPCA Active Token Remapping | `project_features()` augments 75→80 features (5 PC columns after 200 observations) |
+| P8-2 | ALPS Diversity-Triggered Injection | L3/L4 Hamming diversity triggers random injection + elitist cull (weakest 10% of L0) |
+| P8-3 | VM Hot Path Optimization | Pre-execution shape guard, O(n) running-sum `ts_mean`/`ts_sum` (was O(n·d)), conditional NaN sanitization |
+| P8-4 | sqlx 0.8 + Decimal Precision | RUSTSEC-2024-0363 fix (sqlx 0.7→0.8.6), f64→`rust_decimal::Decimal` in ensemble_weights, removed 16MiB payload guard |
 
-### Gemini Fact-Check
-- 4/5 recommendations valid; Actix-web claim debunked (all services use Axum)
-- unsafe `uget()` deferred to P9 (no evidence of runtime panics)
+### Metrics
+- Modified files: 13, +1,188 / -256 lines, net +932
+- New tests: 14 (Phase 0: 6, Phase 1: 3, Phase 2: 4, Phase 3: 1)
+- Workspace tests: 485/485 pass, Clippy zero warnings
+- Docker: 4 services rebuilt and verified healthy
+
+### Gemini Review Disposition
+- 6 suggestions evaluated: 3 adopted, 1 partially adopted, 2 rejected
+- Rejected: unsafe `uget()` (no perf evidence), PC space isolation (append proven by P3 precedent)
 
 ---
 
@@ -291,6 +298,4 @@ P0 (OOS eval) ──> P1 (factors) ──> P2 (LLM mutation) ──> P3 (multi-T
 6. **P5**: HRP portfolio ensemble with dynamic weights (commit `5fde72b`)
 7. **P6**: Full-stack evolution upgrade — MCTS, lFDR, CCIPCA, shadow trading (commit `d1908e1`)
 8. **P7**: Statistical barriers + MCTS integration (commit `a342a49`)
-
-## Remaining
-9. **P8**: Semantic prior + active reduction — LLM-guided MCTS, CCIPCA augmentation, diversity trigger, VM optimization, sqlx 0.8
+9. **P8**: Semantic prior + active reduction — LLM-guided MCTS, CCIPCA augmentation, diversity trigger, VM optimization, sqlx 0.8 (commits `9bd724d`–`550c223`)
