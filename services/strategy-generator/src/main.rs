@@ -755,7 +755,7 @@ async fn run_symbol_evolution(
         None
     };
 
-    let (feat_offset, factor_names) =
+    let (mut feat_offset, mut factor_names) =
         if let Some(ref mtf) = mtf_config {
             let names = mtf.factor_names();
             info!(
@@ -1053,41 +1053,80 @@ async fn run_symbol_evolution(
         HashMap::new();
     let importance_interval: usize = llm_prior_config.importance_recompute_interval;
 
-    // P7-2B: Feed CCIPCA with cached feature data (diagnostic only)
+    // P7-2B / P8-1A/1B/1C: CCIPCA warmup → feature augmentation
     // Features shape: (n_symbols=1, n_factors, n_bars)
-    if let Some(cached) = backtester.cache.get(&symbol) {
-        let features = &cached.features;
-        let n_feat = features.shape()[1].min(feat_offset); // axis 1 = factors
-        let n_bars = features.shape()[2];                   // axis 2 = bars
-        if n_feat >= 2 {
-            // Lazily initialize CCIPCA with actual feature dimension
-            let pca = ccipca.get_or_insert_with(|| {
-                backtest::incremental_pca::CcipcaState::new(
-                    n_feat,
-                    backtest::incremental_pca::CcipcaConfig {
-                        n_components: 5.min(n_feat),
-                        amnesic: 2.0,
-                        min_observations: 50,
-                        enabled: true,
-                    },
-                )
-            });
-            // Feed last 200 bars (or all if fewer) as observations to CCIPCA
-            let start_bar = n_bars.saturating_sub(200);
-            for bar in start_bar..n_bars {
-                let obs: Vec<f64> = (0..n_feat).map(|f| features[[0, f, bar]]).collect();
-                let obs_arr = ndarray::Array1::from_vec(obs);
-                pca.update_view(obs_arr.view());
+    // Compute augmentation in a separate scope to avoid borrow conflicts.
+    #[allow(clippy::type_complexity)]
+    let ccipca_augmentation: Option<(ndarray::Array3<f64>, usize, Vec<(usize, f64)>)> =
+        if let Some(cached) = backtester.cache.get(&symbol) {
+            let features = &cached.features;
+            let n_feat = features.shape()[1].min(feat_offset);
+            let n_bars = features.shape()[2];
+            if n_feat >= 2 {
+                let pca = ccipca.get_or_insert_with(|| {
+                    backtest::incremental_pca::CcipcaState::new(
+                        n_feat,
+                        backtest::incremental_pca::CcipcaConfig {
+                            n_components: 5.min(n_feat),
+                            amnesic: 2.0,
+                            min_observations: 50,
+                            enabled: true,
+                        },
+                    )
+                });
+                let start_bar = n_bars.saturating_sub(200);
+                for bar in start_bar..n_bars {
+                    let obs: Vec<f64> = (0..n_feat).map(|f| features[[0, f, bar]]).collect();
+                    let obs_arr = ndarray::Array1::from_vec(obs);
+                    pca.update_view(obs_arr.view());
+                }
+                if pca.is_valid() {
+                    let ev = pca.explained_variance();
+                    let total_var: f64 = ev.iter().sum();
+                    let ratios: Vec<(usize, f64)> = ev
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &v)| (i, if total_var > 0.0 { v / total_var } else { 0.0 }))
+                        .collect();
+                    let k = pca.config().n_components;
+                    let ratio_vals: Vec<f64> = ratios.iter().map(|(_, r)| *r).collect();
+                    info!(
+                        "[{}:{}:{}] CCIPCA: {} observations, top-{} explained variance ratios: {:?}",
+                        exchange, symbol, mode_str, pca.n_observations(), ev.len(), ratio_vals
+                    );
+                    let augmented = pca.project_features(features);
+                    Some((augmented, k, ratios))
+                } else {
+                    None
+                }
+            } else {
+                None
             }
-            if pca.is_valid() {
-                let ev = pca.explained_variance();
-                let total_var: f64 = ev.iter().sum();
-                let ratios: Vec<f64> = ev.iter().map(|&v| if total_var > 0.0 { v / total_var } else { 0.0 }).collect();
-                info!(
-                    "[{}:{}:{}] CCIPCA: {} observations, top-{} explained variance ratios: {:?}",
-                    exchange, symbol, mode_str, pca.n_observations(), ev.len(), ratios
-                );
-            }
+        } else {
+            None
+        };
+
+    // P8-1B/1C: Apply augmentation outside the immutable borrow scope
+    if let Some((augmented, k, ratios)) = ccipca_augmentation {
+        let new_feat_offset = feat_offset + k;
+        info!(
+            "[{}:{}:{}] P8-1B: CCIPCA augmentation: {}→{} features (PC0..PC{})",
+            exchange, symbol, mode_str, feat_offset, new_feat_offset, k - 1
+        );
+
+        // P8-1C: Append PC factor names with explained variance ratios
+        for &(i, ratio) in &ratios {
+            factor_names.push(format!("PC{}_var_{:.2}", i, ratio));
+        }
+
+        // Update feat_offset and sync with VM/GA
+        feat_offset = new_feat_offset;
+        backtester.vm.feat_offset = feat_offset;
+        ga.feat_offset = feat_offset;
+
+        // Replace cached features with augmented version
+        if let Some(cached_mut) = backtester.cache.get_mut(&symbol) {
+            cached_mut.features = augmented;
         }
     }
 

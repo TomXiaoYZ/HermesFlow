@@ -11,7 +11,7 @@
 //! "Candid covariance-free incremental principal component analysis."
 //! IEEE Transactions on Pattern Analysis and Machine Intelligence 25.8 (2003): 1034-1040.
 
-use ndarray::{Array1, Array2, ArrayView1, Zip};
+use ndarray::{Array1, Array2, Array3, ArrayView1, Zip};
 
 /// Configuration for CCIPCA.
 #[derive(Debug, Clone)]
@@ -159,7 +159,6 @@ impl CcipcaState {
 
     /// Return the current principal components (normalized eigenvectors).
     /// Shape: (k, n_features). Rows are unit vectors.
-    #[allow(dead_code)] // used in tests and future P8 active reduction
     pub fn components(&self) -> Array2<f64> {
         let k = self.config.n_components;
         let n = self.mean.len();
@@ -187,7 +186,7 @@ impl CcipcaState {
 
     /// Project an observation onto the principal component space.
     /// Returns a k-dimensional vector.
-    #[allow(dead_code)] // used in tests and future P8 active reduction
+    #[cfg(test)]
     pub fn transform(&self, observation: &Array1<f64>) -> Array1<f64> {
         let centered = observation - &self.mean;
         let components = self.components();
@@ -203,12 +202,52 @@ impl CcipcaState {
     pub fn is_valid(&self) -> bool {
         self.n_obs >= self.config.min_observations
     }
+
+    /// Access the CCIPCA configuration.
+    pub fn config(&self) -> &CcipcaConfig {
+        &self.config
+    }
+
+    /// P8-1A: Project a full feature tensor onto PC space, appending PC columns.
+    ///
+    /// Input: `Array3<f64>` shape `(1, n_feat, T)` — original features
+    /// Output: `Array3<f64>` shape `(1, n_feat + k, T)` — augmented with k PC features
+    ///
+    /// Each PC value at time t: `pc_i(t) = W_i · centered_features(:, t)`
+    /// where `W_i` is the i-th normalized eigenvector from CCIPCA.
+    pub fn project_features(&self, features: &Array3<f64>) -> Array3<f64> {
+        let n_feat = features.shape()[1];
+        let n_bars = features.shape()[2];
+        let k = self.config.n_components;
+
+        let mut augmented = Array3::zeros((1, n_feat + k, n_bars));
+
+        // Copy original features
+        for f in 0..n_feat {
+            for t in 0..n_bars {
+                augmented[[0, f, t]] = features[[0, f, t]];
+            }
+        }
+
+        // Compute and append PC features
+        let components = self.components(); // (k, n_feat) normalized
+        for t in 0..n_bars {
+            let obs: Array1<f64> = Array1::from_iter((0..n_feat).map(|f| features[[0, f, t]]));
+            let centered = &obs - &self.mean;
+            let pc_values = components.dot(&centered); // (k,)
+            for i in 0..k {
+                augmented[[0, n_feat + i, t]] = pc_values[i];
+            }
+        }
+
+        augmented
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array1;
+    use ndarray::{Array1, Array3};
 
     #[test]
     fn test_new_state() {
@@ -359,6 +398,114 @@ mod tests {
                 (a - b).abs() < 1e-10,
                 "update_view should match update: {} vs {}",
                 a, b
+            );
+        }
+    }
+
+    // ── P8-1A: project_features tests ────────────────────────────────
+
+    #[test]
+    fn test_project_features_output_shape() {
+        let n_feat = 5;
+        let k = 3;
+        let n_bars = 20;
+        let config = CcipcaConfig {
+            n_components: k,
+            amnesic: 2.0,
+            min_observations: 5,
+            enabled: true,
+        };
+        let mut state = CcipcaState::new(n_feat, config);
+
+        // Feed enough observations to get valid components
+        for i in 0..30 {
+            let obs = Array1::from_vec((0..n_feat).map(|j| (i * j + j) as f64).collect());
+            state.update(&obs);
+        }
+        assert!(state.is_valid());
+
+        let features = Array3::zeros((1, n_feat, n_bars));
+        let augmented = state.project_features(&features);
+        assert_eq!(augmented.shape(), &[1, n_feat + k, n_bars]);
+    }
+
+    #[test]
+    fn test_project_features_preserves_original() {
+        let n_feat = 4;
+        let k = 2;
+        let n_bars = 10;
+        let config = CcipcaConfig {
+            n_components: k,
+            amnesic: 2.0,
+            min_observations: 5,
+            enabled: true,
+        };
+        let mut state = CcipcaState::new(n_feat, config);
+
+        for i in 0..20 {
+            let obs = Array1::from_vec((0..n_feat).map(|j| (i + j) as f64).collect());
+            state.update(&obs);
+        }
+
+        // Create features with known values
+        let mut features = Array3::zeros((1, n_feat, n_bars));
+        for f in 0..n_feat {
+            for t in 0..n_bars {
+                features[[0, f, t]] = (f * 100 + t) as f64;
+            }
+        }
+
+        let augmented = state.project_features(&features);
+
+        // Original features must be unchanged
+        for f in 0..n_feat {
+            for t in 0..n_bars {
+                assert!(
+                    (augmented[[0, f, t]] - features[[0, f, t]]).abs() < 1e-12,
+                    "Original feature [{},{}] changed", f, t
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_project_features_pc_values_match_transform() {
+        let n_feat = 4;
+        let k = 2;
+        let config = CcipcaConfig {
+            n_components: k,
+            amnesic: 2.0,
+            min_observations: 5,
+            enabled: true,
+        };
+        let mut state = CcipcaState::new(n_feat, config);
+
+        for i in 0..30 {
+            let obs = Array1::from_vec(vec![
+                10.0 * i as f64,
+                2.0 * (i as f64 * 0.3).sin(),
+                0.5 * i as f64,
+                0.1 * (i as f64 % 7.0),
+            ]);
+            state.update(&obs);
+        }
+
+        // Single bar feature tensor
+        let mut features = Array3::zeros((1, n_feat, 1));
+        let obs = vec![5.0, 1.0, 0.25, 0.05];
+        for f in 0..n_feat {
+            features[[0, f, 0]] = obs[f];
+        }
+
+        let augmented = state.project_features(&features);
+        let transformed = state.transform(&Array1::from_vec(obs));
+
+        // PC values from project_features should match transform()
+        for i in 0..k {
+            assert!(
+                (augmented[[0, n_feat + i, 0]] - transformed[i]).abs() < 1e-10,
+                "PC{} mismatch: project={} vs transform={}",
+                i, augmented[[0, n_feat + i, 0]], transformed[i]
             );
         }
     }
