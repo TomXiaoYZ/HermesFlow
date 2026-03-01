@@ -103,10 +103,6 @@ docs/
 ├── ARCHITECTURE.md            # System design, component descriptions, data sources
 ├── STANDARDS.md               # Architecture-level engineering standards
 ├── CODE_CONVENTIONS.md        # Rust code patterns and conventions
-├── PROJECT_STRUCTURE.md       # This file
-├── system_architecture.md     # Legacy architecture notes
-└── prd/                       # Product requirements documents
-    ├── prd-hermesflow.md
-    ├── modules/
-    └── user-stories/
+├── DEVELOPMENT_ROADMAP.md     # Feature roadmap P0-P8
+└── PROJECT_STRUCTURE.md       # This file
 ```

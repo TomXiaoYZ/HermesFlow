@@ -61,7 +61,7 @@
 ## P2 — LLM-Guided Mutation (COMPLETE)
 
 **Commits**: `2e2e9fc` through `9d3a42b` (P2a–P2e)
-**Reports**: `docs/P2_ARCHITECTURE_DESIGN.md`, `docs/P2_IMPLEMENTATION_REPORT.md`, `docs/P2_SUMMARY_FOR_GEMINI.md`
+**Reports**: `docs/P2_ARCHITECTURE_DESIGN.md`, `docs/P2_IMPLEMENTATION_REPORT.md`
 **Total LoC**: ~1,582
 
 ### Delivered (5 sub-phases)

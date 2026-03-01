@@ -221,7 +221,6 @@ graph LR
 | `docs/DEVELOPMENT_ROADMAP.md` | Feature roadmap |
 | `docs/P0-P5_*.md` | Phase implementation reports |
 | `docs/P8_ARCHITECTURE_DESIGN.md` | P8 architecture design (Gemini review response) |
-| `docs/prd/` | Product requirements (8 modules) |
 
 ## Key Algorithms
 
