@@ -1,7 +1,7 @@
 # HermesFlow Strategy Evolution — Development Roadmap
 
-**Date**: 2026-02-23
-**Current state**: P0–P5 deployed, P6 designed (3 phases)
+**Date**: 2026-03-01
+**Current state**: P0–P7 deployed, P8 designed (3 phases)
 
 ---
 
@@ -15,9 +15,9 @@
 | **P3** | Multi-Timeframe Factor Stacking | Deployed | Add temporal depth (1h + 4h + 1d factors) |
 | **P4** | Adaptive Threshold Tuning | Deployed | Per-symbol threshold optimization with utilization feedback |
 | **P5** | Strategy Ensemble & Portfolio | Deployed | HRP portfolio ensemble with dynamic weights and crowding detection |
-| **P6a** | Foundation Hardening | Designed | Atomic blocks, protected-op penalty, EWMA covariance, rayon isolation |
-| **P6b** | Paper Trading + Deadzone | Designed | Strategy deployment pipeline, paper accounts, turnover deadzone |
-| **P6c** | MCTS + Execution | Designed | MCTS symbolic regression, execution optimization, multi-exchange |
+| **P6** | Full-Stack Evolution Upgrade | Deployed | Temporal causality, lFDR, CCIPCA, MCTS, shadow trading, decay routing |
+| **P7** | Statistical Barriers + MCTS Integration | Deployed | MCTS evolution loop wiring, lFDR filtering, shadow promotion guard |
+| **P8** | Semantic Prior + Active Reduction | Designed | LLM-guided MCTS, CCIPCA augmentation, diversity trigger, VM optimization |
 
 ---
 
@@ -180,57 +180,86 @@ The original plan discussed three approaches (genome encoding, grid search, Baye
 
 ---
 
-## P6 — Full-Stack Evolution Upgrade + Live Paper Trading (DESIGNED)
+## P6 — Full-Stack Evolution Upgrade (COMPLETE)
 
-**Design doc**: `docs/plans/2026-02-23-p6-design.md`
-**Goal**: Harden the evolution engine, validate strategies via paper trading, and upgrade search from heuristic GP to MCTS symbolic regression.
+**Commits**: `d1908e1` (MCTS), `ee09590` (dead_code), multiple prior commits
+**Goal**: Harden the evolution engine, add statistical safeguards, and integrate MCTS symbolic regression.
 
-### Three-Phase Architecture
+### Delivered
 
-```
-P6a (Foundation Hardening) → P6b (Paper Trading) → P6c (MCTS + Execution)
-```
-
-### P6a — Foundation Hardening (8 items)
-
-| ID | Component | Service | Description |
-|----|-----------|---------|-------------|
-| E1 | Atomic Semantic Blocks | strategy-generator, backtest-engine | `block_mask` protecting LLM-generated RPN fragments from destructive crossover/mutation |
-| E2 | Protected-Op Penalty | backtest-engine, strategy-generator | Fitness penalty when protection_ratio > 15% to combat deceptive pseudo-signals |
-| E3 | SIMD Vectorization* | backtest-engine | AVX2/NEON batch processing for RPN VM arithmetic (conditional on profiling) |
-| G1 | ndarray Zero-Copy | strategy-generator, backtest-engine | ArrayView + stride manipulation for MTF alignment without memory allocation |
-| G2 | rayon CPU Isolation | strategy-generator | Separate thread pool for CPU-bound fitness evaluation, freeing Tokio for I/O |
-| G3 | rkyv Deserialization* | common, data-engine, strategy-engine | Zero-copy Redis deserialization (conditional on profiling) |
-| F1 | EWMA Covariance | strategy-generator | Exponentially weighted moving average (λ=0.94) replacing equal-weight correlation |
-| F2 | Portfolio Turnover Cost | strategy-generator | Per-venue cost modeling in shadow equity tracking |
-
-### P6b — Paper Trading + Deadzone (6 items)
-
-| ID | Component | Service | Description |
-|----|-----------|---------|-------------|
-| B1 | Strategy Deployment Pipeline | strategy-engine, strategy-generator | `deployed_strategies` table + VM signal generation from live data |
-| B2 | Paper Account Integration | execution-engine | Paper mode for IBKR, Futu, Solana devnet with isolated tracking tables |
-| B3 | Promotion Criteria | execution-engine | 5-criterion gate (20d, Sharpe>1, <20% deviation, <15% drawdown, >90% fills) |
-| C1 | Turnover Deadzone + L1 | strategy-generator | Dynamic lambda with vol-regime scaling to suppress micro-rebalancing |
-| F3 | Regime-Aware Rebalance | strategy-generator | Volatility-driven frequency: Low/Normal/High → 240/60/15 min |
-| F4 | Ensemble Walk-Forward | strategy-generator | Portfolio-level backtest validation (scheduled daily 03:00 UTC) |
-
-### P6c — MCTS + Execution (4 items)
-
-| ID | Component | Service | Description |
-|----|-----------|---------|-------------|
-| A1 | MCTS Engine | strategy-generator | 2000-3000 LoC new module: UCT selection, LLM policy prior, risk-seeking gradients |
-| A2 | Search Space Constraints | strategy-generator | 30-token limit, legal action masks, discrete constant set |
-| D1 | Execution Optimization | execution-engine | 3 levels: profiling → crossbeam SPSC → core_affinity + io_uring (Linux) |
-| D2 | Multi-Exchange Portfolio | strategy-generator | Cross-venue HRP with daily normalization, per-exchange capital limits |
+| ID | Component | Description |
+|----|-----------|-------------|
+| P6-1A | Publication Delay | Temporal causality alignment per resolution (0/300/900s for 1h/4h/1d) |
+| P6-1B | Local FDR | n-gram Jaccard clustering → per-cluster lFDR hypothesis testing |
+| P6-1C | CCIPCA | O(n·k) incremental PCA (diagnostic mode, active remapping deferred to P8) |
+| P6-1D | Decay Routing | Non-linear decay buffer (active→decaying→retired) for strategy lifecycle |
+| P6-2A | Hysteresis Dead-Zone | Per-asset no-trade threshold with L1 regularization to reduce micro-rebalancing |
+| P6-2B | Shadow Trading | Shadow signal table, shadow status columns, execution quality metrics |
+| P6-4A | MCTS Engine | Arena-allocated MCTS: contiguous Vec<Node>, u32 indices, zero-cost GC |
+| P6-4B | Extreme Bandit PUCT | Configurable mean vs max reward variant |
+| P6-4C | LLM Cached Policy | HashMap cache with uniform fallback (ready for P8 activation) |
+| P6-4D | Deception Suppressor | FNV-1a n-gram hashing with exponential decay penalty |
+| E2 | Protected-Op Penalty | Fitness penalty when VM protection_ratio > 15% |
+| G2 | rayon CPU Isolation | Separate Rayon thread pool for CPU-bound fitness evaluation |
+| F1 | EWMA Covariance | Exponentially weighted covariance (λ=0.94) for HRP allocation |
+| F2 | Turnover Cost | Per-venue cost modeling in shadow equity tracking |
+| F3 | Regime-Aware Rebalance | Volatility-driven frequency: Low/Normal/High → 240/60/15 min |
+| C1 | Turnover Deadzone + L1 | Dynamic lambda with vol-regime scaling |
 
 ### New DB Migrations
-- `031_deployed_strategies.sql` — strategy deployment tracking (P6b)
-- `032_paper_trading.sql` — paper trade orders, executions, positions, daily summary (P6b)
-- `033_ensemble_backtest.sql` — ensemble-level backtest results (P6b)
+- `035`: Strategy decay routing (decay_state, decay_factor columns)
+- `036`: Shadow trading signals table + shadow status columns
+- `037`: Execution quality metrics table
 
-### Multi-Exchange Support
-Execution venues (not data sources): IBKR (US stocks), Binance/OKX/Bybit (crypto), Futu (HK stocks), Longbridge (future), Solana (DeFi). Adding new exchanges requires only a config entry in `capital_limits`.
+---
+
+## P7 — Statistical Barriers + MCTS Integration (COMPLETE)
+
+**Commit**: `a342a49`
+**Goal**: Wire MCTS into the evolution loop, add statistical filtering, and establish shadow-to-live promotion safeguards.
+
+### Delivered
+
+| ID | Component | Description |
+|----|-----------|-------------|
+| P7-1A | MCTS Config | `MctsYamlConfig` + `LfdrConfig` deserialization from YAML |
+| P7-1B | MCTS Thread Pool | Dedicated Rayon pool (2 threads default, configurable via `MCTS_THREADS`) |
+| P7-1C | MCTS Evolution Integration | Seeds inject into ALPS L0 every N generations (configurable interval) |
+| P7-1D | MCTS Integration Tests | Valid genome validation, token conversion tests |
+| P7-2A | lFDR Ensemble Filtering | `select_candidates_with_lfdr()` — RPN n-gram clustering before ensemble selection |
+| P7-2B | CCIPCA Diagnostic | Zero-copy ArrayView, lazy-initialized per symbol, explained variance logging |
+| P7-3A | Security | Removed hardcoded DATABASE_URL fallback |
+| P7-3B | Payload Guard | 16MiB sqlx payload size guard before DB persist |
+| P7-3D | Dead-Zone Tracing | debug! per-asset threshold/delta/triggered logging |
+| P7-4A | Shadow Promotion Guard | 7-trading-day trigger before shadow→live promotion |
+| P7-4C | Auto-Demotion | Consecutive underperformance tracking for live→shadow demotion |
+| P7-5A | Factor Importance | Permutation importance — shuffle factor column, measure PSR drop |
+| P7-5B | Genome Diversity | Per-ALPS-layer Hamming distance monitoring every 50 generations |
+
+### New DB Migrations
+- `038`: Shadow promotion guard (7-trading-day trigger)
+- `039`: Auto-demotion logic (consecutive underperformance tracking)
+
+---
+
+## P8 — Semantic Prior + Active Reduction (DESIGNED)
+
+**Design doc**: `docs/P8_ARCHITECTURE_DESIGN.md`
+**Goal**: Transform blind MCTS to semantic search, activate CCIPCA feature reduction, close the diversity feedback loop.
+
+### Five-Phase Architecture
+
+| Phase | Name | Priority | Description |
+|-------|------|----------|-------------|
+| 0 | LLM-Guided MCTS Policy Prior | HIGHEST | Wire FactorImportance → LlmCachedPolicy; replace UniformPolicy |
+| 1 | CCIPCA Active Token Remapping | HIGH | project_features() augments 75→80 features (5 PC columns) |
+| 2 | ALPS Diversity-Triggered Injection | HIGH | L3/L4 Hamming diversity triggers emergency MCTS + Oracle |
+| 3 | VM Hot Path Optimization | MEDIUM | Pre-execution shape guard, ndarray::Zip TS ops, conditional NaN sanitization |
+| 4 | sqlx 0.8 Migration + Financial Precision | MEDIUM | RUSTSEC-2024-0363 fix, f64→Decimal in ensemble_weights/shadow paths |
+
+### Gemini Fact-Check
+- 4/5 recommendations valid; Actix-web claim debunked (all services use Axum)
+- unsafe `uget()` deferred to P9 (no evidence of runtime panics)
 
 ---
 
@@ -239,16 +268,16 @@ Execution venues (not data sources): IBKR (US stocks), Binance/OKX/Bybit (crypto
 ```
 P0 (OOS eval) ──> P1 (factors) ──> P2 (LLM mutation) ──> P3 (multi-TF) ──> P4 (thresholds)
                        │                                                         │
-                       └──> P5 (portfolio) ──> P6a (hardening) ──> P6b (paper) ──> P6c (MCTS)
+                       └──> P5 (portfolio) ──> P6 (hardening+MCTS) ──> P7 (barriers) ──> P8 (semantic)
 ```
 
 - **P2 depends on P1**: LLM oracle references the 25-factor vocabulary
 - **P3 depends on P2**: 75-feature space requires guided search
 - **P4 depends on P3**: Uses utilization feedback from walk-forward steps with MTF data
 - **P5 depends on convergence**: Needs sufficient high-PSR strategies (10+)
-- **P6a depends on P5**: Enhances evolution and portfolio components built in P5
-- **P6b depends on P6a**: Paper trading needs turnover cost model (F2) and EWMA covariance (F1)
-- **P6c depends on P6b**: MCTS needs enhanced VM (E1, E2); execution optimization needs paper trading baseline (B2)
+- **P6 depends on P5**: Enhances evolution, portfolio, and adds MCTS engine
+- **P7 depends on P6**: Wires MCTS into evolution loop, adds statistical barriers
+- **P8 depends on P7**: Activates dead_code components (LlmCachedPolicy, FactorImportance, CCIPCA active)
 
 ---
 
@@ -260,8 +289,8 @@ P0 (OOS eval) ──> P1 (factors) ──> P2 (LLM mutation) ──> P3 (multi-T
 4. **P3**: Multi-timeframe factor stacking (commit `a3de5fe`)
 5. **P4**: Adaptive threshold tuning (commit `8e84677`)
 6. **P5**: HRP portfolio ensemble with dynamic weights (commit `5fde72b`)
+7. **P6**: Full-stack evolution upgrade — MCTS, lFDR, CCIPCA, shadow trading (commit `d1908e1`)
+8. **P7**: Statistical barriers + MCTS integration (commit `a342a49`)
 
 ## Remaining
-7. **P6a**: Foundation hardening — atomic blocks, protected-op penalty, EWMA covariance, rayon isolation
-8. **P6b**: Paper trading — strategy deployment, paper accounts, turnover deadzone, regime-aware rebalancing
-9. **P6c**: MCTS + execution — symbolic regression engine, execution optimization, multi-exchange portfolio
+9. **P8**: Semantic prior + active reduction — LLM-guided MCTS, CCIPCA augmentation, diversity trigger, VM optimization, sqlx 0.8
