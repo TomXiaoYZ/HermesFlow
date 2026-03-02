@@ -23,6 +23,7 @@ import {
     getFeatureImportance,
     loadFactorConfigForExchange,
 } from "@/utils/genome";
+import { authFetch } from "@/lib/api";
 
 interface Exchange {
     key: string;
@@ -172,7 +173,7 @@ export default function EvolutionExplorer() {
 
     // Load exchanges
     useEffect(() => {
-        fetch("/api/v1/evolution/exchanges")
+        authFetch("/api/v1/evolution/exchanges")
             .then((res) => res.json())
             .then((data) => {
                 const exs: Exchange[] = data.exchanges || [];
@@ -187,7 +188,7 @@ export default function EvolutionExplorer() {
         if (!activeExchange) return;
         try {
             setLoading(true);
-            const res = await fetch(`/api/v1/evolution/${activeExchange}/overview?mode=${activeMode}`);
+            const res = await authFetch(`/api/v1/evolution/${activeExchange}/overview?mode=${activeMode}`);
             const data = await res.json();
             const symbols: SymbolOverview[] = data.symbols || [];
             setOverview(symbols);
@@ -213,7 +214,7 @@ export default function EvolutionExplorer() {
         try {
             setDetailLoading(true);
             await loadFactorConfigForExchange(activeExchange);
-            const res = await fetch(
+            const res = await authFetch(
                 `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations?limit=200&mode=${activeMode}`
             );
             const data = await res.json();
@@ -244,7 +245,7 @@ export default function EvolutionExplorer() {
         }
         (async () => {
             try {
-                const res = await fetch(
+                const res = await authFetch(
                     `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations/${latestBt.generation}?mode=${activeMode}`
                 );
                 const data = await res.json();
@@ -275,7 +276,7 @@ export default function EvolutionExplorer() {
         setExpandedGen(gen);
         setExpandedDetail(null);
         try {
-            const res = await fetch(
+            const res = await authFetch(
                 `/api/v1/evolution/${activeExchange}/${selectedSymbol}/generations/${gen}?mode=${activeMode}`
             );
             const data = await res.json();
@@ -1163,7 +1164,7 @@ function BacktestDetail({
     const handleRerun = async () => {
         if (!generation.best_genome) return;
         try {
-            await fetch(`/api/v1/evolution/${exchange}/backtest`, {
+            await authFetch(`/api/v1/evolution/${exchange}/backtest`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

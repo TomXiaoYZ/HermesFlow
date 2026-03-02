@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/api";
 
 // Types
 
@@ -122,7 +123,7 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
             params.set("mode", modeForAccount);
         }
         try {
-            const res = await fetch(`${GATEWAY_BASE}/api/v1/trades/history?${params}`);
+            const res = await authFetch(`${GATEWAY_BASE}/api/v1/trades/history?${params}`);
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) setTradeHistory(data);
@@ -134,7 +135,7 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
 
     const fetchPositions = useCallback(async () => {
         try {
-            const res = await fetch(`${GATEWAY_BASE}/api/v1/trades/positions`);
+            const res = await authFetch(`${GATEWAY_BASE}/api/v1/trades/positions`);
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) setDbPositions(data);
@@ -146,7 +147,7 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
 
     const fetchAccountSummary = useCallback(async () => {
         try {
-            const res = await fetch(`${GATEWAY_BASE}/api/v1/trades/account-summary`);
+            const res = await authFetch(`${GATEWAY_BASE}/api/v1/trades/account-summary`);
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) setAccountSummary(data);
@@ -172,7 +173,7 @@ export default function LiveTrading({ signals, portfolioData }: LiveTradingProps
         setLoading(true);
         setShowDrilldown(true);
         try {
-            const res = await fetch(
+            const res = await authFetch(
                 `${GATEWAY_BASE}/api/v1/trades/strategy/${encodeURIComponent(strategyId)}`
             );
             if (res.ok) {

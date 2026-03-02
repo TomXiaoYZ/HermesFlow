@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Server, Database, Activity, Terminal, Filter, Search, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/api";
 import { LogEntry } from "./SystemLogs";
 
 interface SystemStatusProps {
@@ -75,7 +76,7 @@ export default function SystemStatus({ logs: liveLogs, heartbeats, metrics }: Sy
                 });
                 if (keyword) params.append("keyword", keyword);
 
-                const res = await fetch(`http://localhost:8080/api/logs?${params.toString()}`);
+                const res = await authFetch(`/api/logs?${params.toString()}`);
                 const data = await res.json();
 
                 if (Array.isArray(data)) {

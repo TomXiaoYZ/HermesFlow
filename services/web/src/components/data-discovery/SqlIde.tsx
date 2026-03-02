@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Play, Terminal, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/api";
 
 export default function SqlIde({ initialQuery }: { initialQuery?: string }) {
     const [query, setQuery] = useState(initialQuery || "SELECT * FROM active_tokens LIMIT 10;");
@@ -18,7 +19,7 @@ export default function SqlIde({ initialQuery }: { initialQuery?: string }) {
         setResult(null);
 
         try {
-            const res = await fetch("/api/v1/data/query", {
+            const res = await authFetch("/api/v1/data/query", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ query })

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Table as TableIcon, Search, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/api";
 
 interface TableInfo {
     name: string;
@@ -13,7 +14,7 @@ export default function TableBrowser({ onSelectTable }: { onSelectTable: (tableN
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        fetch("/api/v1/data/tables")
+        authFetch("/api/v1/data/tables")
             .then(res => res.json())
             .then(data => {
                 if (data.tables) setTables(data.tables);

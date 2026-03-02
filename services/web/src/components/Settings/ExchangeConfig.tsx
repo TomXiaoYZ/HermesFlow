@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { Save, Plus, Trash2, RefreshCw, Key, Activity, TrendingUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/api";
 import TradingAccountConfig from "./TradingAccountConfig";
 
 interface ExchangeConfig {
@@ -29,7 +30,7 @@ export default function ExchangeConfig() {
   const fetchConfig = async () => {
     try {
       setLoading(true);
-      const res = await fetch("/api/v1/config/exchanges");
+      const res = await authFetch("/api/v1/config/exchanges");
       if (res.ok) {
         const data = await res.json();
         setConfigs(data);
@@ -43,7 +44,7 @@ export default function ExchangeConfig() {
 
   const fetchWatchlist = async () => {
     try {
-      const res = await fetch("/api/v1/watchlist");
+      const res = await authFetch("/api/v1/watchlist");
       if (res.ok) {
         const data = await res.json();
         setWatchlist(data);
@@ -60,7 +61,7 @@ export default function ExchangeConfig() {
 
   const handleUpdateConfig = async (exchange: string, apiKey: string, isEnabled: boolean) => {
     try {
-      const res = await fetch("/api/v1/config/exchanges", {
+      const res = await authFetch("/api/v1/config/exchanges", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ exchange, api_key: apiKey, is_enabled: isEnabled }),
@@ -79,7 +80,7 @@ export default function ExchangeConfig() {
   const handleAddToWatchlist = async () => {
     if (!newSymbol) return;
     try {
-      const res = await fetch("/api/v1/watchlist", {
+      const res = await authFetch("/api/v1/watchlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -102,7 +103,7 @@ export default function ExchangeConfig() {
   const handleRemoveFromWatchlist = async (exchange: string, symbol: string) => {
     if (!confirm(`Remove ${symbol} from watchlist?`)) return;
     try {
-      const res = await fetch("/api/v1/watchlist", {
+      const res = await authFetch("/api/v1/watchlist", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ exchange, symbol }),

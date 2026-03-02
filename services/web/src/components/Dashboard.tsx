@@ -8,6 +8,7 @@ import TradeExecutionPanel from "@/components/TradeExecutionPanel";
 import SystemLogs, { LogEntry } from "@/components/SystemLogs";
 import StrategyLab from "@/components/StrategyLab";
 import { cn } from "@/lib/utils";
+import { getWsUrl } from "@/lib/api";
 import SystemStatus from "@/components/SystemStatus";
 import DataDiscovery from "@/components/DataDiscovery";
 import LiveTrading from "@/components/LiveTrading";
@@ -59,8 +60,8 @@ export default function Dashboard() {
     });
 
     useEffect(() => {
-        // WebSocket connection to data-engine via Gateway
-        const ws = new WebSocket("ws://localhost:8080/ws");
+        // WebSocket connection to data-engine via Gateway (with JWT token)
+        const ws = new WebSocket(getWsUrl());
 
         ws.onopen = () => {
             setWsConnected(true);

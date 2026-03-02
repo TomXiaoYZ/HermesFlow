@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Activity, Clock, Database, RefreshCw, AlertTriangle, CheckCircle, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/api";
 
 interface QualityMetrics {
     snapshots: MetricStatus;
@@ -26,7 +27,7 @@ export default function QualityDashboard() {
 
     const fetchMetrics = async () => {
         try {
-            const res = await fetch("/api/v1/data/quality");
+            const res = await authFetch("/api/v1/data/quality");
             if (res.ok) {
                 const data = await res.json();
                 setMetrics(data);
@@ -41,7 +42,7 @@ export default function QualityDashboard() {
     const triggerTask = async (taskName: string, endpoint: string) => {
         setTriggering(taskName);
         try {
-            const res = await fetch(endpoint, { method: "POST" });
+            const res = await authFetch(endpoint, { method: "POST" });
             if (res.ok) {
                 // Short refetch buffer
                 setTimeout(fetchMetrics, 2000);

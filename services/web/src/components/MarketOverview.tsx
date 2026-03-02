@@ -5,6 +5,7 @@ import { Search, TrendingUp, TrendingDown, Clock, BarChart2, RefreshCw } from "l
 import { createChart, CandlestickSeries } from 'lightweight-charts';
 import type { IChartApi, ISeriesApi, UTCTimestamp } from 'lightweight-charts';
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/api";
 
 // Types
 interface TokenSummary {
@@ -136,7 +137,7 @@ export default function MarketOverview() {
     useEffect(() => {
         const fetchTokens = async () => {
             try {
-                const res = await fetch(`${API_BASE}/api/v1/data/market/tokens`);
+                const res = await authFetch(`${API_BASE}/api/v1/data/market/tokens`);
                 const json = await res.json();
                 if (json.tokens) {
                     setTokens(json.tokens);
@@ -199,7 +200,7 @@ export default function MarketOverview() {
                 const start = now - config.windowMs;
 
                 const url = `${API_BASE}/api/v1/data/market/${token.address}/history?resolution=${resolution}&exchange=${exchange}&start=${start}&end=${now}&limit=${config.limit}`;
-                const res = await fetch(url);
+                const res = await authFetch(url);
                 const json = await res.json();
 
                 if (json.data) {

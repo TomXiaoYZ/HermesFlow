@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { Shield, Wallet, Save, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/api";
 
 interface TradingAccount {
   account_id: string;
@@ -36,7 +37,7 @@ export default function TradingAccountConfig() {
 
   const fetchAccounts = async () => {
     try {
-      const res = await fetch(`${GATEWAY_BASE}/api/v1/config/accounts`);
+      const res = await authFetch(`${GATEWAY_BASE}/api/v1/config/accounts`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -86,7 +87,7 @@ export default function TradingAccountConfig() {
         max_daily_loss: parseFloat(draft.max_daily_loss) || 500,
       };
 
-      const res = await fetch(`${GATEWAY_BASE}/api/v1/config/accounts/${encodeURIComponent(accountId)}`, {
+      const res = await authFetch(`${GATEWAY_BASE}/api/v1/config/accounts/${encodeURIComponent(accountId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
