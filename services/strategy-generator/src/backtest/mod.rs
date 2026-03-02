@@ -441,6 +441,10 @@ pub struct WalkForwardConfig {
     pub embargo: usize,
     /// Target number of walk-forward steps.
     pub target_steps: usize,
+    /// OOS threshold relaxation factor (0.0–1.0). Train-derived thresholds are
+    /// relaxed toward the neutral value by this factor before OOS evaluation.
+    /// Lower values = more relaxation. Default 0.85.
+    pub oos_threshold_relax: f64,
 }
 
 impl WalkForwardConfig {
@@ -452,6 +456,7 @@ impl WalkForwardConfig {
             min_test_window: 400,
             embargo: 20,
             target_steps: 3,
+            oos_threshold_relax: 0.85,
         }
     }
 }
@@ -1483,16 +1488,28 @@ impl Backtester {
                 }
             };
 
-            // Evaluate PSR on TEST window using train-derived thresholds
+            // Relax train-derived thresholds for OOS: pull toward neutral to
+            // compensate for signal distribution shift between train and test.
+            let relax = config.oos_threshold_relax;
+            let (upper_oos, lower_oos) = match mode {
+                StrategyMode::LongShort => (upper * relax, lower * relax),
+                StrategyMode::LongOnly => {
+                    // Sigmoid space: neutral is 0.5, pull upper toward 0.5
+                    (0.5 + (upper - 0.5) * relax, lower)
+                }
+            };
+
+            // Evaluate PSR on TEST window using relaxed thresholds
             let (psr, trade_count, active_count, long_count, short_count) = self.psr_fitness_oos(
-                sig_slice, ret_slice, test_start, test_end, mode, upper, lower, train_zs,
+                sig_slice, ret_slice, test_start, test_end, mode, upper_oos, lower_oos, train_zs,
             );
 
             if is_sentinel(psr) {
                 tracing::warn!(
-                    "[{}:{}:{}] WF step {} failed: {} (train=[{}..{}], test=[{}..{}], upper={:.4}, lower={:.4})",
+                    "[{}:{}:{}] WF step {} failed: {} (trades={}, active={}/{}, train=[{}..{}], test=[{}..{}], train_upper={:.4}, oos_upper={:.4}, lower={:.4})",
                     self.exchange, symbol, mode.as_str(), i, sentinel_label(psr),
-                    train_start, train_end, test_start, test_end, upper, lower
+                    trade_count, active_count, test_end - test_start,
+                    train_start, train_end, test_start, test_end, upper, upper_oos, lower_oos
                 );
             }
 
@@ -1953,10 +1970,15 @@ impl Backtester {
 
         // Clamp to reasonable range to avoid extreme outliers dominating
         if z.is_nan() {
-            -10.0
-        } else {
-            z.clamp(-5.0, 5.0)
+            return -10.0;
         }
+
+        // Cap IS PSR at 3.5 to combat overfitting: z > 3.5 likely memorized
+        // the training window. Add a small bonus for strategies that trade more
+        // frequently, rewarding robust signal generation over narrow fits.
+        let capped = z.clamp(-5.0, 3.5);
+        let trade_bonus = (trade_count as f64).ln().max(0.0) * 0.1;
+        (capped + trade_bonus).clamp(-5.0, 5.0)
     }
 
     /// PSR fitness for OOS evaluation with pre-computed thresholds.
@@ -2966,6 +2988,7 @@ mod tests {
         assert_eq!(cfg.min_test_window, 400);
         assert_eq!(cfg.embargo, 20);
         assert_eq!(cfg.target_steps, 3);
+        assert!((cfg.oos_threshold_relax - 0.85).abs() < 1e-10);
     }
 
     #[test]

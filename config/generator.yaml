@@ -25,18 +25,25 @@ exchanges:
       target_test_window: 1000
       min_test_window: 400
       target_steps: 3
+      # P9: OOS threshold relaxation — train-derived thresholds are pulled
+      # toward neutral by this factor before OOS evaluation. Compensates for
+      # signal distribution shift between train and test windows.
+      oos_threshold_relax: 0.85
 
 # P4: Adaptive threshold tuning
 # Controls percentile-based thresholds and clamp ranges for position entry signals.
 # Per-symbol overrides allow fine-tuning for symbols with known asymmetry.
 threshold_config:
   # Global defaults (used when no per-symbol override exists)
+  # P9: Differentiated thresholds — LongOnly lowered from p70 to p65 to
+  # increase OOS trade frequency (sigmoid space: p70 left only ~30% of bars
+  # eligible, too tight after signal distribution shift in OOS window).
   long_only:
-    percentile_upper: 70         # percentile for upper threshold
-    clamp_upper: [0.52, 0.80]   # relaxed from [0.52, 0.70] — NVDA was hitting 0.70 clamp
+    percentile_upper: 65         # lowered from 70 to widen OOS trade window
+    clamp_upper: [0.52, 0.75]   # tightened upper clamp from 0.80 to avoid extreme thresholds
   long_short:
-    percentile_upper: 70
-    percentile_lower: 30
+    percentile_upper: 72
+    percentile_lower: 28
     clamp_upper: [0.1, 2.0]
     clamp_lower: [-2.0, -0.1]
 

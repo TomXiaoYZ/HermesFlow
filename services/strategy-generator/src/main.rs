@@ -152,6 +152,8 @@ pub struct WalkForwardYamlConfig {
     pub target_test_window: Option<usize>,
     pub min_test_window: Option<usize>,
     pub target_steps: Option<usize>,
+    /// OOS threshold relaxation factor (0.0–1.0). Default 0.85.
+    pub oos_threshold_relax: Option<f64>,
 }
 
 /// P3 multi-timeframe configuration, loaded from generator.yaml.
@@ -865,6 +867,7 @@ async fn run_symbol_evolution(
             min_test_window: wf.min_test_window.unwrap_or(400),
             embargo: backtester.embargo_size(),
             target_steps: wf.target_steps.unwrap_or(3),
+            oos_threshold_relax: wf.oos_threshold_relax.unwrap_or(0.85),
         },
         None => WalkForwardConfig {
             embargo: backtester.embargo_size(),
