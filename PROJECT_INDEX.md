@@ -1,6 +1,6 @@
 # PROJECT_INDEX.md - HermesFlow
 
-> Auto-generated project index. Last updated: 2026-03-01
+> Auto-generated project index. Last updated: 2026-03-03
 
 ## Overview
 
@@ -108,7 +108,7 @@ graph TB
 | [data-engine](services/data-engine/) | Rust | 8081→8080 | Market data aggregation, 12+ data source connectors, candle aggregation, data quality monitoring | `src/main.rs` |
 | [gateway](services/gateway/) | Rust | 8080 | API gateway, WebSocket router, JWT auth, CORS, rate limiting, reverse proxy | `src/main.rs` |
 | [strategy-engine](services/strategy-engine/) | Rust | 8082 | Real-time strategy execution, event-driven signals via Redis Pub/Sub, portfolio management | `src/main.rs` |
-| [strategy-generator](services/strategy-generator/) | Rust | 8082→8084 | GA strategy evolution, ALPS, PSR fitness, LLM oracle, MCTS semantic prior (P8), CCIPCA augmentation (P8), diversity trigger (P8), Decimal weights (P8) | `src/main.rs` |
+| [strategy-generator](services/strategy-generator/) | Rust | 8082→8084 | GA strategy evolution, ALPS, PSR/BIC fitness (P9), LLM oracle, MCTS + MAP-Elites archive (P9), causal verification (P9), ensemble rebalance trigger (P9), 5-step WF (P9) | `src/main.rs` |
 | [execution-engine](services/execution-engine/) | Rust | 8083 | Trade execution (IBKR, Futu, Solana); risk checks, shadow trading (P6), shadow promotion guard (P7) | `src/main.rs` |
 | [backtest-engine](services/backtest-engine/) | Rust | (library) | Factor computation (ATR, MACD, Bollinger, etc.), VM-based strategy execution, P8 shape guard + O(n) TS ops | `src/lib.rs` |
 | [common](services/common/) | Rust | (library) | Shared types, event bus, health endpoints, metrics, telemetry | `src/lib.rs` |
@@ -187,7 +187,7 @@ graph LR
 |------|---------|
 | `config/factors.yaml` | Factor definitions for crypto backtest/strategy engines |
 | `config/factors-stock.yaml` | 25 factor definitions for stock (Polygon) evolution |
-| `config/generator.yaml` | Strategy generator: exchanges, multi-timeframe, thresholds, LLM oracle, ensemble, MCTS, lFDR, diversity_trigger (P8), llm_mcts_prior (P8) |
+| `config/generator.yaml` | Strategy generator: exchanges, multi-timeframe, thresholds, LLM oracle, ensemble, MCTS (enabled), lFDR, diversity_trigger (P8/P9), llm_mcts_prior (P8), rebalance_trigger (P9), llm_causal_masking (P9) |
 | `Cargo.toml` | Rust workspace definition + shared dependencies |
 | `docker-compose.yml` | Full service orchestration (19 containers) |
 | `docker-compose.prod.yml` | Production overrides |
@@ -221,6 +221,7 @@ graph LR
 | `docs/DEVELOPMENT_ROADMAP.md` | Feature roadmap |
 | `docs/P0-P5_*.md` | Phase implementation reports |
 | `docs/P8_ARCHITECTURE_DESIGN.md` | P8 architecture design (Gemini review response) |
+| `docs/P9_EXECUTION_REPORT.md` | P9 execution report (factor iteration status, feature verification) |
 
 ## Key Algorithms
 
@@ -242,6 +243,12 @@ graph LR
 - **Diversity-Triggered Injection** (P8): Active L3/L4 Hamming diversity trigger with elitist cull + random injection
 - **VM Shape Guard + O(n) TS Ops** (P8): Pre-execution feature index validation, running-sum ts_mean/ts_sum, conditional NaN sanitization
 - **Decimal Financial Precision** (P8): rust_decimal::Decimal for HRP weights, crowding penalties, turnover cost in ensemble_weights
+- **Quantized Position + Deadzone** (P9): 0.25-step quantized positions coupled with hysteresis deadzone filtering
+- **BIC Complexity Penalty** (P9): `effective_k * ln(n) / (2*n)` replaces linear penalty; high-risk ops (DIV, SIGNED_POWER, LOG) weighted 1.5x
+- **MAP-Elites SubformulaArchive** (P9): 5 behavior buckets × 40 capacity for MCTS cross-generation knowledge sharing
+- **Causal Verification Pipeline** (P9): Three-stage LLM hypothesis → partial correlation → lFDR for factor validation
+- **Dynamic Ensemble Rebalance** (P9): Signal divergence trigger via Spearman correlation + OOS improvement gating
+- **Walk-Forward 5 Steps** (P9): Increased OOS validation from 3 to 5 walk-forward windows
 
 ## File Statistics
 
