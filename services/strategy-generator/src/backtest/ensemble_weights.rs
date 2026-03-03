@@ -117,8 +117,7 @@ pub fn adjust_weights(
     let d_util_floor = Decimal::from_f64_retain(config.utilization_floor).unwrap_or(dec!(0.3));
     let d_penalty_rate =
         Decimal::from_f64_retain(config.crowding_penalty_rate).unwrap_or(dec!(0.3));
-    let d_penalty_max =
-        Decimal::from_f64_retain(config.crowding_max_penalty).unwrap_or(dec!(0.8));
+    let d_penalty_max = Decimal::from_f64_retain(config.crowding_max_penalty).unwrap_or(dec!(0.8));
 
     let mut adjustments = Vec::with_capacity(n);
     let mut d_weights = vec![Decimal::ZERO; n];
@@ -128,13 +127,11 @@ pub fn adjust_weights(
     let mut d_util_factors = vec![Decimal::ONE; n];
 
     for i in 0..n {
-        let d_oos_psr =
-            Decimal::from_f64_retain(candidates[i].oos_psr).unwrap_or(Decimal::ZERO);
+        let d_oos_psr = Decimal::from_f64_retain(candidates[i].oos_psr).unwrap_or(Decimal::ZERO);
         let clamped = d_oos_psr.max(Decimal::ZERO).min(d_psr_max);
         d_psr_factors[i] = Decimal::ONE + d_psr_scale * clamped;
 
-        let d_util =
-            Decimal::from_f64_retain(candidates[i].utilization).unwrap_or(Decimal::ZERO);
+        let d_util = Decimal::from_f64_retain(candidates[i].utilization).unwrap_or(Decimal::ZERO);
         d_util_factors[i] = d_util.max(d_util_floor);
     }
 
@@ -155,7 +152,8 @@ pub fn adjust_weights(
     // Step 3: Apply all factors multiplicatively
     for i in 0..n {
         let d_hrp = Decimal::from_f64_retain(hrp_weights[i]).unwrap_or(Decimal::ZERO);
-        d_weights[i] = d_hrp * d_psr_factors[i] * d_util_factors[i] * (Decimal::ONE - d_crowding[i]);
+        d_weights[i] =
+            d_hrp * d_psr_factors[i] * d_util_factors[i] * (Decimal::ONE - d_crowding[i]);
     }
 
     // Step 4: Renormalize to sum = 1.0
@@ -193,11 +191,21 @@ pub fn compute_turnover(old_weights: &[(String, f64)], new_weights: &[(String, f
     // P8-4B: Decimal precision for turnover affecting real money
     let old_map: std::collections::HashMap<&str, Decimal> = old_weights
         .iter()
-        .map(|(k, v)| (k.as_str(), Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO)))
+        .map(|(k, v)| {
+            (
+                k.as_str(),
+                Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO),
+            )
+        })
         .collect();
     let new_map: std::collections::HashMap<&str, Decimal> = new_weights
         .iter()
-        .map(|(k, v)| (k.as_str(), Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO)))
+        .map(|(k, v)| {
+            (
+                k.as_str(),
+                Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO),
+            )
+        })
         .collect();
 
     let mut all_keys: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -251,7 +259,12 @@ pub fn apply_deadzone_l1(
     // P8-4B: Decimal precision for weight adjustment affecting real money
     let old_map: std::collections::HashMap<&str, Decimal> = old_weights
         .iter()
-        .map(|(k, v)| (k.as_str(), Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO)))
+        .map(|(k, v)| {
+            (
+                k.as_str(),
+                Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO),
+            )
+        })
         .collect();
 
     let d_threshold = Decimal::from_f64_retain(threshold).unwrap_or(Decimal::ZERO);
@@ -287,8 +300,8 @@ pub fn apply_deadzone_l1(
 // Not yet integrated into ensemble routing pipeline.
 
 /// P6-2A: Per-asset hysteresis dead-zone parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AssetDeadzone {
     /// Strategy key (symbol:mode)
     pub key: String,
@@ -328,7 +341,7 @@ pub fn compute_asset_threshold(
 ///
 /// Returns (adjusted_weights, deadzone_metadata) where metadata includes
 /// per-asset threshold and whether a trade was triggered.
-#[allow(dead_code)] // P7-3D validated; wired into ensemble rebalance in P8
+#[allow(dead_code)]
 pub fn apply_hysteresis_deadzone(
     old_weights: &[(String, f64)],
     new_weights: &mut [(String, f64)],
@@ -339,7 +352,12 @@ pub fn apply_hysteresis_deadzone(
     // P8-4B: Decimal precision for weight adjustment affecting real money
     let old_map: std::collections::HashMap<&str, Decimal> = old_weights
         .iter()
-        .map(|(k, v)| (k.as_str(), Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO)))
+        .map(|(k, v)| {
+            (
+                k.as_str(),
+                Decimal::from_f64_retain(*v).unwrap_or(Decimal::ZERO),
+            )
+        })
         .collect();
 
     let param_map: std::collections::HashMap<&str, &AssetDeadzone> =
@@ -412,8 +430,8 @@ pub fn apply_hysteresis_deadzone(
 }
 
 /// P6-2A: Per-asset dead-zone metadata for monitoring and Redis publication.
-#[allow(dead_code)] // P7-3D validated; used in tests
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DeadzoneMetadata {
     pub key: String,
     pub threshold: f64,
@@ -703,8 +721,8 @@ mod tests {
         AssetDeadzone {
             key: key.to_string(),
             volatility: vol,
-            fee_rate: 0.0001,  // 1 bps
-            spread: 0.0002,    // 2 bps
+            fee_rate: 0.0001, // 1 bps
+            spread: 0.0002,   // 2 bps
         }
     }
 

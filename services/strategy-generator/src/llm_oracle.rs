@@ -217,9 +217,7 @@ pub fn build_prompt(ctx: &OracleContext) -> String {
             prompt.push('\n');
 
             prompt.push_str("## Low-Impact Factors (avoid these)\n");
-            prompt.push_str(
-                "The following factors add noise without meaningful signal:\n",
-            );
+            prompt.push_str("The following factors add noise without meaningful signal:\n");
             for (i, fi) in importance.iter().rev().take(10).enumerate() {
                 prompt.push_str(&format!(
                     "{}. {} (index {}): {:.3} PSR drop\n",
@@ -764,8 +762,16 @@ mod tests {
                 oos_psr: 1.256,
             }],
             factor_importance: Some(vec![
-                FactorImportance { factor_index: 0, factor_name: "return".to_string(), importance: 0.45 },
-                FactorImportance { factor_index: 6, factor_name: "momentum".to_string(), importance: 0.38 },
+                FactorImportance {
+                    factor_index: 0,
+                    factor_name: "return".to_string(),
+                    importance: 0.45,
+                },
+                FactorImportance {
+                    factor_index: 6,
+                    factor_name: "momentum".to_string(),
+                    importance: 0.38,
+                },
             ]),
         };
 

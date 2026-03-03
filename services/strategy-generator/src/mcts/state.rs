@@ -30,7 +30,7 @@ impl ActionSpace {
         let mut arities = Vec::with_capacity(23);
         for op in 0..23 {
             let arity = match op {
-                0..=4 => 2,  // ADD, SUB, MUL, DIV, POW
+                0..=4 => 2,   // ADD, SUB, MUL, DIV, POW
                 5..=15 => 1, // ABS, SIGN, LOG, EXP, DELAY1, DELAY5, TS_MEAN, TS_STD, TS_RANK, NEG, SQRT
                 16 => 2,     // TS_CORR
                 17..=22 => 1, // TS_MIN, TS_MAX, TS_SKEW, TS_KURT, SIGMOID, TANH
@@ -177,6 +177,6 @@ mod tests {
         let space = ActionSpace::new(25);
         assert!(!space.is_terminal(0, 0)); // empty
         assert!(!space.is_terminal(2, 3)); // stack > 1
-        assert!(space.is_terminal(1, 3));  // stack = 1, has tokens
+        assert!(space.is_terminal(1, 3)); // stack = 1, has tokens
     }
 }

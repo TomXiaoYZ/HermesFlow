@@ -219,11 +219,8 @@ impl AlpsLayer {
     }
 
     fn sort_by_fitness(&mut self) {
-        self.population.sort_by(|a, b| {
-            b.fitness
-                .partial_cmp(&a.fitness)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        self.population
+            .sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
     }
 
     /// Within-layer tournament selection (k=3).
@@ -383,11 +380,7 @@ impl AlpsGA {
                 .iter()
                 .filter(|g| g.fitness.is_finite())
                 .collect();
-            sorted.sort_by(|a, b| {
-                b.fitness
-                    .partial_cmp(&a.fitness)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            sorted.sort_by(|a, b| b.fitness.total_cmp(&a.fitness));
             for genome in sorted.into_iter().take(per_layer) {
                 elites.push((layer_idx, genome));
             }
@@ -1555,6 +1548,6 @@ mod tests {
     fn test_cull_weakest_out_of_range() {
         let mut ga = AlpsGA::new(FEAT_OFFSET_25);
         assert_eq!(ga.cull_weakest(99, 5), 0); // invalid layer
-        assert_eq!(ga.cull_weakest(0, 0), 0);  // zero count
+        assert_eq!(ga.cull_weakest(0, 0), 0); // zero count
     }
 }

@@ -189,12 +189,24 @@ pub struct MctsYamlConfig {
     pub use_max_reward: bool,
 }
 
-fn default_mcts_budget() -> usize { 1000 }
-fn default_mcts_seeds() -> usize { 5 }
-fn default_mcts_interval() -> usize { 50 }
-fn default_mcts_exploration() -> f64 { 1.414 }
-fn default_mcts_max_len() -> usize { 20 }
-fn default_true() -> bool { true }
+fn default_mcts_budget() -> usize {
+    1000
+}
+fn default_mcts_seeds() -> usize {
+    5
+}
+fn default_mcts_interval() -> usize {
+    50
+}
+fn default_mcts_exploration() -> f64 {
+    1.414
+}
+fn default_mcts_max_len() -> usize {
+    20
+}
+fn default_true() -> bool {
+    true
+}
 
 impl Default for MctsYamlConfig {
     fn default() -> Self {
@@ -231,10 +243,18 @@ pub struct LlmMctsPriorConfig {
     pub min_importance_threshold: f64,
 }
 
-fn default_importance_interval() -> usize { 500 }
-fn default_importance_boost() -> f64 { 0.5 }
-fn default_operator_boost() -> f64 { 0.2 }
-fn default_min_importance() -> f64 { 0.05 }
+fn default_importance_interval() -> usize {
+    500
+}
+fn default_importance_boost() -> f64 {
+    0.5
+}
+fn default_operator_boost() -> f64 {
+    0.2
+}
+fn default_min_importance() -> f64 {
+    0.05
+}
 
 impl Default for LlmMctsPriorConfig {
     fn default() -> Self {
@@ -263,13 +283,37 @@ pub struct DiversityTriggerConfig {
     pub random_injection_count: usize,
     #[serde(default = "default_elitist_cull_ratio")]
     pub elitist_cull_ratio: f64,
+    /// P9-1B: Consecutive zero-trade generations to trigger topology mutation.
+    /// When OOS = SENTINEL_TOO_FEW_TRADES for this many consecutive gens,
+    /// trigger DiversityTrigger instead of aggressive threshold reset.
+    #[serde(default = "default_zero_trade_deadlock_gens")]
+    pub zero_trade_deadlock_gens: usize,
+    /// P9-1B: Enable LLM rescue prompt on zero-trade deadlock.
+    #[serde(default = "default_llm_rescue_enabled")]
+    pub llm_rescue_enabled: bool,
 }
 
-fn default_min_diversity_l3() -> f64 { 0.25 }
-fn default_min_diversity_l4() -> f64 { 0.20 }
-fn default_diversity_cooldown() -> usize { 100 }
-fn default_random_injection_count() -> usize { 10 }
-fn default_elitist_cull_ratio() -> f64 { 0.10 }
+fn default_min_diversity_l3() -> f64 {
+    0.25
+}
+fn default_min_diversity_l4() -> f64 {
+    0.20
+}
+fn default_diversity_cooldown() -> usize {
+    100
+}
+fn default_random_injection_count() -> usize {
+    10
+}
+fn default_elitist_cull_ratio() -> f64 {
+    0.10
+}
+fn default_zero_trade_deadlock_gens() -> usize {
+    200
+}
+fn default_llm_rescue_enabled() -> bool {
+    true
+}
 
 impl Default for DiversityTriggerConfig {
     fn default() -> Self {
@@ -280,6 +324,48 @@ impl Default for DiversityTriggerConfig {
             cooldown_gens: default_diversity_cooldown(),
             random_injection_count: default_random_injection_count(),
             elitist_cull_ratio: default_elitist_cull_ratio(),
+            zero_trade_deadlock_gens: default_zero_trade_deadlock_gens(),
+            llm_rescue_enabled: default_llm_rescue_enabled(),
+        }
+    }
+}
+
+/// P9-3A: LLM causal masking configuration for three-stage factor verification.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LlmCausalMaskingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_causal_interval_gens")]
+    pub interval_gens: usize,
+    #[serde(default = "default_initial_suspicious_weight")]
+    pub initial_suspicious_weight: f64,
+    #[serde(default = "default_partial_corr_threshold")]
+    pub partial_correlation_threshold: f64,
+    #[serde(default = "default_confirmed_pseudo_weight")]
+    pub confirmed_pseudo_weight: f64,
+}
+
+fn default_causal_interval_gens() -> usize {
+    1000
+}
+fn default_initial_suspicious_weight() -> f64 {
+    0.5
+}
+fn default_partial_corr_threshold() -> f64 {
+    0.05
+}
+fn default_confirmed_pseudo_weight() -> f64 {
+    0.1
+}
+
+impl Default for LlmCausalMaskingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_gens: default_causal_interval_gens(),
+            initial_suspicious_weight: default_initial_suspicious_weight(),
+            partial_correlation_threshold: default_partial_corr_threshold(),
+            confirmed_pseudo_weight: default_confirmed_pseudo_weight(),
         }
     }
 }
@@ -312,6 +398,8 @@ struct GeneratorConfig {
     llm_mcts_prior: LlmMctsPriorConfig,
     #[serde(default)]
     diversity_trigger: DiversityTriggerConfig,
+    #[serde(default)]
+    llm_causal_masking: LlmCausalMaskingConfig,
 }
 
 #[tokio::main]
@@ -339,8 +427,17 @@ async fn main() -> anyhow::Result<()> {
     // Load generator config
     let config_path =
         env::var("GENERATOR_CONFIG").unwrap_or_else(|_| "config/generator.yaml".to_string());
-    let (exchange_configs, oracle_config, threshold_config, ensemble_config, mcts_config, lfdr_config, llm_prior_config, diversity_trigger_config) =
-        load_exchange_configs(&config_path);
+    let (
+        exchange_configs,
+        oracle_config,
+        threshold_config,
+        ensemble_config,
+        mcts_config,
+        lfdr_config,
+        llm_prior_config,
+        diversity_trigger_config,
+        _causal_masking_config,
+    ) = load_exchange_configs(&config_path);
     info!(
         "Loaded {} exchange configs: {:?}",
         exchange_configs.len(),
@@ -528,37 +625,39 @@ fn load_exchange_configs(
     backtest::hypothesis::LfdrConfig,
     LlmMctsPriorConfig,
     DiversityTriggerConfig,
+    LlmCausalMaskingConfig,
 ) {
     match std::fs::read_to_string(path) {
-        Ok(content) => match serde_yaml::from_str::<GeneratorConfig>(&content) {
-            Ok(cfg) => {
-                info!(
-                    "LLM oracle config: enabled={}, provider={}, model={}",
-                    cfg.llm_oracle.enabled, cfg.llm_oracle.provider, cfg.llm_oracle.model
-                );
-                info!(
+        Ok(content) => {
+            match serde_yaml::from_str::<GeneratorConfig>(&content) {
+                Ok(cfg) => {
+                    info!(
+                        "LLM oracle config: enabled={}, provider={}, model={}",
+                        cfg.llm_oracle.enabled, cfg.llm_oracle.provider, cfg.llm_oracle.model
+                    );
+                    info!(
                     "Threshold config: LO upper_pct={}, LS upper_pct={}/lower_pct={}, {} overrides",
                     cfg.threshold_config.long_only.percentile_upper,
                     cfg.threshold_config.long_short.percentile_upper,
                     cfg.threshold_config.long_short.percentile_lower,
                     cfg.threshold_config.overrides.len()
                 );
-                info!(
-                    "Ensemble config: enabled={}, max_strategies={}, rebalance_interval={}min",
-                    cfg.ensemble.enabled,
-                    cfg.ensemble.max_total_strategies,
-                    cfg.ensemble.rebalance_interval_minutes
-                );
-                info!(
+                    info!(
+                        "Ensemble config: enabled={}, max_strategies={}, rebalance_interval={}min",
+                        cfg.ensemble.enabled,
+                        cfg.ensemble.max_total_strategies,
+                        cfg.ensemble.rebalance_interval_minutes
+                    );
+                    info!(
                     "MCTS config: enabled={}, budget={}, interval={}, seeds={}, use_max_reward={}",
                     cfg.mcts.enabled, cfg.mcts.budget, cfg.mcts.interval,
                     cfg.mcts.seeds_per_round, cfg.mcts.use_max_reward
                 );
-                info!(
-                    "lFDR config: enabled={}, fdr_level={}, min_cluster_size={}",
-                    cfg.lfdr.enabled, cfg.lfdr.fdr_level, cfg.lfdr.min_cluster_size
-                );
-                info!(
+                    info!(
+                        "lFDR config: enabled={}, fdr_level={}, min_cluster_size={}",
+                        cfg.lfdr.enabled, cfg.lfdr.fdr_level, cfg.lfdr.min_cluster_size
+                    );
+                    info!(
                     "LLM MCTS prior: enabled={}, interval={}, boost={}, op_boost={}, min_threshold={}",
                     cfg.llm_mcts_prior.enabled,
                     cfg.llm_mcts_prior.importance_recompute_interval,
@@ -566,39 +665,42 @@ fn load_exchange_configs(
                     cfg.llm_mcts_prior.operator_boost_scale,
                     cfg.llm_mcts_prior.min_importance_threshold
                 );
-                info!(
-                    "Diversity trigger: enabled={}, L3<{}, L4<{}, cooldown={}, cull_ratio={}",
-                    cfg.diversity_trigger.enabled,
-                    cfg.diversity_trigger.min_diversity_l3,
-                    cfg.diversity_trigger.min_diversity_l4,
-                    cfg.diversity_trigger.cooldown_gens,
-                    cfg.diversity_trigger.elitist_cull_ratio,
-                );
-                (
-                    cfg.exchanges,
-                    cfg.llm_oracle,
-                    cfg.threshold_config,
-                    cfg.ensemble,
-                    cfg.mcts,
-                    cfg.lfdr,
-                    cfg.llm_mcts_prior,
-                    cfg.diversity_trigger,
-                )
+                    info!(
+                        "Diversity trigger: enabled={}, L3<{}, L4<{}, cooldown={}, cull_ratio={}",
+                        cfg.diversity_trigger.enabled,
+                        cfg.diversity_trigger.min_diversity_l3,
+                        cfg.diversity_trigger.min_diversity_l4,
+                        cfg.diversity_trigger.cooldown_gens,
+                        cfg.diversity_trigger.elitist_cull_ratio,
+                    );
+                    (
+                        cfg.exchanges,
+                        cfg.llm_oracle,
+                        cfg.threshold_config,
+                        cfg.ensemble,
+                        cfg.mcts,
+                        cfg.lfdr,
+                        cfg.llm_mcts_prior,
+                        cfg.diversity_trigger,
+                        cfg.llm_causal_masking,
+                    )
+                }
+                Err(e) => {
+                    warn!("Failed to parse {}: {}. Falling back to default.", path, e);
+                    (
+                        default_exchange_configs(),
+                        LlmOracleConfig::default(),
+                        ThresholdConfig::default(),
+                        backtest::ensemble::EnsembleConfig::default(),
+                        MctsYamlConfig::default(),
+                        backtest::hypothesis::LfdrConfig::default(),
+                        LlmMctsPriorConfig::default(),
+                        DiversityTriggerConfig::default(),
+                        LlmCausalMaskingConfig::default(),
+                    )
+                }
             }
-            Err(e) => {
-                warn!("Failed to parse {}: {}. Falling back to default.", path, e);
-                (
-                    default_exchange_configs(),
-                    LlmOracleConfig::default(),
-                    ThresholdConfig::default(),
-                    backtest::ensemble::EnsembleConfig::default(),
-                    MctsYamlConfig::default(),
-                    backtest::hypothesis::LfdrConfig::default(),
-                    LlmMctsPriorConfig::default(),
-                    DiversityTriggerConfig::default(),
-                )
-            }
-        },
+        }
         Err(e) => {
             warn!(
                 "Failed to read {}: {}. Falling back to env vars / defaults.",
@@ -629,6 +731,7 @@ fn load_exchange_configs(
                 backtest::hypothesis::LfdrConfig::default(),
                 LlmMctsPriorConfig::default(),
                 DiversityTriggerConfig::default(),
+                LlmCausalMaskingConfig::default(),
             )
         }
     }
@@ -1115,6 +1218,15 @@ async fn run_symbol_evolution(
     let mut gens_since_diversity_trigger: usize = diversity_trigger_config.cooldown_gens + 1;
     let mut diversity_trigger_count: usize = 0;
 
+    // P9-1B: Zero-trade deadlock counter — consecutive gens with OOS = SENTINEL_TOO_FEW_TRADES
+    let mut consecutive_zero_trade_gens: usize = 0;
+
+    // P9-4A: Structured metric counters for observability
+    let mut oos_valid_count: usize = 0; // OOS PSR > 0.0 (non-sentinel)
+    let mut oos_total_count: usize = 0; // total OOS evaluations
+    let mut is_oos_gap_sum: f64 = 0.0; // cumulative IS-OOS gap for mean calculation
+    let mut is_oos_gap_count: usize = 0; // count of valid gap measurements
+
     // P7-2B / P8-1A/1B/1C: CCIPCA warmup → feature augmentation
     // Features shape: (n_symbols=1, n_factors, n_bars)
     // Compute augmentation in a separate scope to avoid borrow conflicts.
@@ -1173,7 +1285,12 @@ async fn run_symbol_evolution(
         let new_feat_offset = feat_offset + k;
         info!(
             "[{}:{}:{}] P8-1B: CCIPCA augmentation: {}→{} features (PC0..PC{})",
-            exchange, symbol, mode_str, feat_offset, new_feat_offset, k - 1
+            exchange,
+            symbol,
+            mode_str,
+            feat_offset,
+            new_feat_offset,
+            k - 1
         );
 
         // P8-1C: Append PC factor names with explained variance ratios
@@ -1218,36 +1335,39 @@ async fn run_symbol_evolution(
             let vocab_size = feat_offset + 23; // 23 operators total
 
             // P8-0E: Use LlmCachedPolicy when importance data is available
-            let policy: Box<dyn mcts::policy::Policy + Send + Sync> =
-                if llm_prior_config.enabled {
-                    if let Some(importance) = importance_cache.get(&symbol) {
-                        let mut llm_policy =
-                            mcts::policy::LlmCachedPolicy::new(vocab_size, feat_offset);
-                        let elite_tokens: Vec<Vec<usize>> = ga
+            let policy: Box<dyn mcts::policy::Policy + Send + Sync> = if llm_prior_config.enabled {
+                if let Some(importance) = importance_cache.get(&symbol) {
+                    let mut llm_policy =
+                        mcts::policy::LlmCachedPolicy::new(vocab_size, feat_offset);
+                    let elite_tokens: Vec<Vec<usize>> = ga
                             .collect_elites(3) // 3 per layer × 5 layers = 15 max
                             .iter()
                             .take(5)
                             .map(|(_, g)| g.tokens.clone())
                             .collect();
-                        mcts::policy::populate_policy_cache(
-                            &mut llm_policy,
-                            importance,
-                            &elite_tokens,
-                            vocab_size,
-                            feat_offset,
-                            &llm_prior_config,
-                        );
-                        info!(
-                            "[{}:{}:{}] Gen {} MCTS: using LLM prior (cache={} entries)",
-                            exchange, symbol, mode_str, gen, llm_policy.cache_size()
-                        );
-                        Box::new(llm_policy)
-                    } else {
-                        Box::new(mcts::policy::UniformPolicy)
-                    }
+                    mcts::policy::populate_policy_cache(
+                        &mut llm_policy,
+                        importance,
+                        &elite_tokens,
+                        vocab_size,
+                        feat_offset,
+                        &llm_prior_config,
+                    );
+                    info!(
+                        "[{}:{}:{}] Gen {} MCTS: using LLM prior (cache={} entries)",
+                        exchange,
+                        symbol,
+                        mode_str,
+                        gen,
+                        llm_policy.cache_size()
+                    );
+                    Box::new(llm_policy)
                 } else {
                     Box::new(mcts::policy::UniformPolicy)
-                };
+                }
+            } else {
+                Box::new(mcts::policy::UniformPolicy)
+            };
 
             let search_config = mcts::search::MctsConfig {
                 budget: mcts_config.budget,
@@ -1306,8 +1426,14 @@ async fn run_symbol_evolution(
                 ga.inject_genomes(0, seeds);
                 info!(
                     "[{}:{}:{}] Gen {} MCTS: injected {}/{} seeds into L0 (budget={}, unique={})",
-                    exchange, symbol, mode_str, gen, mcts_injected_this_gen,
-                    result.formulas.len(), result.total_rollouts, result.unique_terminals
+                    exchange,
+                    symbol,
+                    mode_str,
+                    gen,
+                    mcts_injected_this_gen,
+                    result.formulas.len(),
+                    result.total_rollouts,
+                    result.unique_terminals
                 );
             }
         }
@@ -1346,15 +1472,21 @@ async fn run_symbol_evolution(
                     .collect();
                 info!(
                     "[{}:{}:{}] Gen {} diversity (Hamming): [{}]",
-                    exchange, symbol, mode_str, gen, div_strs.join(", ")
+                    exchange,
+                    symbol,
+                    mode_str,
+                    gen,
+                    div_strs.join(", ")
                 );
 
                 if diversity_trigger_config.enabled {
-                    let l3_div = diversity.iter()
+                    let l3_div = diversity
+                        .iter()
                         .find(|(i, _, _)| *i == 3)
                         .map(|(_, _, d)| *d)
                         .unwrap_or(1.0);
-                    let l4_div = diversity.iter()
+                    let l4_div = diversity
+                        .iter()
                         .find(|(i, _, _)| *i == 4)
                         .map(|(_, _, d)| *d)
                         .unwrap_or(1.0);
@@ -1401,7 +1533,12 @@ async fn run_symbol_evolution(
         if llm_prior_config.enabled && gen > 0 && gen.is_multiple_of(importance_interval) {
             if let Some(best) = ga.best_genome.clone() {
                 let fi = backtest::factor_importance::compute_permutation_importance(
-                    &backtester, &best, &symbol, k, mode, &factor_names,
+                    &backtester,
+                    &best,
+                    &symbol,
+                    k,
+                    mode,
+                    &factor_names,
                 );
                 let top_summary = backtest::factor_importance::top_n_summary(&fi, 10);
                 let bottom_summary = backtest::factor_importance::bottom_n_summary(&fi, 10);
@@ -1457,9 +1594,84 @@ async fn run_symbol_evolution(
                 );
             }
 
+            // P9-4A: Update OOS metric counters
+            oos_total_count += 1;
+            if !is_sentinel(oos_psr) && oos_psr > 0.0 {
+                oos_valid_count += 1;
+            }
+            if !is_sentinel(oos_psr) && best.fitness > 0.0 {
+                is_oos_gap_sum += is_oos_gap;
+                is_oos_gap_count += 1;
+            }
+
+            // P9-4A: Emit structured observability metrics every 100 generations
+            if gen > 0 && gen.is_multiple_of(100) {
+                let oos_valid_rate = if oos_total_count > 0 {
+                    oos_valid_count as f64 / oos_total_count as f64
+                } else {
+                    0.0
+                };
+                let mean_is_oos_gap = if is_oos_gap_count > 0 {
+                    is_oos_gap_sum / is_oos_gap_count as f64
+                } else {
+                    0.0
+                };
+                info!(
+                    "[{}:{}:{}] Gen {} METRICS: oos_valid_rate={:.3} ({}/{}), mean_is_oos_gap={:.3}, \
+                     diversity_triggers={}, zero_trade_streak={}, tft_rate={:.3}, utilization={:.3}, \
+                     oracle_invocations={}, oracle_injected={}",
+                    exchange, symbol, mode_str, gen,
+                    oos_valid_rate, oos_valid_count, oos_total_count,
+                    mean_is_oos_gap,
+                    diversity_trigger_count,
+                    consecutive_zero_trade_gens,
+                    tft_tracker.rate(),
+                    util_tracker.utilization(),
+                    oracle_invocations,
+                    oracle_injected_total,
+                );
+            }
+
             // Track TFT rate for LLM oracle trigger
             let is_tft = wf_result.failure_mode.as_deref() == Some("too_few_trades");
             tft_tracker.push(is_tft);
+
+            // P9-1B: Track consecutive zero-trade generations for deadlock detection
+            if is_sentinel(oos_psr) && oos_psr as i64 == backtest::SENTINEL_TOO_FEW_TRADES as i64 {
+                consecutive_zero_trade_gens += 1;
+            } else {
+                consecutive_zero_trade_gens = 0;
+            }
+
+            // P9-1B: DiversityTrigger topology mutation on zero-trade deadlock
+            if diversity_trigger_config.enabled
+                && consecutive_zero_trade_gens >= diversity_trigger_config.zero_trade_deadlock_gens
+                && gens_since_diversity_trigger > diversity_trigger_config.cooldown_gens
+            {
+                warn!(
+                    "[{}:{}:{}] Gen {} ZERO-TRADE DEADLOCK ({} consecutive gens) — topology mutation",
+                    exchange, symbol, mode_str, gen, consecutive_zero_trade_gens
+                );
+
+                // 1. Cull weakest 20% from L0
+                let cull_count = (ga.layer_size(0) as f64 * 0.20).ceil() as usize;
+                let culled = ga.cull_weakest(0, cull_count);
+
+                // 2. Inject random genomes to reshape topology
+                let random_count = diversity_trigger_config.random_injection_count.max(15);
+                let random_genomes = ga.generate_random_genomes(random_count);
+                ga.inject_genomes(0, random_genomes);
+
+                info!(
+                    "[{}:{}:{}] Gen {} DIVERSITY-TRIGGER: culled {} from L0, injected {} random (deadlock rescue #{})",
+                    exchange, symbol, mode_str, gen, culled, random_count,
+                    diversity_trigger_count + 1
+                );
+
+                diversity_trigger_count += 1;
+                gens_since_diversity_trigger = 0;
+                consecutive_zero_trade_gens = 0;
+            }
 
             // P4: Feed utilization metrics from walk-forward steps
             let wf_total_bars: u32 = wf_result
@@ -2633,7 +2845,10 @@ mod tests {
         assert_eq!(config.interval, 50);
         assert!((config.exploration_c - 1.414).abs() < 1e-3);
         assert_eq!(config.max_length, 20);
-        assert!(config.use_max_reward, "Extreme Bandit PUCT should default to true");
+        assert!(
+            config.use_max_reward,
+            "Extreme Bandit PUCT should default to true"
+        );
     }
 
     #[test]

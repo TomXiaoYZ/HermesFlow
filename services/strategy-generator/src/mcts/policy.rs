@@ -64,10 +64,18 @@ impl Policy for HeuristicPolicy {
         for &action in legal_actions {
             let w = if (action as usize) < self.feat_offset {
                 // Feature: prefer in early positions
-                if depth < 3 { 2.0 } else { 1.0 }
+                if depth < 3 {
+                    2.0
+                } else {
+                    1.0
+                }
             } else {
                 // Operator: prefer when stack is deep (need to collapse)
-                if stack_depth >= 3 { 1.5 } else { 1.0 }
+                if stack_depth >= 3 {
+                    1.5
+                } else {
+                    1.0
+                }
             };
             weights.push(w);
         }
@@ -116,7 +124,7 @@ fn canonicalize_rpn(tokens: &[u32], feat_offset: u32) -> Vec<u32> {
             let is_binary = matches!(op_idx, 0..=3 | 16);
             if is_binary {
                 stack_effect[i] = -1; // consume 2, push 1 → net -1
-                // Find the two operand subtrees by walking backward
+                                      // Find the two operand subtrees by walking backward
                 let mut depth = 0i32;
                 let mut right_start = i;
                 // Walk backward to find right operand start
@@ -219,7 +227,7 @@ impl LlmCachedPolicy {
     fn hash_state(tokens: &[u32], stack_depth: u32, feat_offset: u32) -> u64 {
         let canonical = canonicalize_rpn(tokens, feat_offset);
         let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
-        // Include stack depth
+                                                // Include stack depth
         hash ^= stack_depth as u64;
         hash = hash.wrapping_mul(0x100000001b3);
         // Include each token
@@ -318,7 +326,8 @@ pub fn populate_policy_cache(
     feat_offset: usize,
     config: &LlmMctsPriorConfig,
 ) {
-    let weights = build_llm_prior_weights(importance, elite_tokens, vocab_size, feat_offset, config);
+    let weights =
+        build_llm_prior_weights(importance, elite_tokens, vocab_size, feat_offset, config);
 
     // For each elite, insert a cache entry for each prefix (including empty)
     for tokens in elite_tokens {
@@ -423,7 +432,11 @@ mod tests {
         let priors = policy.prior(&actions, 0, &[]);
         let expected = 1.0 / 3.0;
         for &p in &priors {
-            assert!((p - expected).abs() < 1e-10, "Expected uniform, got {:?}", priors);
+            assert!(
+                (p - expected).abs() < 1e-10,
+                "Expected uniform, got {:?}",
+                priors
+            );
         }
     }
 
@@ -507,8 +520,16 @@ mod tests {
     #[test]
     fn test_build_llm_prior_weights_boosts_important_factors() {
         let importance = vec![
-            FactorImportance { factor_index: 0, factor_name: "f0".to_string(), importance: 0.5 },
-            FactorImportance { factor_index: 1, factor_name: "f1".to_string(), importance: 0.02 }, // below threshold
+            FactorImportance {
+                factor_index: 0,
+                factor_name: "f0".to_string(),
+                importance: 0.5,
+            },
+            FactorImportance {
+                factor_index: 1,
+                factor_name: "f1".to_string(),
+                importance: 0.02,
+            }, // below threshold
         ];
         let config = LlmMctsPriorConfig {
             enabled: true,

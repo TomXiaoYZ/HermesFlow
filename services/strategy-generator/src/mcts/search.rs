@@ -110,6 +110,183 @@ impl DeceptionSuppressor {
     }
 }
 
+// ── P9-2A: MAP-Elites Subformula Archive ────────────────────────────
+
+/// Operator behavior class for MAP-Elites bucketing.
+/// Buckets prevent any single behavior type from dominating the archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub enum OperatorClass {
+    /// Momentum-type: ts_mean(5), ts_sum(6), ts_delta(10), ts_decay_linear(12)
+    Momentum,
+    /// Mean-reversion-type: ts_zscore(7), ts_rank(9), ts_scale(14)
+    MeanRevert,
+    /// Volatility-type: ts_std(4), ABS(15), SIGNED_POWER(8)
+    Volatility,
+    /// Cross-asset-type: ts_corr(16) + PC features (handled at feature level)
+    CrossAsset,
+    /// Arithmetic-type: ADD(0), SUB(1), MUL(2), DIV(3), LOG(19), NEG(17), INV(18)
+    Arithmetic,
+}
+
+#[allow(dead_code)]
+impl OperatorClass {
+    /// Classify an operator offset (token - feat_offset) into a behavior class.
+    pub fn from_operator_offset(offset: u32) -> Self {
+        match offset {
+            5 | 6 | 10 | 12 => OperatorClass::Momentum,
+            7 | 9 | 14 => OperatorClass::MeanRevert,
+            4 | 8 | 15 => OperatorClass::Volatility,
+            16 => OperatorClass::CrossAsset,
+            0 | 1 | 2 | 3 | 17 | 18 | 19 => OperatorClass::Arithmetic,
+            _ => OperatorClass::Arithmetic, // Unknown → arithmetic bucket
+        }
+    }
+}
+
+#[allow(dead_code)]
+/// A subformula entry in the MAP-Elites archive.
+#[derive(Debug, Clone)]
+pub struct SubformulaEntry {
+    /// 2-4 token subsequence (stored as u32 indices, zero-copy from MCTS).
+    pub tokens: Vec<u32>,
+    /// OOS PSR of the parent formula that contributed this subformula.
+    pub oos_psr: f64,
+    /// Generation when this entry was added.
+    pub generation: u64,
+    /// Source symbol for cross-symbol knowledge transfer.
+    pub source_symbol: String,
+}
+
+/// MAP-Elites-style subformula archive.
+///
+/// Organizes discovered subformulas by operator behavior class, preventing
+/// diversity collapse where high-fitness momentum patterns crowd out
+/// volatility or mean-reversion building blocks.
+///
+/// Thread safety: MCTS is single-threaded, archive updates happen between rounds.
+#[allow(dead_code)]
+pub struct SubformulaArchive {
+    /// Per-class buckets with fixed capacity.
+    buckets: HashMap<OperatorClass, Vec<SubformulaEntry>>,
+    /// Maximum entries per bucket (total capacity = 5 × max_per_bucket).
+    pub max_per_bucket: usize,
+    /// Feature offset for operator classification.
+    feat_offset: u32,
+}
+
+#[allow(dead_code)]
+impl SubformulaArchive {
+    /// Create a new empty archive with given capacity per bucket.
+    pub fn new(max_per_bucket: usize, feat_offset: usize) -> Self {
+        let mut buckets = HashMap::new();
+        for class in &[
+            OperatorClass::Momentum,
+            OperatorClass::MeanRevert,
+            OperatorClass::Volatility,
+            OperatorClass::CrossAsset,
+            OperatorClass::Arithmetic,
+        ] {
+            buckets.insert(*class, Vec::with_capacity(max_per_bucket));
+        }
+        Self {
+            buckets,
+            max_per_bucket,
+            feat_offset: feat_offset as u32,
+        }
+    }
+
+    /// Total number of entries across all buckets.
+    pub fn total_size(&self) -> usize {
+        self.buckets.values().map(|b| b.len()).sum()
+    }
+
+    /// Distribution of entries per bucket class.
+    pub fn bucket_distribution(&self) -> Vec<(OperatorClass, usize)> {
+        self.buckets.iter().map(|(&k, v)| (k, v.len())).collect()
+    }
+
+    /// Extract subformulas (2-4 token windows) from a terminal formula
+    /// and insert them into the appropriate behavior bucket.
+    pub fn ingest_formula(
+        &mut self,
+        tokens: &[u32],
+        oos_psr: f64,
+        generation: u64,
+        source_symbol: &str,
+    ) {
+        if tokens.len() < 2 || oos_psr <= 0.0 {
+            return;
+        }
+
+        // Extract 2-4 token windows
+        for window_size in 2..=4.min(tokens.len()) {
+            for window in tokens.windows(window_size) {
+                // Classify by the dominant operator in the window
+                let class = self.classify_window(window);
+                self.insert_to_bucket(
+                    class,
+                    SubformulaEntry {
+                        tokens: window.to_vec(),
+                        oos_psr,
+                        generation,
+                        source_symbol: source_symbol.to_string(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Classify a token window by its dominant operator behavior.
+    fn classify_window(&self, window: &[u32]) -> OperatorClass {
+        // Find the operator (token >= feat_offset) with highest specificity
+        for &t in window.iter().rev() {
+            if t >= self.feat_offset {
+                return OperatorClass::from_operator_offset(t - self.feat_offset);
+            }
+        }
+        // All features, no operators → arithmetic (default)
+        OperatorClass::Arithmetic
+    }
+
+    /// Insert entry into a bucket, evicting the lowest-PSR entry if full.
+    fn insert_to_bucket(&mut self, class: OperatorClass, entry: SubformulaEntry) {
+        let bucket = self.buckets.entry(class).or_default();
+
+        if bucket.len() < self.max_per_bucket {
+            bucket.push(entry);
+        } else {
+            // Find the entry with lowest oos_psr and replace if new is better
+            if let Some((min_idx, min_psr)) = bucket
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.oos_psr.total_cmp(&b.oos_psr))
+                .map(|(i, e)| (i, e.oos_psr))
+            {
+                if entry.oos_psr > min_psr {
+                    bucket[min_idx] = entry;
+                }
+            }
+        }
+    }
+
+    /// Get all entries from a specific behavior class (for prior boosting).
+    pub fn get_bucket(&self, class: OperatorClass) -> &[SubformulaEntry] {
+        self.buckets
+            .get(&class)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get the top-N subformulas across all buckets (for MCTS prior injection).
+    pub fn top_subformulas(&self, n: usize) -> Vec<&SubformulaEntry> {
+        let mut all: Vec<&SubformulaEntry> = self.buckets.values().flatten().collect();
+        all.sort_by(|a, b| b.oos_psr.total_cmp(&a.oos_psr));
+        all.truncate(n);
+        all
+    }
+}
+
 /// Result from a single MCTS round: discovered formulas ranked by fitness.
 #[derive(Debug, Clone)]
 pub struct MctsResult {
@@ -212,14 +389,22 @@ where
 
         let reward = if child_terminal {
             let r = evaluate_fn(&sim_tokens);
-            if r.is_nan() { -1.0 } else { r }
+            if r.is_nan() {
+                -1.0
+            } else {
+                r
+            }
         } else {
             // Random rollout from child state
             let (rollout_tokens, reached_terminal) =
                 random_rollout(action_space, &sim_tokens, child_stack, config.max_length);
             if reached_terminal {
                 let r = evaluate_fn(&rollout_tokens);
-                if r.is_nan() { -1.0 } else { r }
+                if r.is_nan() {
+                    -1.0
+                } else {
+                    r
+                }
             } else {
                 -1.0 // Failed to reach terminal
             }
@@ -295,12 +480,7 @@ fn select(
 /// score = Q(child) + c * prior(child) * sqrt(N_parent) / (1 + N_child)
 ///
 /// Q = mean_reward by default, or max_reward if config.use_max_reward is true.
-fn select_puct(
-    arena: &Arena,
-    children: &[u32],
-    parent_visits: u32,
-    config: &MctsConfig,
-) -> u32 {
+fn select_puct(arena: &Arena, children: &[u32], parent_visits: u32, config: &MctsConfig) -> u32 {
     let sqrt_parent = (parent_visits as f64).sqrt();
     let mut best_score = f64::NEG_INFINITY;
     let mut best_child = children[0];
@@ -317,8 +497,8 @@ fn select_puct(
             child.mean_reward()
         };
 
-        let exploration = config.exploration_c * child.prior * sqrt_parent
-            / (1.0 + child.visit_count as f64);
+        let exploration =
+            config.exploration_c * child.prior * sqrt_parent / (1.0 + child.visit_count as f64);
 
         let score = q + exploration;
         if score > best_score {
@@ -396,7 +576,7 @@ fn backpropagate(arena: &mut Arena, start: u32, reward: f64) {
 /// Extract top-k unique formulas from terminal results, sorted by fitness descending.
 fn extract_top_k(mut terminals: Vec<(Vec<u32>, f64)>, k: usize) -> MctsResult {
     // Deduplicate by token sequence
-    terminals.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    terminals.sort_by(|a, b| b.1.total_cmp(&a.1));
 
     let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
     let mut formulas: Vec<Vec<u32>> = Vec::new();
@@ -431,8 +611,8 @@ fn extract_top_k(mut terminals: Vec<(Vec<u32>, f64)>, k: usize) -> MctsResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::policy::UniformPolicy;
+    use super::*;
 
     /// Simple fitness: reward = number of tokens (longer formulas are "better").
     fn length_fitness(tokens: &[u32]) -> f64 {
@@ -572,7 +752,11 @@ mod tests {
         // "Needle" fitness: formula [0, 1, feat+0(=ADD)] gets reward 1.0, all others 0.1
         let needle: &[u32] = &[0, 1, 3]; // feat0, feat1, ADD
         let needle_fitness = |tokens: &[u32]| -> f64 {
-            if tokens == needle { 1.0 } else { 0.1 }
+            if tokens == needle {
+                1.0
+            } else {
+                0.1
+            }
         };
 
         // Run with max_reward mode
@@ -621,7 +805,10 @@ mod tests {
 
         let node = arena.get(child);
         assert_eq!(node.visit_count, 3);
-        assert!((node.max_reward - 0.9).abs() < 1e-10, "max_reward should track the best");
+        assert!(
+            (node.max_reward - 0.9).abs() < 1e-10,
+            "max_reward should track the best"
+        );
         assert!((node.mean_reward() - (0.3 + 0.9 + 0.5) / 3.0).abs() < 1e-10);
     }
 
@@ -656,7 +843,10 @@ mod tests {
             ..Default::default()
         };
         let selected_mean = select_puct(&arena, &[a, b], 40, &config_mean);
-        assert_eq!(selected_mean, a, "Mean mode should prefer child A (higher mean)");
+        assert_eq!(
+            selected_mean, a,
+            "Mean mode should prefer child A (higher mean)"
+        );
 
         // Max mode: should select B (max 0.95 > 0.6)
         let config_max = MctsConfig {
@@ -665,7 +855,10 @@ mod tests {
             ..Default::default()
         };
         let selected_max = select_puct(&arena, &[a, b], 40, &config_max);
-        assert_eq!(selected_max, b, "Max mode should prefer child B (higher max_reward)");
+        assert_eq!(
+            selected_max, b,
+            "Max mode should prefer child B (higher max_reward)"
+        );
     }
 
     #[test]
@@ -682,8 +875,11 @@ mod tests {
 
         let result = run_mcts_round(&space, &policy, &config, |tokens: &[u32]| {
             // Reward formulas that use diverse features
-            let unique_features: std::collections::HashSet<u32> =
-                tokens.iter().filter(|&&t| (t as usize) < 25).copied().collect();
+            let unique_features: std::collections::HashSet<u32> = tokens
+                .iter()
+                .filter(|&&t| (t as usize) < 25)
+                .copied()
+                .collect();
             unique_features.len() as f64 / 5.0
         });
 
@@ -713,7 +909,11 @@ mod tests {
 
         // First occurrence: all n-grams freq=1, penalty = exp(-0.5 * 0) = 1.0
         let p1 = ds.record_and_penalize(&[0, 1, 2, 3, 4]);
-        assert!((p1 - 1.0).abs() < 1e-10, "First occurrence: no penalty, got {}", p1);
+        assert!(
+            (p1 - 1.0).abs() < 1e-10,
+            "First occurrence: no penalty, got {}",
+            p1
+        );
 
         // Second occurrence of same n-grams: freq=2, penalty = exp(-0.5 * 1)
         let p2 = ds.record_and_penalize(&[0, 1, 2, 3, 4]);
@@ -823,8 +1023,11 @@ mod tests {
 
         let result = run_mcts_round(&space, &policy, &config, |tokens: &[u32]| {
             // Simple fitness: more unique features = better
-            let feats: std::collections::HashSet<u32> =
-                tokens.iter().filter(|&&t| (t as usize) < feat_offset).copied().collect();
+            let feats: std::collections::HashSet<u32> = tokens
+                .iter()
+                .filter(|&&t| (t as usize) < feat_offset)
+                .copied()
+                .collect();
             feats.len() as f64 / 5.0
         });
 
@@ -834,7 +1037,9 @@ mod tests {
                 assert!(
                     (token as usize) < space.vocab_size,
                     "Token {} out of range (vocab={}) in formula {}",
-                    token, space.vocab_size, i
+                    token,
+                    space.vocab_size,
+                    i
                 );
             }
             // Verify terminal: stack depth should be 1
@@ -842,7 +1047,11 @@ mod tests {
             for &t in formula {
                 stack = space.stack_after_action(stack, t);
             }
-            assert_eq!(stack, 1, "Formula {:?} not terminal (stack={})", formula, stack);
+            assert_eq!(
+                stack, 1,
+                "Formula {:?} not terminal (stack={})",
+                formula, stack
+            );
         }
     }
 
@@ -868,5 +1077,126 @@ mod tests {
                 assert_ne!(token, crate::mcts::arena::NULL_NODE, "NULL_NODE in formula");
             }
         }
+    }
+
+    // ── P9-2A: MAP-Elites SubformulaArchive Tests ────────────────────
+
+    #[test]
+    fn test_archive_empty_on_creation() {
+        let archive = SubformulaArchive::new(40, 25);
+        assert_eq!(archive.total_size(), 0);
+        assert_eq!(archive.max_per_bucket, 40);
+    }
+
+    #[test]
+    fn test_archive_ingest_classifies_correctly() {
+        let mut archive = SubformulaArchive::new(40, 3);
+        // feat_offset=3, so tokens 0-2 are features, 3+ are operators
+        // Operator ADD = offset 0 → token 3 → Arithmetic
+        // Operator ts_mean = offset 5 → token 8 → Momentum
+        archive.ingest_formula(&[0, 1, 3], 1.5, 100, "AAPL"); // A B ADD → Arithmetic
+        archive.ingest_formula(&[0, 8], 2.0, 100, "AAPL"); // A ts_mean → Momentum
+
+        assert!(archive.total_size() > 0);
+        let momentum = archive.get_bucket(OperatorClass::Momentum);
+        let arithmetic = archive.get_bucket(OperatorClass::Arithmetic);
+        assert!(!momentum.is_empty(), "Should have momentum entries");
+        assert!(!arithmetic.is_empty(), "Should have arithmetic entries");
+    }
+
+    #[test]
+    fn test_archive_evicts_lowest_psr() {
+        let mut archive = SubformulaArchive::new(2, 3);
+        // Fill arithmetic bucket to capacity
+        archive.ingest_formula(&[0, 1, 3], 1.0, 100, "AAPL"); // PSR=1.0
+        archive.ingest_formula(&[1, 2, 3], 2.0, 200, "GOOG"); // PSR=2.0
+
+        let bucket_before = archive.get_bucket(OperatorClass::Arithmetic).len();
+
+        // Insert higher PSR → should evict the 1.0 entry
+        archive.ingest_formula(&[0, 2, 3], 3.0, 300, "MSFT"); // PSR=3.0
+
+        let bucket = archive.get_bucket(OperatorClass::Arithmetic);
+        assert!(bucket.len() <= 2, "Bucket should respect max capacity");
+
+        // The lowest PSR entry should have been evicted
+        let min_psr = bucket
+            .iter()
+            .map(|e| e.oos_psr)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            min_psr >= 2.0,
+            "Lowest PSR in bucket should be >= 2.0, got {}",
+            min_psr
+        );
+    }
+
+    #[test]
+    fn test_archive_buckets_independent() {
+        let mut archive = SubformulaArchive::new(2, 3);
+        // Fill arithmetic bucket
+        archive.ingest_formula(&[0, 1, 3], 1.0, 100, "AAPL"); // ADD → Arithmetic
+        archive.ingest_formula(&[1, 2, 3], 2.0, 200, "GOOG"); // ADD → Arithmetic
+
+        // Momentum bucket should still be empty
+        let momentum = archive.get_bucket(OperatorClass::Momentum);
+        assert!(momentum.is_empty(), "Momentum bucket should be empty");
+
+        // Adding momentum entry should not affect arithmetic
+        archive.ingest_formula(&[0, 8], 0.5, 100, "AAPL"); // ts_mean → Momentum
+        let arithmetic = archive.get_bucket(OperatorClass::Arithmetic);
+        assert_eq!(arithmetic.len(), 2, "Arithmetic bucket unchanged");
+    }
+
+    #[test]
+    fn test_archive_top_subformulas() {
+        let mut archive = SubformulaArchive::new(40, 3);
+        archive.ingest_formula(&[0, 1, 3], 3.0, 100, "AAPL"); // Arithmetic
+        archive.ingest_formula(&[0, 8], 5.0, 200, "GOOG"); // Momentum
+        archive.ingest_formula(&[1, 7], 1.0, 300, "MSFT"); // Volatility (ts_std=offset 4→token 7)
+
+        let top = archive.top_subformulas(2);
+        assert!(top.len() <= 2);
+        if top.len() == 2 {
+            assert!(
+                top[0].oos_psr >= top[1].oos_psr,
+                "Should be sorted by PSR descending"
+            );
+        }
+    }
+
+    #[test]
+    fn test_archive_skips_negative_psr() {
+        let mut archive = SubformulaArchive::new(40, 3);
+        archive.ingest_formula(&[0, 1, 3], -1.0, 100, "AAPL");
+        assert_eq!(
+            archive.total_size(),
+            0,
+            "Should skip formulas with negative PSR"
+        );
+    }
+
+    #[test]
+    fn test_operator_class_classification() {
+        assert_eq!(
+            OperatorClass::from_operator_offset(0),
+            OperatorClass::Arithmetic
+        ); // ADD
+        assert_eq!(
+            OperatorClass::from_operator_offset(5),
+            OperatorClass::Momentum
+        ); // ts_mean
+        assert_eq!(
+            OperatorClass::from_operator_offset(7),
+            OperatorClass::MeanRevert
+        ); // ts_zscore
+        assert_eq!(
+            OperatorClass::from_operator_offset(4),
+            OperatorClass::Volatility
+        ); // ts_std
+        assert_eq!(
+            OperatorClass::from_operator_offset(16),
+            OperatorClass::CrossAsset
+        ); // ts_corr
     }
 }

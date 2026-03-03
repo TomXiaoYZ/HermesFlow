@@ -83,6 +83,9 @@ pub struct EnsembleConfig {
     /// P6-1D: Non-linear decay routing buffer configuration.
     #[serde(default)]
     pub decay: DecayConfig,
+    /// P9-1C: Dynamic signal divergence trigger for ensemble rebalance.
+    #[serde(default)]
+    pub rebalance_trigger: RebalanceTriggerConfig,
 }
 
 impl Default for EnsembleConfig {
@@ -104,6 +107,7 @@ impl Default for EnsembleConfig {
             regime_intervals: default_regime_intervals(),
             deadzone: DeadzoneConfig::default(),
             decay: DecayConfig::default(),
+            rebalance_trigger: RebalanceTriggerConfig::default(),
         }
     }
 }
@@ -227,11 +231,7 @@ fn default_retire_epsilon() -> f64 {
 /// Returns a value in (0.0, 1.0] that should multiply the strategy's
 /// ensemble weight. Returns 1.0 for non-decaying strategies.
 #[allow(dead_code)] // Used by strategy-engine when loading deployed_strategies
-pub fn compute_decay_multiplier(
-    decay_state: &str,
-    decay_factor: f64,
-    decay_rate: f64,
-) -> f64 {
+pub fn compute_decay_multiplier(decay_state: &str, decay_factor: f64, decay_rate: f64) -> f64 {
     match decay_state {
         "decaying" => (decay_factor * (-decay_rate).exp()).max(0.0),
         "retired" => 0.0,
@@ -288,6 +288,134 @@ fn default_crowding_penalty_rate() -> f64 {
 }
 fn default_crowding_max_penalty() -> f64 {
     0.8
+}
+
+// ── P9-1C: Dynamic Rebalance Trigger ────────────────────────────────
+
+/// P9-1C: Configuration for signal-divergence-based ensemble rebalance trigger.
+/// Replaces static 50K generation gap with dual-condition dynamic trigger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebalanceTriggerConfig {
+    /// Spearman rank correlation threshold. When current elite signals
+    /// diverge from ensemble signals below this ρ, trigger rebalance.
+    #[serde(default = "default_signal_corr_threshold")]
+    pub signal_correlation_threshold: f64,
+    /// OOS PSR improvement ratio. When recent top-5 OOS PSR exceeds
+    /// ensemble average by this factor, trigger rebalance.
+    #[serde(default = "default_oos_improvement_ratio")]
+    pub oos_improvement_ratio: f64,
+    /// Minimum interval between rebalances (generations) — anti-jitter.
+    #[serde(default = "default_min_rebalance_interval_gens")]
+    pub min_rebalance_interval_gens: usize,
+}
+
+impl Default for RebalanceTriggerConfig {
+    fn default() -> Self {
+        Self {
+            signal_correlation_threshold: 0.6,
+            oos_improvement_ratio: 1.5,
+            min_rebalance_interval_gens: 5000,
+        }
+    }
+}
+
+fn default_signal_corr_threshold() -> f64 {
+    0.6
+}
+fn default_oos_improvement_ratio() -> f64 {
+    1.5
+}
+fn default_min_rebalance_interval_gens() -> usize {
+    5000
+}
+
+#[allow(dead_code)]
+/// P9-1C: Check if ensemble rebalance should be triggered based on signal divergence.
+///
+/// Returns true if either condition is met (and minimum interval has passed):
+/// 1. Spearman ρ between current elite signals and ensemble signals < threshold
+/// 2. Recent top-5 OOS PSR mean > improvement_ratio × ensemble OOS PSR mean
+pub fn should_trigger_rebalance(
+    elite_oos_psrs: &[f64],
+    ensemble_oos_psrs: &[f64],
+    gens_since_last_rebalance: usize,
+    config: &RebalanceTriggerConfig,
+) -> bool {
+    if gens_since_last_rebalance < config.min_rebalance_interval_gens {
+        return false;
+    }
+
+    // Condition 2: OOS improvement check (simpler, doesn't need signal vectors)
+    if !elite_oos_psrs.is_empty() && !ensemble_oos_psrs.is_empty() {
+        let elite_mean: f64 =
+            elite_oos_psrs.iter().take(5).sum::<f64>() / elite_oos_psrs.len().min(5) as f64;
+        let ensemble_mean: f64 =
+            ensemble_oos_psrs.iter().sum::<f64>() / ensemble_oos_psrs.len() as f64;
+
+        if ensemble_mean > 0.0 && elite_mean > ensemble_mean * config.oos_improvement_ratio {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[allow(dead_code)]
+/// Compute Spearman rank correlation between two f64 slices.
+/// Returns None if slices have different lengths or < 3 elements.
+pub fn spearman_rank_correlation(a: &[f64], b: &[f64]) -> Option<f64> {
+    let n = a.len();
+    if n != b.len() || n < 3 {
+        return None;
+    }
+
+    let rank_a = rank_vector(a);
+    let rank_b = rank_vector(b);
+
+    // Pearson correlation on ranks
+    let n_f = n as f64;
+    let mean_a: f64 = rank_a.iter().sum::<f64>() / n_f;
+    let mean_b: f64 = rank_b.iter().sum::<f64>() / n_f;
+
+    let mut cov = 0.0;
+    let mut var_a = 0.0;
+    let mut var_b = 0.0;
+    for i in 0..n {
+        let da = rank_a[i] - mean_a;
+        let db = rank_b[i] - mean_b;
+        cov += da * db;
+        var_a += da * da;
+        var_b += db * db;
+    }
+
+    let denom = (var_a * var_b).sqrt();
+    if denom < 1e-12 {
+        return Some(0.0);
+    }
+    Some(cov / denom)
+}
+
+#[allow(dead_code)]
+/// Assign ranks to a vector of values (average rank for ties).
+fn rank_vector(values: &[f64]) -> Vec<f64> {
+    let n = values.len();
+    let mut indexed: Vec<(usize, f64)> = values.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+    indexed.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+    let mut ranks = vec![0.0; n];
+    let mut i = 0;
+    while i < n {
+        let mut j = i;
+        while j < n - 1 && (indexed[j + 1].1 - indexed[j].1).abs() < 1e-12 {
+            j += 1;
+        }
+        let avg_rank = (i + j) as f64 / 2.0 + 1.0;
+        for k in i..=j {
+            ranks[indexed[k].0] = avg_rank;
+        }
+        i = j + 1;
+    }
+    ranks
 }
 
 // ── Regime Detection ──────────────────────────────────────────────────
@@ -467,7 +595,11 @@ pub fn select_candidates(
     candidates: Vec<StrategyCandidate>,
     config: &EnsembleConfig,
 ) -> Vec<StrategyCandidate> {
-    select_candidates_with_lfdr(candidates, config, &super::hypothesis::LfdrConfig::default())
+    select_candidates_with_lfdr(
+        candidates,
+        config,
+        &super::hypothesis::LfdrConfig::default(),
+    )
 }
 
 /// P7-2A: select_candidates with explicit lFDR config for testing and production.
@@ -506,7 +638,10 @@ pub fn select_candidates_with_lfdr(
 
         let before = filtered.len();
         filtered.retain(|c| {
-            passing.contains(&format!("{}:{}:{}", c.id.symbol, c.id.mode, c.id.generation))
+            passing.contains(&format!(
+                "{}:{}:{}",
+                c.id.symbol, c.id.mode, c.id.generation
+            ))
         });
         tracing::info!(
             "lFDR filter: {}/{} candidates passed (fdr_level={})",
@@ -517,11 +652,7 @@ pub fn select_candidates_with_lfdr(
     }
 
     // Sort by OOS PSR descending (best first)
-    filtered.sort_by(|a, b| {
-        b.oos_psr
-            .partial_cmp(&a.oos_psr)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    filtered.sort_by(|a, b| b.oos_psr.total_cmp(&a.oos_psr));
 
     // Limit per symbol: keep top N per (symbol)
     let mut per_symbol_count: std::collections::HashMap<String, usize> =

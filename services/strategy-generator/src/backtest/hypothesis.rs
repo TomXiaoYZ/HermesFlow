@@ -142,7 +142,7 @@ fn estimate_null(psr_values: &[f64]) -> (f64, f64) {
     }
 
     let mut sorted = psr_values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.total_cmp(b));
 
     let n = sorted.len();
     // Use central 50% for null estimation (robust to outliers)
@@ -183,7 +183,9 @@ fn normal_cdf(x: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.2316419 * x.abs());
     let d = 0.3989422804014327; // 1/sqrt(2π)
     let p = d * (-x * x / 2.0).exp();
-    let poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+    let poly = t
+        * (0.319381530
+            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
     if x >= 0.0 {
         1.0 - p * poly
     } else {
@@ -200,10 +202,7 @@ fn normal_cdf(x: f64) -> f64 {
 /// 4. Apply Storey's step-up procedure within each cluster
 ///
 /// Returns lFDR results sorted by lFDR (lowest first = most significant).
-pub fn run_lfdr_test(
-    candidates: &[HypothesisCandidate],
-    config: &LfdrConfig,
-) -> Vec<LfdrResult> {
+pub fn run_lfdr_test(candidates: &[HypothesisCandidate], config: &LfdrConfig) -> Vec<LfdrResult> {
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -214,7 +213,10 @@ pub fn run_lfdr_test(
     // Step 2: Group PSR values by cluster
     let mut cluster_psrs: HashMap<usize, Vec<f64>> = HashMap::new();
     for (i, &cid) in cluster_ids.iter().enumerate() {
-        cluster_psrs.entry(cid).or_default().push(candidates[i].oos_psr);
+        cluster_psrs
+            .entry(cid)
+            .or_default()
+            .push(candidates[i].oos_psr);
     }
 
     // Step 3: Estimate null per cluster (merge small clusters into global null)
@@ -259,12 +261,7 @@ pub fn run_lfdr_test(
 
     for indices in by_cluster.values() {
         let mut sorted_indices = indices.clone();
-        sorted_indices.sort_by(|&a, &b| {
-            results[a]
-                .lfdr
-                .partial_cmp(&results[b].lfdr)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        sorted_indices.sort_by(|&a, &b| results[a].lfdr.total_cmp(&results[b].lfdr));
 
         // Accept strategies starting from lowest lFDR until average lFDR exceeds target
         let mut cumulative_lfdr = 0.0;
@@ -280,7 +277,7 @@ pub fn run_lfdr_test(
     }
 
     // Sort by lFDR (most significant first)
-    results.sort_by(|a, b| a.lfdr.partial_cmp(&b.lfdr).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| a.lfdr.total_cmp(&b.lfdr));
     results
 }
 
@@ -392,7 +389,11 @@ mod tests {
 
         // The strong strategy (PSR=3.0) should have low lFDR and pass
         let strong = results.iter().find(|r| r.id == "strong").unwrap();
-        assert!(strong.lfdr < 0.10, "Strong strategy lFDR={} should be < 0.10", strong.lfdr);
+        assert!(
+            strong.lfdr < 0.10,
+            "Strong strategy lFDR={} should be < 0.10",
+            strong.lfdr
+        );
         assert!(strong.passes, "Strong strategy should pass lFDR test");
     }
 
@@ -413,7 +414,7 @@ mod tests {
             candidates.push(make_candidate(
                 &format!("corr_{}", i),
                 vec![1, 2, 3, 4, 5 + (i % 2)], // very similar tokens
-                0.2 + (i as f64 * 0.01),         // mediocre PSR spread
+                0.2 + (i as f64 * 0.01),       // mediocre PSR spread
             ));
         }
 
@@ -431,7 +432,8 @@ mod tests {
         assert!(
             passing < candidates.len(),
             "lFDR should filter some correlated strategies: {}/{} passed",
-            passing, candidates.len()
+            passing,
+            candidates.len()
         );
     }
 

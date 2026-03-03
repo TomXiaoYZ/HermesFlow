@@ -321,10 +321,10 @@ mod tests {
             let t = i as f64 * 0.01;
             let obs = Array1::from_vec(vec![
                 10.0 * t,               // high variance
-                2.0 * (t * 3.0).sin(),   // medium variance
-                0.1 * (i as f64 % 5.0),  // low variance
-                0.01 * t,                // very low
-                0.001 * t,               // negligible
+                2.0 * (t * 3.0).sin(),  // medium variance
+                0.1 * (i as f64 % 5.0), // low variance
+                0.01 * t,               // very low
+                0.001 * t,              // negligible
             ]);
             state.update(&obs);
         }
@@ -397,7 +397,8 @@ mod tests {
             assert!(
                 (a - b).abs() < 1e-10,
                 "update_view should match update: {} vs {}",
-                a, b
+                a,
+                b
             );
         }
     }
@@ -462,7 +463,9 @@ mod tests {
             for t in 0..n_bars {
                 assert!(
                     (augmented[[0, f, t]] - features[[0, f, t]]).abs() < 1e-12,
-                    "Original feature [{},{}] changed", f, t
+                    "Original feature [{},{}] changed",
+                    f,
+                    t
                 );
             }
         }
@@ -505,7 +508,9 @@ mod tests {
             assert!(
                 (augmented[[0, n_feat + i, 0]] - transformed[i]).abs() < 1e-10,
                 "PC{} mismatch: project={} vs transform={}",
-                i, augmented[[0, n_feat + i, 0]], transformed[i]
+                i,
+                augmented[[0, n_feat + i, 0]],
+                transformed[i]
             );
         }
     }
