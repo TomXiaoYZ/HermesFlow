@@ -109,6 +109,13 @@ graph TD
   - **CCIPCA Active Remapping** (P8): `project_features()` augments 75→80 features (5 PC columns) after 200 CCIPCA observations.
   - **Diversity-Triggered Injection** (P8): L3/L4 Hamming diversity monitoring triggers random injection + elitist cull (weakest 10% of L0).
   - **Decimal Precision** (P8): `rust_decimal::Decimal` for HRP weights, PSR factors, crowding penalties, turnover cost in ensemble_weights.
+  - **Quantized Position + Deadzone** (P9): 0.25-step quantized positions coupled with hysteresis deadzone filtering to prevent fragment orders from crossing bid-ask spread.
+  - **BIC Complexity Penalty** (P9): `effective_k * ln(n) / (2*n)` replaces linear 0.05/token penalty. High-risk ops (DIV, SIGNED_POWER, LOG) weighted 1.5x.
+  - **DiversityTrigger Topology Mutation** (P9): Replaces brute-force threshold reset with L0 cull + random injection + LLM rescue on zero-trade deadlock.
+  - **Dynamic Ensemble Rebalance** (P9): Signal divergence trigger via Spearman rank correlation + OOS improvement ratio gating, replacing static generation-gap trigger.
+  - **MAP-Elites SubformulaArchive** (P9): 5 behavior buckets (Momentum, MeanRevert, Volatility, CrossAsset, Arithmetic) x 40 capacity for MCTS cross-generation knowledge sharing.
+  - **Causal Verification Pipeline** (P9): Three-stage LLM hypothesis → partial correlation → lFDR confirmation for factor validation.
+  - **Walk-Forward 5 Steps** (P9): Increased OOS validation from 3 to 5 walk-forward windows.
   - Exposes REST API: `/overview`, `/generations`, `/generations/:gen`, `/backtest` (re-run), `/exchanges`.
 - **Port**: 8082 (external API), 8084 (internal health).
 

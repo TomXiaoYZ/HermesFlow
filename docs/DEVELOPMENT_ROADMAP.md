@@ -1,7 +1,7 @@
 # HermesFlow Strategy Evolution — Development Roadmap
 
-**Date**: 2026-03-01
-**Current state**: P0–P8 deployed
+**Date**: 2026-03-03
+**Current state**: P0–P9 deployed
 
 ---
 
@@ -18,6 +18,7 @@
 | **P6** | Full-Stack Evolution Upgrade | Deployed | Temporal causality, lFDR, CCIPCA, MCTS, shadow trading, decay routing |
 | **P7** | Statistical Barriers + MCTS Integration | Deployed | MCTS evolution loop wiring, lFDR filtering, shadow promotion guard |
 | **P8** | Semantic Prior + Active Reduction | Deployed | LLM-guided MCTS, CCIPCA augmentation, diversity trigger, VM optimization, sqlx 0.8 |
+| **P9** | Anti-Overfitting + Cognitive Upgrade | Deployed | BIC penalty, MAP-Elites, causal verification, quantized positions, 5-step WF |
 
 ---
 
@@ -270,12 +271,56 @@ The original plan discussed three approaches (genome encoding, grid search, Baye
 
 ---
 
+## P9 — Anti-Overfitting + Cognitive Upgrade (COMPLETE)
+
+**Commits**: `950a3ed` (OOS overfitting combat), `7ae9497` (MCTS fixes)
+**Design doc**: Gemini P8 review → P9 plan (6 critiques adopted)
+**Report**: `docs/P9_EXECUTION_REPORT.md`
+**Goal**: Address Gemini reviewer's 6 structural criticisms of P8; combat IS/OOS gap; upgrade fitness, diversity, and LLM verification.
+
+### Delivered
+
+| ID | Component | Description |
+|----|-----------|-------------|
+| P9-1A | Quantized Position + Deadzone | 0.25-step quantized positions coupled with hysteresis deadzone filtering; prevents fragment orders from crossing bid-ask spread |
+| P9-1B | DiversityTrigger Topology Mutation | Replaces brute-force threshold reset with L0 cull + random injection + LLM rescue on zero-trade deadlock |
+| P9-1C | Dynamic Ensemble Rebalance | Signal divergence trigger via Spearman rank correlation + OOS improvement ratio gating (replaces static 50K gen-gap) |
+| P9-2A | MAP-Elites SubformulaArchive | 5 behavior buckets (Momentum, MeanRevert, Volatility, CrossAsset, Arithmetic) x 40 capacity for cross-generation MCTS knowledge sharing |
+| P9-2B | BIC Complexity Penalty | `effective_k * ln(n) / (2*n)` replaces linear 0.05/token; high-risk ops (DIV, SIGNED_POWER, LOG) weighted 1.5x |
+| P9-2C | Walk-Forward 5 Steps | Increased OOS validation from 3 to 5 walk-forward windows |
+| P9-3A | Causal Verification Pipeline | Three-stage: LLM hypothesis (0.5x) → partial correlation → lFDR confirmation (0.1x); LLM downgraded from judge to hypothesis generator |
+| P9-fix | MCTS Min-Length 3 | Prevents single-token formulas from dominating MCTS search |
+| P9-fix | MCTS Single-Rollout Fix | Eliminated double `random_rollout` bug that prevented terminal token recording |
+
+### Emergency Fixes (deployed prior to P9 main)
+- OOS threshold relaxation factor 0.85 + IS PSR cap 3.5 + trade_bonus
+- LongOnly/LongShort differentiated thresholds (p65 / p72+p28)
+- WF failure diagnostic logging enhancement
+
+### Metrics
+- OOS valid rate: ~30% → 61% (16/26 positive)
+- First-tier symbols (OOS PSR > 2.0): 2 → 9
+- LongOnly zero-trade deadlocks: 6 → 3
+- MAP-Elites archive: filling across all 5 buckets (AMZN=33, TSLA=30, AAPL=24, NVDA=15)
+- Workspace tests: 280/280 pass, Clippy zero warnings
+
+### Gemini Review Disposition
+- 6 structural criticisms from Gemini P8 review: all 6 adopted
+  1. Quantized position + deadzone (replaces linear interpolation)
+  2. Topology mutation (replaces brute-force threshold reset)
+  3. Dynamic signal divergence trigger (replaces static gen-gap)
+  4. BIC information criterion (replaces linear penalty)
+  5. MAP-Elites behavior bucketing (replaces FIFO+fitness eviction)
+  6. LLM → hypothesis generator + statistical double-lock (replaces 0.1x hard penalty)
+
+---
+
 ## Dependency Graph
 
 ```
 P0 (OOS eval) ──> P1 (factors) ──> P2 (LLM mutation) ──> P3 (multi-TF) ──> P4 (thresholds)
                        │                                                         │
-                       └──> P5 (portfolio) ──> P6 (hardening+MCTS) ──> P7 (barriers) ──> P8 (semantic)
+                       └──> P5 (portfolio) ──> P6 (hardening+MCTS) ──> P7 (barriers) ──> P8 (semantic) ──> P9 (anti-overfit)
 ```
 
 - **P2 depends on P1**: LLM oracle references the 25-factor vocabulary
@@ -285,6 +330,7 @@ P0 (OOS eval) ──> P1 (factors) ──> P2 (LLM mutation) ──> P3 (multi-T
 - **P6 depends on P5**: Enhances evolution, portfolio, and adds MCTS engine
 - **P7 depends on P6**: Wires MCTS into evolution loop, adds statistical barriers
 - **P8 depends on P7**: Activates dead_code components (LlmCachedPolicy, FactorImportance, CCIPCA active)
+- **P9 depends on P8**: Builds on MCTS (MAP-Elites archive), diversity trigger (topology mutation), dead-zone (quantized positions), factor importance (causal verification)
 
 ---
 
@@ -299,3 +345,4 @@ P0 (OOS eval) ──> P1 (factors) ──> P2 (LLM mutation) ──> P3 (multi-T
 7. **P6**: Full-stack evolution upgrade — MCTS, lFDR, CCIPCA, shadow trading (commit `d1908e1`)
 8. **P7**: Statistical barriers + MCTS integration (commit `a342a49`)
 9. **P8**: Semantic prior + active reduction — LLM-guided MCTS, CCIPCA augmentation, diversity trigger, VM optimization, sqlx 0.8 (commits `9bd724d`–`550c223`)
+10. **P9**: Anti-overfitting + cognitive upgrade — BIC penalty, MAP-Elites, causal verification, quantized positions, 5-step WF (commits `950a3ed`–`7ae9497`)
