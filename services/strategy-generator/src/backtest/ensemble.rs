@@ -329,7 +329,6 @@ fn default_min_rebalance_interval_gens() -> usize {
     5000
 }
 
-#[allow(dead_code)]
 /// P9-1C: Check if ensemble rebalance should be triggered based on signal divergence.
 ///
 /// Returns true if either condition is met (and minimum interval has passed):

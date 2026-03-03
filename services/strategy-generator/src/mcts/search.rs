@@ -115,7 +115,6 @@ impl DeceptionSuppressor {
 /// Operator behavior class for MAP-Elites bucketing.
 /// Buckets prevent any single behavior type from dominating the archive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum OperatorClass {
     /// Momentum-type: ts_mean(5), ts_sum(6), ts_delta(10), ts_decay_linear(12)
     Momentum,
@@ -129,7 +128,6 @@ pub enum OperatorClass {
     Arithmetic,
 }
 
-#[allow(dead_code)]
 impl OperatorClass {
     /// Classify an operator offset (token - feat_offset) into a behavior class.
     pub fn from_operator_offset(offset: u32) -> Self {
@@ -144,17 +142,19 @@ impl OperatorClass {
     }
 }
 
-#[allow(dead_code)]
 /// A subformula entry in the MAP-Elites archive.
 #[derive(Debug, Clone)]
 pub struct SubformulaEntry {
     /// 2-4 token subsequence (stored as u32 indices, zero-copy from MCTS).
+    #[allow(dead_code)] // accessed via top_subformulas() for MCTS prior injection
     pub tokens: Vec<u32>,
     /// OOS PSR of the parent formula that contributed this subformula.
     pub oos_psr: f64,
     /// Generation when this entry was added.
+    #[allow(dead_code)] // used for staleness tracking in future eviction policy
     pub generation: u64,
     /// Source symbol for cross-symbol knowledge transfer.
+    #[allow(dead_code)] // used for cross-symbol knowledge reporting
     pub source_symbol: String,
 }
 
@@ -165,7 +165,6 @@ pub struct SubformulaEntry {
 /// volatility or mean-reversion building blocks.
 ///
 /// Thread safety: MCTS is single-threaded, archive updates happen between rounds.
-#[allow(dead_code)]
 pub struct SubformulaArchive {
     /// Per-class buckets with fixed capacity.
     buckets: HashMap<OperatorClass, Vec<SubformulaEntry>>,
@@ -175,7 +174,6 @@ pub struct SubformulaArchive {
     feat_offset: u32,
 }
 
-#[allow(dead_code)]
 impl SubformulaArchive {
     /// Create a new empty archive with given capacity per bucket.
     pub fn new(max_per_bucket: usize, feat_offset: usize) -> Self {
@@ -271,6 +269,7 @@ impl SubformulaArchive {
     }
 
     /// Get all entries from a specific behavior class (for prior boosting).
+    #[allow(dead_code)] // API for MCTS policy prior boosting (future integration)
     pub fn get_bucket(&self, class: OperatorClass) -> &[SubformulaEntry] {
         self.buckets
             .get(&class)
@@ -279,6 +278,7 @@ impl SubformulaArchive {
     }
 
     /// Get the top-N subformulas across all buckets (for MCTS prior injection).
+    #[allow(dead_code)] // API for MCTS policy prior boosting (future integration)
     pub fn top_subformulas(&self, n: usize) -> Vec<&SubformulaEntry> {
         let mut all: Vec<&SubformulaEntry> = self.buckets.values().flatten().collect();
         all.sort_by(|a, b| b.oos_psr.total_cmp(&a.oos_psr));

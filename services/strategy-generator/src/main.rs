@@ -1227,6 +1227,9 @@ async fn run_symbol_evolution(
     let mut is_oos_gap_sum: f64 = 0.0; // cumulative IS-OOS gap for mean calculation
     let mut is_oos_gap_count: usize = 0; // count of valid gap measurements
 
+    // P9-2A: MAP-Elites subformula archive for MCTS cross-generation knowledge sharing
+    let mut subformula_archive = mcts::search::SubformulaArchive::new(40, feat_offset);
+
     // P7-2B / P8-1A/1B/1C: CCIPCA warmup → feature augmentation
     // Features shape: (n_symbols=1, n_factors, n_bars)
     // Compute augmentation in a separate scope to avoid borrow conflicts.
@@ -1436,6 +1439,26 @@ async fn run_symbol_evolution(
                     result.unique_terminals
                 );
             }
+
+            // P9-2A: Ingest positive-PSR formulas into MAP-Elites subformula archive
+            for (formula, &score) in result.formulas.iter().zip(result.scores.iter()) {
+                if score > 0.0 {
+                    subformula_archive.ingest_formula(
+                        formula,
+                        score,
+                        gen as u64,
+                        &symbol,
+                    );
+                }
+            }
+            if gen.is_multiple_of(100) {
+                let dist = subformula_archive.bucket_distribution();
+                info!(
+                    "[{}:{}:{}] Gen {} MAP-Elites archive: total={}, buckets={:?}",
+                    exchange, symbol, mode_str, gen,
+                    subformula_archive.total_size(), dist
+                );
+            }
         }
 
         // Log ALPS layer summary + promotion rates periodically
@@ -1546,6 +1569,65 @@ async fn run_symbol_evolution(
                     "[{}:{}:{}] Gen {} factor importance: top-10={:?} bottom-10={:?}",
                     exchange, symbol, mode_str, gen, top_summary, bottom_summary
                 );
+
+                // P9-3A: Causal verification — use bottom-5 as suspicious, top-5 as causal
+                if fi.len() >= 10 {
+                    if let Some(cached) = backtester.cache.get(&symbol) {
+                        let n_factors = cached.features.shape()[1].min(feat_offset);
+                        let n_bars = cached.features.shape()[2];
+                        let ret_bars = cached.returns.shape()[1];
+                        let common_len = n_bars.min(ret_bars);
+
+                        if common_len >= 50 {
+                            let factor_signals: Vec<Vec<f64>> = (0..n_factors)
+                                .map(|f| {
+                                    (0..common_len)
+                                        .map(|b| cached.features[[0, f, b]])
+                                        .collect()
+                                })
+                                .collect();
+                            let returns: Vec<f64> = (0..common_len)
+                                .map(|b| cached.returns[[0, b]])
+                                .collect();
+
+                            let suspicious: Vec<usize> = fi.iter()
+                                .rev().take(5)
+                                .map(|f| f.factor_index)
+                                .collect();
+                            let top_causal: Vec<usize> = fi.iter()
+                                .take(5)
+                                .map(|f| f.factor_index)
+                                .collect();
+
+                            let cv_results = backtest::factor_importance::run_causal_verification(
+                                &suspicious,
+                                &factor_names,
+                                &factor_signals,
+                                &returns,
+                                &top_causal,
+                                0.05,  // partial_corr_threshold
+                                0.1,   // confirmed_pseudo_weight
+                            );
+
+                            let restored: Vec<&str> = cv_results.iter()
+                                .filter(|r| r.weight_multiplier >= 1.0)
+                                .map(|r| r.factor_name.as_str())
+                                .collect();
+                            let penalized: Vec<&str> = cv_results.iter()
+                                .filter(|r| r.weight_multiplier <= 0.1)
+                                .map(|r| r.factor_name.as_str())
+                                .collect();
+
+                            if !restored.is_empty() || !penalized.is_empty() {
+                                info!(
+                                    "[{}:{}:{}] Gen {} causal verification: restored={:?} penalized={:?}",
+                                    exchange, symbol, mode_str, gen, restored, penalized
+                                );
+                            }
+                        }
+                    }
+                }
+
                 importance_cache.insert(symbol.clone(), fi);
             }
         }
@@ -2301,7 +2383,54 @@ async fn run_ensemble_loop(
     // P6b-F3: Track previous regime for transition detection
     let mut prev_regime: Option<ensemble::VolRegime> = None;
 
+    // P9-1C: Track generation count for signal-divergence rebalance trigger
+    let mut last_rebalance_gen: usize = 0;
+
     loop {
+        // P9-1C: Query current max generation and check if rebalance is needed
+        let current_max_gen: usize = sqlx::query_scalar::<_, Option<i32>>(
+            "SELECT MAX(generation) FROM strategy_generations WHERE exchange = $1",
+        )
+        .bind(exchange)
+        .fetch_one(&pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0) as usize;
+
+        let gens_since = current_max_gen.saturating_sub(last_rebalance_gen);
+
+        // P9-1C: Load candidate OOS PSRs for divergence check
+        let candidate_psrs: Vec<f64> = sqlx::query_scalar::<_, f64>(
+            "SELECT COALESCE((metadata->>'oos_psr')::float8, 0.0) \
+             FROM strategy_generations \
+             WHERE exchange = $1 AND metadata->>'oos_psr' IS NOT NULL \
+             ORDER BY generation DESC LIMIT 20",
+        )
+        .bind(exchange)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+
+        let elite_psrs: Vec<f64> = candidate_psrs.iter().take(5).copied().collect();
+        let ensemble_psrs: Vec<f64> = candidate_psrs.iter().skip(5).copied().collect();
+
+        if !ensemble::should_trigger_rebalance(
+            &elite_psrs,
+            &ensemble_psrs,
+            gens_since,
+            &ensemble_cfg.rebalance_trigger,
+        ) && last_rebalance_gen > 0
+        {
+            info!(
+                "[{}] Rebalance skipped: signal divergence not met (gens_since={}, min={})",
+                exchange, gens_since, ensemble_cfg.rebalance_trigger.min_rebalance_interval_gens
+            );
+            tokio::time::sleep(default_interval).await;
+            continue;
+        }
+        last_rebalance_gen = current_max_gen;
+
         let regime_info = match run_ensemble_rebalance(
             &pool,
             redis_url,

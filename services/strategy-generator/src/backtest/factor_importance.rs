@@ -110,14 +110,16 @@ pub fn bottom_n_summary(importances: &[FactorImportance], n: usize) -> Vec<(Stri
 
 /// P9-3A: Result of the three-stage causal verification pipeline.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CausalVerificationResult {
+    #[allow(dead_code)] // used in future factor weight pipeline
     pub factor_index: usize,
     pub factor_name: String,
     /// LLM classification: true = suspicious, false = trusted
+    #[allow(dead_code)] // will be read when LLM factor classification is added
     pub llm_suspicious: bool,
     /// Partial correlation with returns, controlling for top causal factors.
     /// None if factor was not flagged suspicious (verification skipped).
+    #[allow(dead_code)] // accessed in diagnostic logging and future factor weight pipeline
     pub partial_correlation: Option<f64>,
     /// Final weight multiplier: 1.0 (normal), 0.5 (suspicious), 0.1 (confirmed pseudo)
     pub weight_multiplier: f64,
@@ -128,7 +130,6 @@ pub struct CausalVerificationResult {
 /// Formula: r_xy.z = (r_xy - r_xz * r_yz) / sqrt((1 - r_xz²) * (1 - r_yz²))
 ///
 /// Returns None if insufficient data or degenerate inputs.
-#[allow(dead_code)]
 pub fn partial_correlation(x: &[f64], y: &[f64], z: &[f64]) -> Option<f64> {
     let n = x.len();
     if n != y.len() || n != z.len() || n < 5 {
@@ -153,7 +154,6 @@ pub fn partial_correlation(x: &[f64], y: &[f64], z: &[f64]) -> Option<f64> {
     Some(r_xy_z)
 }
 
-#[allow(dead_code)]
 /// Pearson correlation coefficient between two slices.
 fn pearson_correlation(x: &[f64], y: &[f64]) -> Option<f64> {
     let n = x.len();
@@ -193,7 +193,6 @@ fn pearson_correlation(x: &[f64], y: &[f64]) -> Option<f64> {
 /// `factor_signals`: Per-factor signal vectors (columns from features matrix)
 /// `returns`: Strategy return series
 /// `top_causal_indices`: Top-5 factors known to be causal (from importance ranking)
-#[allow(dead_code)]
 pub fn run_causal_verification(
     suspicious_indices: &[usize],
     factor_names: &[String],
