@@ -217,8 +217,9 @@ impl SubformulaArchive {
             return;
         }
 
+        let max_window = 4.min(tokens.len());
         // Extract 2-4 token windows
-        for window_size in 2..=4.min(tokens.len()) {
+        for window_size in 2..=max_window {
             for window in tokens.windows(window_size) {
                 // Classify by the dominant operator in the window
                 let class = self.classify_window(window);
@@ -387,45 +388,32 @@ where
         let mut sim_tokens = path_tokens;
         sim_tokens.push(child_action);
 
-        let reward = if child_terminal {
+        // Evaluate: either the child is terminal, or do a random rollout
+        let (final_tokens, reward) = if child_terminal {
             let r = evaluate_fn(&sim_tokens);
-            if r.is_nan() {
-                -1.0
-            } else {
-                r
-            }
+            let r = if r.is_nan() { -1.0 } else { r };
+            (sim_tokens, r)
         } else {
-            // Random rollout from child state
             let (rollout_tokens, reached_terminal) =
                 random_rollout(action_space, &sim_tokens, child_stack, config.max_length);
             if reached_terminal {
                 let r = evaluate_fn(&rollout_tokens);
-                if r.is_nan() {
-                    -1.0
-                } else {
-                    r
-                }
+                let r = if r.is_nan() { -1.0 } else { r };
+                (rollout_tokens, r)
             } else {
-                -1.0 // Failed to reach terminal
+                (sim_tokens, -1.0)
             }
         };
 
         // Apply deception penalty and record terminal tokens
         let penalized_reward = if reward > -1.0 {
-            let final_tokens = if child_terminal {
-                sim_tokens.clone()
-            } else {
-                let (rt, _) =
-                    random_rollout(action_space, &sim_tokens, child_stack, config.max_length);
-                rt
-            };
-            let pr = if let Some(ref mut ds) = deception {
+            let r = if let Some(ref mut ds) = deception {
                 reward * ds.record_and_penalize(&final_tokens)
             } else {
                 reward
             };
-            terminals.push((final_tokens, pr));
-            pr
+            terminals.push((final_tokens, r));
+            r
         } else {
             reward
         };
@@ -669,16 +657,16 @@ mod tests {
         let space = ActionSpace::new(3);
         let policy = UniformPolicy;
         let config = MctsConfig {
-            budget: 200,
+            budget: 500,
             seeds_per_round: 5,
             max_length: 10,
             ..Default::default()
         };
 
-        let result = run_mcts_round(&space, &policy, &config, constant_fitness);
+        let result = run_mcts_round(&space, &policy, &config, length_fitness);
 
         for formula in &result.formulas {
-            assert!(!formula.is_empty(), "Formula should not be empty");
+            assert!(formula.len() >= 3, "Formula should have at least 3 tokens, got {}", formula.len());
             // Verify stack depth is 1 (valid terminal)
             let mut stack = 0u32;
             for &token in formula {
@@ -1014,7 +1002,7 @@ mod tests {
         let space = ActionSpace::new(feat_offset);
         let policy = UniformPolicy;
         let config = MctsConfig {
-            budget: 200,
+            budget: 500,
             seeds_per_round: 5,
             max_length: 15,
             use_max_reward: true, // Extreme Bandit default
@@ -1032,7 +1020,7 @@ mod tests {
         });
 
         for (i, formula) in result.formulas.iter().enumerate() {
-            assert!(!formula.is_empty(), "Formula {} should not be empty", i);
+            assert!(formula.len() >= 3, "Formula {} should have at least 3 tokens, got {}", i, formula.len());
             for &token in formula {
                 assert!(
                     (token as usize) < space.vocab_size,

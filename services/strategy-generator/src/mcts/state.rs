@@ -103,8 +103,10 @@ impl ActionSpace {
     }
 
     /// Check if a state is terminal (complete formula).
+    /// Minimum length 3 prevents trivially short single-feature formulas
+    /// (e.g. just "momentum_1h") from dominating MCTS search.
     pub fn is_terminal(&self, stack_depth: u32, length: usize) -> bool {
-        stack_depth == 1 && length > 0
+        stack_depth == 1 && length >= 3
     }
 }
 
@@ -177,6 +179,8 @@ mod tests {
         let space = ActionSpace::new(25);
         assert!(!space.is_terminal(0, 0)); // empty
         assert!(!space.is_terminal(2, 3)); // stack > 1
-        assert!(space.is_terminal(1, 3)); // stack = 1, has tokens
+        assert!(!space.is_terminal(1, 1)); // too short (single feature)
+        assert!(!space.is_terminal(1, 2)); // too short (feature + unary)
+        assert!(space.is_terminal(1, 3)); // minimum valid: e.g. feat feat ADD
     }
 }

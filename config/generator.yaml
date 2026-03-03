@@ -120,7 +120,7 @@ lfdr:
 # Monte Carlo Tree Search for discovering high-fitness RPN formulas.
 # Injects top seeds into ALPS Layer 0 at configurable intervals.
 mcts:
-  enabled: false
+  enabled: true
   budget: 1000
   seeds_per_round: 5
   interval: 50
