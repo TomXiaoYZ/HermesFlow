@@ -54,6 +54,9 @@ unsafe impl Sync for IbClient {}
 #[derive(Clone)]
 pub struct IBKRTrader {
     client: Arc<Mutex<IbClient>>,
+    host: String,
+    port: u32,
+    client_id: u32,
 }
 
 /// Accumulated fill data from IBKR order notifications
@@ -137,11 +140,11 @@ impl IBKRTrader {
         let addr = format!("{}:{}", host, port);
         info!("Connecting to IBKR at {}", addr);
 
-        let client_id = client_id as i32;
+        let client_id_i32 = client_id as i32;
         let addr_clone = addr.clone();
 
         let ib_client = tokio::task::spawn_blocking(move || {
-            Client::connect(&addr_clone, client_id)
+            Client::connect(&addr_clone, client_id_i32)
                 .map(IbClient)
                 .map_err(|e| anyhow::anyhow!("IBKR connection failed to {}: {}", addr_clone, e))
         })
@@ -156,7 +159,50 @@ impl IBKRTrader {
 
         Ok(Self {
             client: Arc::new(Mutex::new(ib_client)),
+            host: host.to_string(),
+            port,
+            client_id,
         })
+    }
+
+    /// Check whether the underlying IBKR connection is still alive.
+    pub async fn is_alive(&self) -> bool {
+        let client = self.client.clone();
+        tokio::task::spawn_blocking(move || match client.lock() {
+            Ok(guard) => guard.0.is_connected(),
+            Err(_) => false,
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// Drop the old connection and establish a new one, swapping the Mutex contents.
+    /// Uses `fetch_max` on NEXT_ORDER_ID so the counter only increases.
+    pub async fn reconnect(&self) -> Result<()> {
+        let addr = format!("{}:{}", self.host, self.port);
+        let client_id = self.client_id as i32;
+        let addr_clone = addr.clone();
+
+        let new_client = tokio::task::spawn_blocking(move || {
+            Client::connect(&addr_clone, client_id)
+                .map(IbClient)
+                .map_err(|e| anyhow::anyhow!("IBKR reconnect failed to {}: {}", addr_clone, e))
+        })
+        .await??;
+
+        let ibkr_next = new_client.0.next_order_id();
+        NEXT_ORDER_ID.fetch_max(ibkr_next, Ordering::SeqCst);
+        info!(
+            "IBKR reconnected to {}, next_order_id synced to {}",
+            addr, ibkr_next
+        );
+
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned during reconnect: {}", e))?;
+        *guard = new_client;
+        Ok(())
     }
 
     fn build_contract(symbol: &str) -> Contract {

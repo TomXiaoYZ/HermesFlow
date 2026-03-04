@@ -11,6 +11,7 @@ use redis::Commands;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::Instant;
 use tokio_postgres::NoTls;
 
 #[tokio::main]
@@ -212,8 +213,56 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
 
+                // Per-trader health state for exponential backoff reconnect
+                struct TraderHealth {
+                    consecutive_failures: u32,
+                    last_attempt: Instant,
+                }
+
+                impl TraderHealth {
+                    fn new() -> Self {
+                        Self {
+                            consecutive_failures: 0,
+                            last_attempt: Instant::now(),
+                        }
+                    }
+
+                    fn should_attempt(&self) -> bool {
+                        let backoff =
+                            Duration::from_secs(30 * 2u64.pow(self.consecutive_failures.min(6)));
+                        self.last_attempt.elapsed() >= backoff
+                    }
+                }
+
+                let mut health: Vec<TraderHealth> =
+                    traders.iter().map(|_| TraderHealth::new()).collect();
+
                 let mut sync_count: u32 = 0;
                 loop {
+                    // ── Health check + reconnect with exponential backoff ──
+                    for (i, trader) in traders.iter().enumerate() {
+                        if !trader.is_alive().await {
+                            if health[i].should_attempt() {
+                                health[i].last_attempt = Instant::now();
+                                match trader.reconnect().await {
+                                    Ok(()) => {
+                                        info!("IBKR trader {} reconnected successfully", i);
+                                        health[i].consecutive_failures = 0;
+                                    }
+                                    Err(e) => {
+                                        health[i].consecutive_failures += 1;
+                                        error!(
+                                            "IBKR trader {} reconnect failed (attempt {}): {}",
+                                            i, health[i].consecutive_failures, e
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            health[i].consecutive_failures = 0;
+                        }
+                    }
+
                     // Query each trader for its account summary (each sees its own sub-account)
                     let mut all_summaries = std::collections::HashMap::new();
                     for trader in &traders {
@@ -325,11 +374,8 @@ async fn main() -> anyhow::Result<()> {
 
                         // Mark stale orders every ~5 min (10 cycles × 30s)
                         if sync_count.is_multiple_of(10) {
-                            reconciliation::mark_stale_orders(
-                                db_client,
-                                Duration::from_secs(300),
-                            )
-                            .await;
+                            reconciliation::mark_stale_orders(db_client, Duration::from_secs(300))
+                                .await;
                         }
                     }
 
