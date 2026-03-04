@@ -55,6 +55,9 @@ RUN set -eux; \
     done
 
 COPY --from=builder /app/target/release/strategy-engine /usr/local/bin/
+COPY config/factors-stock.yaml /app/config/factors-stock.yaml
 
 ENV RUST_LOG=info
+ENV FACTOR_CONFIG=/app/config/factors-stock.yaml
+ENV FACTOR_RESOLUTIONS=3
 CMD ["strategy-engine"]

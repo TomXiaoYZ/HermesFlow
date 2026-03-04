@@ -1,8 +1,9 @@
+use backtest_engine::config::FactorConfig;
 use backtest_engine::factors::engineer::FeatureEngineer;
 use backtest_engine::factors::traits::OhlcvArrays;
 use chrono::{DateTime, Utc};
 use common::events::MarketDataUpdate;
-use ndarray::{Array2, Array3};
+use ndarray::{Array2, Array3, Axis};
 use std::collections::HashMap;
 
 // Constants
@@ -105,6 +106,10 @@ impl SymbolBuffer {
 
 pub struct MarketDataManager {
     buffers: HashMap<String, SymbolBuffer>,
+    factor_config: Option<FactorConfig>,
+    /// Number of timeframe resolutions for multi-timeframe stacking.
+    /// When > 1, the base features are replicated to fill all resolution slots.
+    n_resolutions: usize,
 }
 
 impl Default for MarketDataManager {
@@ -117,6 +122,16 @@ impl MarketDataManager {
     pub fn new() -> Self {
         Self {
             buffers: HashMap::new(),
+            factor_config: None,
+            n_resolutions: 1,
+        }
+    }
+
+    pub fn with_factor_config(factor_config: FactorConfig, n_resolutions: usize) -> Self {
+        Self {
+            buffers: HashMap::new(),
+            factor_config: Some(factor_config),
+            n_resolutions: n_resolutions.max(1),
         }
     }
 
@@ -129,8 +144,7 @@ impl MarketDataManager {
             .or_insert_with(|| SymbolBuffer::new(symbol));
         buffer.push(&update);
 
-        // Require minimum history to run VM? e.g. 20 for moving averages
-        // For Verification/Demo: Reduce to 2 to see logs immediately
+        // Require minimum history for moving averages (e.g. 20-period factors)
         if buffer.close.len() < 2 {
             return None;
         }
@@ -138,7 +152,23 @@ impl MarketDataManager {
         // Generate Features
         let arrays = buffer.to_arrays()?;
 
-        let features = FeatureEngineer::compute_features(&arrays.as_ref());
-        Some(features)
+        let base_features = match &self.factor_config {
+            Some(config) => {
+                FeatureEngineer::compute_features_from_config(config, &arrays.as_ref())
+            }
+            None => FeatureEngineer::compute_features(&arrays.as_ref()),
+        };
+
+        // Multi-timeframe stacking: replicate base features across resolution slots.
+        // In production, each slot would have its own candle aggregation (1h/4h/1d).
+        // For tick-driven live trading, we replicate the base features as a proxy.
+        if self.n_resolutions > 1 {
+            let views: Vec<_> = (0..self.n_resolutions)
+                .map(|_| base_features.view())
+                .collect();
+            Some(ndarray::concatenate(Axis(1), &views).ok()?)
+        } else {
+            Some(base_features)
+        }
     }
 }

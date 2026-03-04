@@ -1,3 +1,4 @@
+use backtest_engine::config::{FactorConfig, MultiTimeframeFactorConfig};
 use backtest_engine::vm::vm::StackVM;
 use chrono::Utc;
 use common::events::{OrderSide, OrderStatus, OrderType, TradeSignal};
@@ -19,6 +20,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone)]
 struct SymbolStrategy {
     formula: Vec<usize>,
+    feat_offset: usize,
     #[allow(dead_code)]
     mode: String,
     strategy_id: String,
@@ -27,6 +29,8 @@ struct SymbolStrategy {
 #[derive(Deserialize, Debug)]
 struct StrategyUpdate {
     formula: Vec<usize>,
+    #[serde(default)]
+    feat_offset: Option<usize>,
     #[serde(default)]
     symbol: Option<String>,
     #[serde(default)]
@@ -83,8 +87,44 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. Setup Components
     let event_bus = EventBus::new(&redis_url)?;
-    let mut market_manager = MarketDataManager::new();
-    let vm = StackVM::new();
+
+    // Load factor config for stock signals (must match what strategy-generator evolves with)
+    let factor_config_path = env::var("FACTOR_CONFIG")
+        .unwrap_or_else(|_| "config/factors-stock.yaml".to_string());
+    // Multi-timeframe: strategy-generator uses 3 resolutions (1h/4h/1d) → 75 features
+    let n_resolutions: usize = env::var("FACTOR_RESOLUTIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let (mut market_manager, mut vm) = match FactorConfig::from_file(&factor_config_path) {
+        Ok(config) => {
+            let mtf = MultiTimeframeFactorConfig::new(
+                config.clone(),
+                (0..n_resolutions).map(|_| String::new()).collect(),
+            );
+            info!(
+                "Loaded factor config from {} ({} base factors × {} resolutions = {} total, feat_offset={})",
+                factor_config_path,
+                config.feat_count(),
+                n_resolutions,
+                mtf.feat_count(),
+                mtf.feat_offset()
+            );
+            let vm = StackVM {
+                feat_offset: mtf.feat_offset(),
+                ts_window: 10,
+            };
+            let mgr = MarketDataManager::with_factor_config(config, n_resolutions);
+            (mgr, vm)
+        }
+        Err(e) => {
+            warn!(
+                "Failed to load factor config from {}: {} — falling back to legacy 6-factor mode",
+                factor_config_path, e
+            );
+            (MarketDataManager::new(), StackVM::new())
+        }
+    };
     let mut risk_engine = RiskEngine::new();
 
     // Three portfolio managers: crypto, stock long_only, stock long_short
@@ -117,6 +157,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Rolling sigmoid buffer for adaptive thresholds
     let mut signal_buffer = SignalBuffer::new();
+
+    // Diagnostic counter for periodic market data logging
+    let mut tick_count: u64 = 0;
 
     info!("Strategy Engine Initialized. Connecting to Event Bus...");
 
@@ -165,9 +208,10 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(sym) = symbol {
                             let mode_str = mode.unwrap_or_else(|| "long_only".to_string());
                             let strategy_id = update.meta.name.clone();
+                            let fo = update.feat_offset.unwrap_or(75);
                             info!(
-                                "Evolution Event: {} -> strategy '{}' (mode: {})",
-                                sym, strategy_id, mode_str
+                                "Evolution Event: {} -> strategy '{}' (mode: {}, feat_offset: {})",
+                                sym, strategy_id, mode_str, fo
                             );
 
                             let mut w = formula_strategies.write().unwrap();
@@ -175,6 +219,7 @@ async fn main() -> anyhow::Result<()> {
                                 (sym, mode_str.clone()),
                                 SymbolStrategy {
                                     formula: update.formula,
+                                    feat_offset: fo,
                                     mode: mode_str,
                                     strategy_id,
                                 },
@@ -200,8 +245,11 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             Some(update) = portfolio_rx.recv() => {
-                info!("Portfolio Update: Cash={:.4}, Total={:.4}", update.cash, update.total_equity);
-                risk_engine.update_equity(update.total_equity);
+                // Skip zero-equity updates (second IBKR account may report zero)
+                if update.total_equity > 0.0 {
+                    info!("Portfolio Update: Cash={:.4}, Total={:.4}", update.cash, update.total_equity);
+                    risk_engine.update_equity(update.total_equity);
+                }
             }
 
             Some(order) = order_rx.recv() => {
@@ -239,9 +287,15 @@ async fn main() -> anyhow::Result<()> {
 
             Some(msg) = market_rx.recv() => {
                 strategy_engine::metrics::MARKET_DATA_CONSUMED.inc();
+                tick_count += 1;
                 let lag_secs = (Utc::now() - msg.timestamp).num_milliseconds() as f64 / 1000.0;
                 if lag_secs >= 0.0 {
                     strategy_engine::metrics::MARKET_DATA_LAG_SECONDS.observe(lag_secs);
+                }
+
+                // Periodic diagnostic: log every 500th tick to confirm data flow
+                if tick_count % 500 == 1 {
+                    info!("Market data tick #{}: {} @ {:.4} (lag={:.1}s)", tick_count, msg.symbol, msg.price, lag_secs);
                 }
 
                 let is_stock = is_stock_symbol(&msg.symbol);
@@ -273,7 +327,8 @@ async fn main() -> anyhow::Result<()> {
                 // 4.1 Update Buffer / Generate Features (once per symbol, shared by both modes)
                 if let Some(features) = market_manager.on_update(msg.clone()) {
                     // Collect strategies we need, then drop the read lock
-                    let mode_formulas: Vec<(String, Vec<usize>, String)> = {
+                    // Tuple: (mode, formula, strategy_id, feat_offset)
+                    let mode_formulas: Vec<(String, Vec<usize>, String, usize)> = {
                         let strats = strategies.read().unwrap();
                         let mut collected = Vec::new();
                         for mode_str in &["long_only", "long_short"] {
@@ -284,21 +339,44 @@ async fn main() -> anyhow::Result<()> {
                                         mode_str.to_string(),
                                         ss.formula.clone(),
                                         ss.strategy_id.clone(),
+                                        ss.feat_offset,
                                     ));
                                 }
                                 None => {
                                     // No evolved strategy for this symbol/mode — skip.
-                                    // Only trade symbols with an evolved strategy from
-                                    // the strategy-generator to avoid blind Fallback
-                                    // signals on the entire Polygon universe (10k+ symbols).
                                 }
                             }
                         }
                         collected
                     }; // strats read lock dropped here
 
+                    // Diagnostic: log first time a symbol gets features + strategy matches
+                    if tick_count % 500 == 1 {
+                        info!(
+                            "Eval {}: features shape {:?}, strategies matched: {}",
+                            msg.symbol, features.shape(), mode_formulas.len()
+                        );
+                    }
+
                     // 4.2 Evaluate each mode
-                    for (mode_str, current_formula, strategy_name) in &mode_formulas {
+                    for (mode_str, current_formula, strategy_name, fo) in &mode_formulas {
+                        // Update VM feat_offset if the formula's differs
+                        if vm.feat_offset != *fo {
+                            vm.feat_offset = *fo;
+                        }
+
+                        // Pad features to match feat_offset if needed (CCIPCA augmentation)
+                        let eval_features = if features.shape()[1] < *fo {
+                            let (batch, _n_feat, time) = features.dim();
+                            let mut padded = ndarray::Array3::<f64>::zeros((batch, *fo, time));
+                            padded
+                                .slice_mut(ndarray::s![.., ..features.shape()[1], ..])
+                                .assign(&features);
+                            padded
+                        } else {
+                            features.clone()
+                        };
+
                         // Compute total positions before taking the mutable portfolio borrow
                         let total_pos = total_positions(
                             &crypto_portfolio,
@@ -321,9 +399,17 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
 
-                        if let Some(result) = vm.execute(current_formula, &features) {
+                        if let Some(result) = vm.execute(current_formula, &eval_features) {
                             if let Some(last_val) = result.last() {
                                 let signal_score = sigmoid(*last_val);
+
+                                // Diagnostic: log signal scores periodically
+                                if tick_count % 500 == 1 {
+                                    info!(
+                                        "Signal {} [{}]: raw={:.4} sig={:.4}",
+                                        msg.symbol, mode_str, last_val, signal_score
+                                    );
+                                }
 
                                 signal_buffer.push(&msg.symbol, mode_str, signal_score);
 
@@ -376,6 +462,11 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             }
+                        } else if tick_count % 500 == 1 {
+                            warn!(
+                                "VM returned None for {} [{}] formula_len={}",
+                                msg.symbol, mode_str, current_formula.len()
+                            );
                         }
                     }
                 }
