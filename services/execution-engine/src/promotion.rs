@@ -158,10 +158,7 @@ pub async fn check_promotion_eligibility(
 }
 
 /// Load paper trading performance from daily summaries.
-async fn load_paper_performance(
-    db: &Client,
-    exchange: &str,
-) -> anyhow::Result<PaperPerformance> {
+async fn load_paper_performance(db: &Client, exchange: &str) -> anyhow::Result<PaperPerformance> {
     // Count paper trading days
     let days_row = db
         .query_one(
@@ -169,9 +166,7 @@ async fn load_paper_performance(
             &[&exchange],
         )
         .await;
-    let days: i64 = days_row
-        .map(|r| r.get::<_, i64>("days"))
-        .unwrap_or(0);
+    let days: i64 = days_row.map(|r| r.get::<_, i64>("days")).unwrap_or(0);
 
     // Load daily equity series for Sharpe and drawdown calculation
     // Cast DECIMAL to float8 in SQL to avoid rust_decimal dependency

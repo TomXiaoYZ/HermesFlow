@@ -4,9 +4,7 @@
 //! Tracks positions and cash in-memory, persists to `paper_trade_*` tables.
 //! Used to validate deployed strategies before live trading promotion.
 
-use super::{
-    AccountSummary, BrokerOrderType, BrokerPosition, OrderParams, OrderResult, Trader,
-};
+use super::{AccountSummary, BrokerOrderType, BrokerPosition, OrderParams, OrderResult, Trader};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -146,17 +144,18 @@ impl PaperTrader {
         // Update positions
         {
             let mut positions = self.positions.write().await;
-            let pos = positions.entry(symbol.to_string()).or_insert(PaperPosition {
-                quantity: 0.0,
-                avg_cost: 0.0,
-                realized_pnl: 0.0,
-            });
+            let pos = positions
+                .entry(symbol.to_string())
+                .or_insert(PaperPosition {
+                    quantity: 0.0,
+                    avg_cost: 0.0,
+                    realized_pnl: 0.0,
+                });
 
             if is_buy {
                 let new_qty = pos.quantity + quantity;
                 if new_qty.abs() > 1e-10 {
-                    pos.avg_cost =
-                        (pos.avg_cost * pos.quantity + fill_price * quantity) / new_qty;
+                    pos.avg_cost = (pos.avg_cost * pos.quantity + fill_price * quantity) / new_qty;
                 }
                 pos.quantity = new_qty;
             } else {
@@ -271,21 +270,11 @@ impl Trader for PaperTrader {
         "paper"
     }
 
-    async fn buy(
-        &self,
-        symbol: &str,
-        quantity: f64,
-        params: &OrderParams,
-    ) -> Result<OrderResult> {
+    async fn buy(&self, symbol: &str, quantity: f64, params: &OrderParams) -> Result<OrderResult> {
         self.execute_order(symbol, quantity, true, params).await
     }
 
-    async fn sell(
-        &self,
-        symbol: &str,
-        quantity: f64,
-        params: &OrderParams,
-    ) -> Result<OrderResult> {
+    async fn sell(&self, symbol: &str, quantity: f64, params: &OrderParams) -> Result<OrderResult> {
         self.execute_order(symbol, quantity, false, params).await
     }
 
@@ -314,10 +303,7 @@ impl Trader for PaperTrader {
         let positions = self.positions.read().await;
 
         // Net liquidation = cash + sum of position values (at avg_cost, since no live data)
-        let position_value: f64 = positions
-            .values()
-            .map(|p| p.quantity * p.avg_cost)
-            .sum();
+        let position_value: f64 = positions.values().map(|p| p.quantity * p.avg_cost).sum();
 
         Ok(AccountSummary {
             net_liquidation: cash + position_value,

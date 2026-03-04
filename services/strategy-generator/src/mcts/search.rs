@@ -666,7 +666,11 @@ mod tests {
         let result = run_mcts_round(&space, &policy, &config, length_fitness);
 
         for formula in &result.formulas {
-            assert!(formula.len() >= 3, "Formula should have at least 3 tokens, got {}", formula.len());
+            assert!(
+                formula.len() >= 3,
+                "Formula should have at least 3 tokens, got {}",
+                formula.len()
+            );
             // Verify stack depth is 1 (valid terminal)
             let mut stack = 0u32;
             for &token in formula {
@@ -1020,7 +1024,12 @@ mod tests {
         });
 
         for (i, formula) in result.formulas.iter().enumerate() {
-            assert!(formula.len() >= 3, "Formula {} should have at least 3 tokens, got {}", i, formula.len());
+            assert!(
+                formula.len() >= 3,
+                "Formula {} should have at least 3 tokens, got {}",
+                i,
+                formula.len()
+            );
             for &token in formula {
                 assert!(
                     (token as usize) < space.vocab_size,

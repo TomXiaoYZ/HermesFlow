@@ -139,7 +139,10 @@ pub fn is_any_equity_market_open(now: DateTime<Utc>) -> bool {
     let cn = is_open_cn_market(now);
     let any = us || hk || cn;
     debug!(
-        us_open = us, hk_open = hk, cn_open = cn, any_open = any,
+        us_open = us,
+        hk_open = hk,
+        cn_open = cn,
+        any_open = any,
         "Market open check at {}",
         now.format("%Y-%m-%d %H:%M:%S UTC")
     );

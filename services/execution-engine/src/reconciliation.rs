@@ -186,10 +186,7 @@ pub async fn sync_positions(positions: &[BrokerPosition], db: &PgClient) {
                     deletes += n as u32;
                 }
                 Err(e) => {
-                    error!(
-                        "Position sync: failed to delete {} {}: {}",
-                        key.0, key.1, e
-                    );
+                    error!("Position sync: failed to delete {} {}: {}", key.0, key.1, e);
                 }
             }
         }
@@ -198,7 +195,11 @@ pub async fn sync_positions(positions: &[BrokerPosition], db: &PgClient) {
     if inserts > 0 || updates > 0 || deletes > 0 {
         info!(
             "Position sync: {} inserted, {} updated, {} deleted (IBKR: {} positions, {} accounts)",
-            inserts, updates, deletes, positions.len(), accounts_seen.len()
+            inserts,
+            updates,
+            deletes,
+            positions.len(),
+            accounts_seen.len()
         );
     }
 }

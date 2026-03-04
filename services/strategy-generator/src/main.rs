@@ -1443,20 +1443,19 @@ async fn run_symbol_evolution(
             // P9-2A: Ingest positive-PSR formulas into MAP-Elites subformula archive
             for (formula, &score) in result.formulas.iter().zip(result.scores.iter()) {
                 if score > 0.0 {
-                    subformula_archive.ingest_formula(
-                        formula,
-                        score,
-                        gen as u64,
-                        &symbol,
-                    );
+                    subformula_archive.ingest_formula(formula, score, gen as u64, &symbol);
                 }
             }
             if gen.is_multiple_of(100) {
                 let dist = subformula_archive.bucket_distribution();
                 info!(
                     "[{}:{}:{}] Gen {} MAP-Elites archive: total={}, buckets={:?}",
-                    exchange, symbol, mode_str, gen,
-                    subformula_archive.total_size(), dist
+                    exchange,
+                    symbol,
+                    mode_str,
+                    gen,
+                    subformula_archive.total_size(),
+                    dist
                 );
             }
         }
@@ -1586,18 +1585,13 @@ async fn run_symbol_evolution(
                                         .collect()
                                 })
                                 .collect();
-                            let returns: Vec<f64> = (0..common_len)
-                                .map(|b| cached.returns[[0, b]])
-                                .collect();
+                            let returns: Vec<f64> =
+                                (0..common_len).map(|b| cached.returns[[0, b]]).collect();
 
-                            let suspicious: Vec<usize> = fi.iter()
-                                .rev().take(5)
-                                .map(|f| f.factor_index)
-                                .collect();
-                            let top_causal: Vec<usize> = fi.iter()
-                                .take(5)
-                                .map(|f| f.factor_index)
-                                .collect();
+                            let suspicious: Vec<usize> =
+                                fi.iter().rev().take(5).map(|f| f.factor_index).collect();
+                            let top_causal: Vec<usize> =
+                                fi.iter().take(5).map(|f| f.factor_index).collect();
 
                             let cv_results = backtest::factor_importance::run_causal_verification(
                                 &suspicious,
@@ -1605,15 +1599,17 @@ async fn run_symbol_evolution(
                                 &factor_signals,
                                 &returns,
                                 &top_causal,
-                                0.05,  // partial_corr_threshold
-                                0.1,   // confirmed_pseudo_weight
+                                0.05, // partial_corr_threshold
+                                0.1,  // confirmed_pseudo_weight
                             );
 
-                            let restored: Vec<&str> = cv_results.iter()
+                            let restored: Vec<&str> = cv_results
+                                .iter()
                                 .filter(|r| r.weight_multiplier >= 1.0)
                                 .map(|r| r.factor_name.as_str())
                                 .collect();
-                            let penalized: Vec<&str> = cv_results.iter()
+                            let penalized: Vec<&str> = cv_results
+                                .iter()
                                 .filter(|r| r.weight_multiplier <= 0.1)
                                 .map(|r| r.factor_name.as_str())
                                 .collect();

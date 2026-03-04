@@ -116,7 +116,10 @@ impl DataMonitor {
         // P7-0B: Detect closed→open transition and reset EWMA tick rates
         // to prevent stale lambda values from weekend/holiday causing false positives.
         {
-            let mut was_open = self.was_market_open.lock().unwrap_or_else(|e| e.into_inner());
+            let mut was_open = self
+                .was_market_open
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if any_market_open && !*was_open {
                 let mut tick_rates = self.tick_rates.lock().unwrap_or_else(|e| e.into_inner());
                 let count = tick_rates.len();
@@ -276,10 +279,7 @@ impl DataMonitor {
                 .iter()
                 .take(3)
                 .map(|(sym, exch, elapsed, p)| {
-                    format!(
-                        "{}({}) stale {:.0}s P(0)={:.2e}",
-                        sym, exch, elapsed, p
-                    )
+                    format!("{}({}) stale {:.0}s P(0)={:.2e}", sym, exch, elapsed, p)
                 })
                 .collect();
             warn!(
