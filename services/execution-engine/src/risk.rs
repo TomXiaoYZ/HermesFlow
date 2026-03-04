@@ -29,9 +29,14 @@ impl RiskResult {
 
 struct AccountRisk {
     is_enabled: bool,
+    #[allow(dead_code)]
     max_order_value: f64,
     max_positions: usize,
     max_daily_loss: f64,
+    /// Effective per-order cap derived from account equity.
+    /// When `cached_net_liq > 0`: `cached_net_liq * max_order_pct`.
+    /// Falls back to `max_order_value` when equity unavailable.
+    effective_max_order: f64,
 }
 
 pub struct StockRiskEngine {
@@ -82,6 +87,7 @@ impl StockRiskEngine {
                 max_order_value: self.max_order_value_usd,
                 max_positions: self.max_positions,
                 max_daily_loss: self.max_daily_loss_usd,
+                effective_max_order: self.max_order_value_usd,
             },
         };
 
@@ -90,12 +96,12 @@ impl StockRiskEngine {
             return RiskResult::reject(format!("Account '{}' is disabled", account_id));
         }
 
-        // 1. Order value check
+        // 1. Order value check (equity-proportional when available)
         let order_value = signal.quantity * signal.price.unwrap_or(0.0);
-        if order_value > risk.max_order_value {
+        if order_value > risk.effective_max_order {
             return RiskResult::reject(format!(
                 "Order value ${:.2} exceeds max ${:.2}",
-                order_value, risk.max_order_value
+                order_value, risk.effective_max_order
             ));
         }
 
@@ -146,22 +152,38 @@ async fn load_account_risk(
 ) -> AccountRisk {
     let result = client
         .query_opt(
-            "SELECT is_enabled, max_order_value::FLOAT8, max_positions, max_daily_loss::FLOAT8 \
+            "SELECT is_enabled, max_order_value::FLOAT8, max_positions, max_daily_loss::FLOAT8, \
+                    COALESCE(cached_net_liq, 0)::FLOAT8, COALESCE(max_order_pct, 0.10)::FLOAT8 \
              FROM trading_accounts WHERE account_id = $1",
             &[&account_id],
         )
         .await;
 
     match result {
-        Ok(Some(row)) => AccountRisk {
-            is_enabled: row.get(0),
-            max_order_value: row.get(1),
-            max_positions: {
-                let v: i32 = row.get(2);
-                v as usize
-            },
-            max_daily_loss: row.get(3),
-        },
+        Ok(Some(row)) => {
+            let max_order_value: f64 = row.get(1);
+            let cached_net_liq: f64 = row.get(4);
+            let max_order_pct: f64 = row.get(5);
+
+            // Use equity-proportional limit when equity is known,
+            // fall back to static max_order_value otherwise.
+            let effective_max = if cached_net_liq > 0.0 {
+                cached_net_liq * max_order_pct
+            } else {
+                max_order_value
+            };
+
+            AccountRisk {
+                is_enabled: row.get(0),
+                max_order_value,
+                max_positions: {
+                    let v: i32 = row.get(2);
+                    v as usize
+                },
+                max_daily_loss: row.get(3),
+                effective_max_order: effective_max,
+            }
+        }
         Ok(None) => {
             warn!(
                 "No trading_accounts row for '{}', using env-var defaults",
@@ -172,6 +194,7 @@ async fn load_account_risk(
                 max_order_value: fallback.max_order_value_usd,
                 max_positions: fallback.max_positions,
                 max_daily_loss: fallback.max_daily_loss_usd,
+                effective_max_order: fallback.max_order_value_usd,
             }
         }
         Err(e) => {
@@ -184,6 +207,7 @@ async fn load_account_risk(
                 max_order_value: fallback.max_order_value_usd,
                 max_positions: fallback.max_positions,
                 max_daily_loss: fallback.max_daily_loss_usd,
+                effective_max_order: fallback.max_order_value_usd,
             }
         }
     }
