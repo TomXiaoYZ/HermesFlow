@@ -287,13 +287,44 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // Aggregate for Redis portfolio update
+                    // Publish per-account portfolio updates with mode tag so
+                    // strategy-engine can size signals using the target account's equity.
+                    let account_mode_map = crate::reconciliation::build_account_map_public();
+                    let now = Utc::now();
+                    let mut published_modes = std::collections::HashSet::new();
+                    for (ibkr_acct, summary) in &all_summaries {
+                        let mode = account_mode_map.get(ibkr_acct).cloned();
+                        let acct_positions: Vec<PositionUpdate> = positions
+                            .iter()
+                            .filter(|p| p.account == *ibkr_acct)
+                            .map(|p| PositionUpdate {
+                                symbol: p.symbol.clone(),
+                                quantity: p.quantity,
+                                market_value: p.market_value,
+                            })
+                            .collect();
+                        let update = PortfolioUpdate {
+                            timestamp: now,
+                            cash: summary.cash,
+                            positions: acct_positions,
+                            total_equity: summary.net_liquidation,
+                            mode: mode.clone(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&update) {
+                            let _: std::result::Result<(), _> =
+                                con.publish("portfolio_updates", json);
+                        }
+                        if let Some(m) = mode {
+                            published_modes.insert(m);
+                        }
+                    }
+
+                    // Also publish aggregate for backward compatibility
                     let (total_cash, total_equity) = all_summaries
                         .values()
                         .fold((0.0, 0.0), |(c, e), s| (c + s.cash, e + s.net_liquidation));
-
-                    let update = PortfolioUpdate {
-                        timestamp: Utc::now(),
+                    let agg_update = PortfolioUpdate {
+                        timestamp: now,
                         cash: total_cash,
                         positions: positions
                             .iter()
@@ -304,9 +335,9 @@ async fn main() -> anyhow::Result<()> {
                             })
                             .collect(),
                         total_equity,
+                        mode: None,
                     };
-
-                    if let Ok(json) = serde_json::to_string(&update) {
+                    if let Ok(json) = serde_json::to_string(&agg_update) {
                         let _: std::result::Result<(), _> = con.publish("portfolio_updates", json);
                     }
 
@@ -425,6 +456,7 @@ async fn main() -> anyhow::Result<()> {
                         })
                         .collect(),
                     total_equity: account.net_liquidation,
+                    mode: None,
                 };
 
                 if let Ok(json) = serde_json::to_string(&update) {

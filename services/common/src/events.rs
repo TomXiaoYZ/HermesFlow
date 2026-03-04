@@ -77,6 +77,10 @@ pub struct PortfolioUpdate {
     pub cash: f64,
     pub positions: Vec<PositionUpdate>,
     pub total_equity: f64,
+    /// Trading mode this update belongs to (e.g. "long_only", "long_short").
+    /// When None, this is an aggregate update for backward compatibility.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -245,10 +245,17 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             Some(update) = portfolio_rx.recv() => {
-                // Skip zero-equity updates (second IBKR account may report zero)
+                // Skip zero-equity updates (can happen when an IBKR gateway is down)
                 if update.total_equity > 0.0 {
-                    info!("Portfolio Update: Cash={:.4}, Total={:.4}", update.cash, update.total_equity);
-                    risk_engine.update_equity(update.total_equity);
+                    if let Some(ref mode) = update.mode {
+                        // Per-mode update: store equity for this specific trading mode
+                        info!("Portfolio Update [{}]: Cash={:.4}, Total={:.4}", mode, update.cash, update.total_equity);
+                        risk_engine.update_mode_equity(mode, update.total_equity);
+                    } else {
+                        // Aggregate update: use as fallback equity
+                        info!("Portfolio Update [aggregate]: Cash={:.4}, Total={:.4}", update.cash, update.total_equity);
+                        risk_engine.update_equity(update.total_equity);
+                    }
                 }
             }
 
@@ -636,7 +643,7 @@ async fn try_entry(
         debug!("Non-stock symbol {}, skipping entry", symbol);
         return;
     }
-    let shares = risk_engine.calculate_stock_entry_shares(price);
+    let shares = risk_engine.calculate_stock_entry_shares(price, mode_str);
     if shares <= 0.0 {
         debug!("Insufficient price for stock entry: {}", symbol);
         return;

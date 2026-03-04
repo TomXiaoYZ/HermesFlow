@@ -7,6 +7,23 @@ use tracing::{error, info, warn};
 
 use crate::traders::BrokerPosition;
 
+/// Maps IBKR account IDs (e.g. "DUxxxxxxx") → trading modes (e.g. "long_only").
+/// Used by portfolio sync to tag per-account updates with mode.
+pub fn build_account_map_public() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Ok(acct) = env::var("IBKR_ACCOUNT_LONG_ONLY") {
+        if !acct.is_empty() {
+            map.insert(acct, "long_only".to_string());
+        }
+    }
+    if let Ok(acct) = env::var("IBKR_ACCOUNT_LONG_SHORT") {
+        if !acct.is_empty() {
+            map.insert(acct, "long_short".to_string());
+        }
+    }
+    map
+}
+
 /// Maps IBKR account IDs (e.g. "DUxxxxxxx") → internal account_ids (e.g. "ibkr_long_only").
 /// Built from IBKR_ACCOUNT_LONG_ONLY / IBKR_ACCOUNT_LONG_SHORT env vars.
 fn build_account_map() -> HashMap<String, String> {

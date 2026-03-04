@@ -26,6 +26,8 @@ pub struct RiskEngine {
     config: RiskConfig,
     current_equity: f64,
     daily_start_equity: f64,
+    /// Per-mode equity for accurate position sizing (e.g. "long_only" → $8.7M).
+    mode_equity: std::collections::HashMap<String, f64>,
 }
 
 /// Check if a symbol looks like a US stock ticker.
@@ -59,6 +61,7 @@ impl RiskEngine {
             config: RiskConfig::default(),
             current_equity: 0.0,
             daily_start_equity: 0.0,
+            mode_equity: std::collections::HashMap::new(),
         }
     }
 
@@ -66,14 +69,29 @@ impl RiskEngine {
         self.current_equity = equity;
     }
 
+    /// Update equity for a specific trading mode (e.g. "long_only", "long_short").
+    pub fn update_mode_equity(&mut self, mode: &str, equity: f64) {
+        self.mode_equity.insert(mode.to_string(), equity);
+    }
+
+    /// Get the equity for a specific mode, falling back to aggregate equity.
+    pub fn equity_for_mode(&self, mode: &str) -> f64 {
+        self.mode_equity
+            .get(mode)
+            .copied()
+            .unwrap_or(self.current_equity)
+    }
+
     /// Calculate stock position size in shares as a percentage of account equity.
     /// trade_size_pct (e.g. 0.005 = 0.5%) determines the USD value per trade,
     /// then we floor-divide by price to get whole shares.
-    pub fn calculate_stock_entry_shares(&self, current_price: f64) -> f64 {
-        if current_price <= 0.0 || self.current_equity <= 0.0 {
+    /// Uses per-mode equity when available, falls back to aggregate equity.
+    pub fn calculate_stock_entry_shares(&self, current_price: f64, mode: &str) -> f64 {
+        let equity = self.equity_for_mode(mode);
+        if current_price <= 0.0 || equity <= 0.0 {
             return 0.0;
         }
-        let trade_value = self.current_equity * self.config.trade_size_pct;
+        let trade_value = equity * self.config.trade_size_pct;
         (trade_value / current_price).floor()
     }
 
@@ -140,22 +158,22 @@ mod tests {
         // Default trade_size_pct = 0.005 (0.5%)
         // Equity = $1,000,000 → trade_value = $5,000
         engine.update_equity(1_000_000.0);
-        let shares = engine.calculate_stock_entry_shares(180.0);
+        let shares = engine.calculate_stock_entry_shares(180.0, "long_only");
         assert_eq!(shares, 27.0); // floor(5000/180) = 27
 
         // Equity = $100,000 → trade_value = $500
         engine.update_equity(100_000.0);
-        let shares = engine.calculate_stock_entry_shares(180.0);
+        let shares = engine.calculate_stock_entry_shares(180.0, "long_only");
         assert_eq!(shares, 2.0); // floor(500/180) = 2
 
         // Zero equity → 0 shares
         engine.update_equity(0.0);
-        let shares = engine.calculate_stock_entry_shares(180.0);
+        let shares = engine.calculate_stock_entry_shares(180.0, "long_only");
         assert_eq!(shares, 0.0);
 
         // Zero price → 0 shares
         engine.update_equity(1_000_000.0);
-        let shares = engine.calculate_stock_entry_shares(0.0);
+        let shares = engine.calculate_stock_entry_shares(0.0, "long_only");
         assert_eq!(shares, 0.0);
     }
 
