@@ -988,10 +988,11 @@ async fn get_trade_positions(State(state): State<Arc<AppState>>) -> Json<Value> 
                     let avg = row.get::<sqlx::types::Decimal, _>("avg_price");
                     let abs_qty = if qty < sqlx::types::Decimal::ZERO { -qty } else { qty };
                     let cost_basis = abs_qty * avg;
-                    let market_value = current_price.map(|cp| abs_qty * cp);
+                    // Signed market value: positive for long, negative for short
+                    let market_value = current_price.map(|cp| qty * cp);
                     let unrealized_pnl = row
                         .get::<Option<sqlx::types::Decimal>, _>("unrealized_pnl")
-                        .or_else(|| market_value.map(|mv| mv - qty * avg));
+                        .or_else(|| current_price.map(|cp| qty * (cp - avg)));
                     json!({
                         "account_id": row.get::<String, _>("account_id"),
                         "exchange": row.get::<String, _>("exchange"),
@@ -1233,7 +1234,7 @@ async fn get_account_summary(State(state): State<Arc<AppState>>) -> Json<Value> 
             SELECT p.account_id, \
                    COUNT(*)::INTEGER as position_count, \
                    SUM(ABS(p.quantity) * p.avg_price) as total_cost_basis, \
-                   SUM(ABS(p.quantity) * COALESCE(c.close, p.current_price, p.avg_price)) as total_market_value, \
+                   SUM(p.quantity * COALESCE(c.close, p.current_price, p.avg_price)) as total_market_value, \
                    SUM(p.quantity * (COALESCE(c.close, p.current_price, p.avg_price) - p.avg_price)) as unrealized_pnl \
             FROM trade_positions p \
             LEFT JOIN LATERAL ( \
