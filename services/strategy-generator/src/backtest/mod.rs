@@ -876,17 +876,30 @@ impl Backtester {
     /// Properties:
     /// - Short windows (n=300, k=14): ~0.133 penalty → strong regularization
     /// - Long windows (n=2000, k=14): ~0.027 penalty → data-rich = less penalty
-    fn bic_complexity_penalty(genome_tokens: &[usize], n_bars: f64) -> f64 {
+    fn bic_complexity_penalty(genome_tokens: &[usize], n_bars: f64, feat_offset: usize) -> f64 {
         if n_bars < 2.0 || genome_tokens.is_empty() {
             return 0.0;
         }
-        // Count effective complexity: high-risk operators count as 1.5 tokens.
-        // Operator offsets: DIV=3, SIGNED_POWER=8, LOG=19 (relative to feat_offset).
-        // Since we don't know feat_offset here, we simply count total tokens.
-        // The extra 0.5 weighting for specific high-risk ops is handled at a higher
-        // level if feat_offset is available; here we use uniform 1.0 per token as
-        // a conservative baseline. The formula is still far superior to linear.
-        let effective_k = genome_tokens.len() as f64;
+        // P10B: High-risk operators count as 1.5 tokens in effective complexity.
+        // Operator offsets (relative to feat_offset):
+        //   DIV=3         — division by near-zero risk
+        //   SIGNED_POWER=8 — dimension explosion
+        //   LOG=19         — negative-domain risk
+        let effective_k: f64 = genome_tokens
+            .iter()
+            .map(|&t| {
+                if t >= feat_offset {
+                    let op = t - feat_offset;
+                    if op == 3 || op == 8 || op == 19 {
+                        1.5
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0 // feature token
+                }
+            })
+            .sum();
         effective_k * n_bars.ln() / (2.0 * n_bars)
     }
 
@@ -2085,10 +2098,9 @@ impl Backtester {
         let trade_bonus = (trade_count as f64).ln().max(0.0) * 0.1;
 
         // P9-2B: BIC-inspired complexity penalty replaces linear 0.05/token.
-        // BIC form: effective_k * ln(n) / (2*n)
-        // High-risk operators (DIV=3, SIGNED_POWER=8, LOG=19) count as 1.5x tokens.
-        // This scales naturally: short windows penalize more, long windows less.
-        let bic_penalty = Self::bic_complexity_penalty(genome_tokens, n as f64);
+        // P10B: High-risk operators (DIV, SIGNED_POWER, LOG) count as 1.5x tokens.
+        let bic_penalty =
+            Self::bic_complexity_penalty(genome_tokens, n as f64, self.vm.feat_offset);
 
         (capped + trade_bonus - bic_penalty).clamp(-5.0, 5.0)
     }
@@ -3792,5 +3804,39 @@ overrides:
         let tracker = make_tracker(0.10, 0.50, 5);
         let changed = adjust_threshold_params(&mut cfg, "AAPL", StrategyMode::LongOnly, &tracker);
         assert!(!changed, "insufficient data should not trigger adjustment");
+    }
+
+    #[test]
+    fn bic_penalty_high_risk_operators_penalized_more() {
+        let feat_offset = 25;
+        // Tokens: 2 features + ADD(0) + MUL(2) = all safe → effective_k = 4.0
+        let safe_tokens: Vec<usize> = vec![0, 1, feat_offset, feat_offset + 2];
+        let p_safe = Backtester::bic_complexity_penalty(&safe_tokens, 1000.0, feat_offset);
+
+        // Tokens: 2 features + DIV(3) + LOG(19) = 2 high-risk → effective_k = 5.0
+        let risky_tokens: Vec<usize> = vec![0, 1, feat_offset + 3, feat_offset + 19];
+        let p_risky = Backtester::bic_complexity_penalty(&risky_tokens, 1000.0, feat_offset);
+
+        assert!(
+            p_risky > p_safe,
+            "high-risk operators should incur higher penalty: risky={p_risky} vs safe={p_safe}"
+        );
+        // Effective k: safe=4.0, risky=5.0 → ratio should be 5/4=1.25
+        let ratio = p_risky / p_safe;
+        assert!(
+            (ratio - 1.25).abs() < 1e-6,
+            "penalty ratio should be 1.25 (got {ratio})"
+        );
+    }
+
+    #[test]
+    fn bic_penalty_edge_cases() {
+        assert_eq!(Backtester::bic_complexity_penalty(&[], 1000.0, 25), 0.0);
+        assert_eq!(Backtester::bic_complexity_penalty(&[0], 1.0, 25), 0.0);
+        // SIGNED_POWER at offset+8 counts 1.5
+        let tokens = vec![25 + 8]; // single SIGNED_POWER
+        let p = Backtester::bic_complexity_penalty(&tokens, 1000.0, 25);
+        let expected = 1.5 * 1000.0_f64.ln() / 2000.0;
+        assert!((p - expected).abs() < 1e-10);
     }
 }

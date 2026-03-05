@@ -275,6 +275,54 @@ impl Policy for LlmCachedPolicy {
     }
 }
 
+/// P10A: Boost action priors using SubformulaArchive patterns.
+///
+/// For each legal action, checks if appending it to `current_tokens` creates a
+/// suffix that matches any high-PSR subformula in the archive. Matching actions
+/// receive a multiplicative boost proportional to the best matching PSR.
+///
+/// Returns a vector of boost multipliers (1.0 = no boost) for each legal action.
+pub fn boost_from_archive(
+    legal_actions: &[u32],
+    current_tokens: &[u32],
+    archive: &super::search::SubformulaArchive,
+    boost_scale: f64,
+) -> Vec<f64> {
+    let mut boosts = vec![1.0; legal_actions.len()];
+    if boost_scale <= 0.0 {
+        return boosts;
+    }
+
+    // For each legal action, check if (tail of current_tokens + action) matches
+    // any archived subformula suffix.
+    for (i, &action) in legal_actions.iter().enumerate() {
+        let mut best_psr = 0.0_f64;
+        // Check windows of size 2..=4 ending with this action
+        for window_len in 2..=4usize {
+            let prefix_len = window_len - 1;
+            if current_tokens.len() < prefix_len {
+                continue;
+            }
+            let prefix_start = current_tokens.len() - prefix_len;
+            let mut candidate: Vec<u32> = current_tokens[prefix_start..].to_vec();
+            candidate.push(action);
+
+            // Search all buckets for this pattern
+            for entry in archive.all_entries() {
+                if entry.tokens == candidate && entry.oos_psr > best_psr {
+                    best_psr = entry.oos_psr;
+                }
+            }
+        }
+
+        if best_psr > 0.0 {
+            boosts[i] = 1.0 + boost_scale * best_psr;
+        }
+    }
+
+    boosts
+}
+
 /// Build prior weights for LlmCachedPolicy from factor importance and elite tokens.
 ///
 /// Weight construction:
@@ -568,5 +616,53 @@ mod tests {
         populate_policy_cache(&mut policy, &[], &elite_tokens, 6, 3, &config);
         // Should have entries for: empty prefix, [0], [0,1], [0,1,3]
         assert!(policy.cache_size() >= 4);
+    }
+
+    #[test]
+    fn test_boost_from_archive_matches_patterns() {
+        use crate::mcts::search::SubformulaArchive;
+        // feat_offset=3: tokens 0-2 are features, 3+ are operators
+        let mut archive = SubformulaArchive::new(10, 3);
+        // Ingest a formula with known high PSR: [f0, f1, ADD(3)]
+        archive.ingest_formula(&[0, 1, 3], 2.0, 1, "TEST");
+
+        // Current tokens: [f0], legal actions include f1 and f2
+        // If we pick f1 (action 1), the suffix [f0, f1] should match archive pattern [0, 1]
+        let legal = vec![0, 1, 2, 3, 4];
+        let boosts = boost_from_archive(&legal, &[0], &archive, 0.3);
+
+        // Action 1 (f1) should be boosted because [f0, f1] is in archive with PSR=2.0
+        assert!(
+            boosts[1] > 1.0,
+            "f1 should be boosted when preceded by f0: {:?}",
+            boosts
+        );
+        // Action 2 (f2) should NOT be boosted (no matching pattern)
+        assert!(
+            (boosts[2] - 1.0).abs() < 1e-10,
+            "f2 should not be boosted: {:?}",
+            boosts
+        );
+    }
+
+    #[test]
+    fn test_boost_from_archive_no_archive_data() {
+        use crate::mcts::search::SubformulaArchive;
+        let archive = SubformulaArchive::new(10, 3);
+        let legal = vec![0, 1, 2];
+        let boosts = boost_from_archive(&legal, &[0], &archive, 0.3);
+        // All boosts should be 1.0 (no patterns in archive)
+        assert!(boosts.iter().all(|&b| (b - 1.0).abs() < 1e-10));
+    }
+
+    #[test]
+    fn test_boost_from_archive_zero_scale() {
+        use crate::mcts::search::SubformulaArchive;
+        let mut archive = SubformulaArchive::new(10, 3);
+        archive.ingest_formula(&[0, 1, 3], 2.0, 1, "TEST");
+        let legal = vec![0, 1, 2];
+        let boosts = boost_from_archive(&legal, &[0], &archive, 0.0);
+        // Zero scale → all boosts 1.0
+        assert!(boosts.iter().all(|&b| (b - 1.0).abs() < 1e-10));
     }
 }

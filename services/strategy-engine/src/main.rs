@@ -89,8 +89,8 @@ async fn main() -> anyhow::Result<()> {
     let event_bus = EventBus::new(&redis_url)?;
 
     // Load factor config for stock signals (must match what strategy-generator evolves with)
-    let factor_config_path = env::var("FACTOR_CONFIG")
-        .unwrap_or_else(|_| "config/factors-stock.yaml".to_string());
+    let factor_config_path =
+        env::var("FACTOR_CONFIG").unwrap_or_else(|_| "config/factors-stock.yaml".to_string());
     // Multi-timeframe: strategy-generator uses 3 resolutions (1h/4h/1d) → 75 features
     let n_resolutions: usize = env::var("FACTOR_RESOLUTIONS")
         .ok()

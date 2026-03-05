@@ -10,6 +10,7 @@ use ibapi::orders::{Action, CancelOrder, Order as IbOrder, PlaceOrder};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 use super::{AccountSummary, BrokerOrderType, BrokerPosition, OrderParams, OrderResult, Trader};
@@ -168,9 +169,11 @@ impl IBKRTrader {
     /// Check whether the underlying IBKR connection is still alive.
     pub async fn is_alive(&self) -> bool {
         let client = self.client.clone();
-        tokio::task::spawn_blocking(move || match client.lock() {
-            Ok(guard) => guard.0.is_connected(),
-            Err(_) => false,
+        Self::with_ibkr_timeout("is_alive", Duration::from_secs(5), move || {
+            Ok(match client.lock() {
+                Ok(guard) => guard.0.is_connected(),
+                Err(_) => false,
+            })
         })
         .await
         .unwrap_or(false)
@@ -183,12 +186,12 @@ impl IBKRTrader {
         let client_id = self.client_id as i32;
         let addr_clone = addr.clone();
 
-        let new_client = tokio::task::spawn_blocking(move || {
+        let new_client = Self::with_ibkr_timeout("reconnect", Duration::from_secs(30), move || {
             Client::connect(&addr_clone, client_id)
                 .map(IbClient)
                 .map_err(|e| anyhow::anyhow!("IBKR reconnect failed to {}: {}", addr_clone, e))
         })
-        .await??;
+        .await?;
 
         let ibkr_next = new_client.0.next_order_id();
         NEXT_ORDER_ID.fetch_max(ibkr_next, Ordering::SeqCst);
@@ -208,6 +211,34 @@ impl IBKRTrader {
     fn build_contract(symbol: &str) -> Contract {
         let clean_symbol = symbol.strip_prefix("US.").unwrap_or(symbol);
         Contract::stock(clean_symbol).build()
+    }
+
+    /// P10D: Wrap a spawn_blocking call with a timeout.
+    ///
+    /// If the blocking task doesn't complete within `timeout`, returns an error
+    /// instead of hanging indefinitely. This prevents IBKR API freezes from
+    /// blocking the entire sync loop.
+    async fn with_ibkr_timeout<F, T>(op_name: &str, timeout: Duration, f: F) -> Result<T>
+    where
+        F: FnOnce() -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        match tokio::time::timeout(timeout, tokio::task::spawn_blocking(f)).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(join_err)) => Err(anyhow::anyhow!(
+                "IBKR {} task panicked: {}",
+                op_name,
+                join_err
+            )),
+            Err(_elapsed) => {
+                warn!("IBKR {} timed out after {:?}", op_name, timeout);
+                Err(anyhow::anyhow!(
+                    "IBKR {} timed out after {:?}",
+                    op_name,
+                    timeout
+                ))
+            }
+        }
     }
 
     /// Execute an order and collect fill data from the response subscription.
@@ -306,10 +337,10 @@ impl Trader for IBKRTrader {
         let client = self.client.clone();
         let sym = symbol.to_string();
 
-        let fill = tokio::task::spawn_blocking(move || {
+        let fill = Self::with_ibkr_timeout("buy", Duration::from_secs(10), move || {
             Self::execute_order(&client, order_id, &contract, &order, &sym)
         })
-        .await??;
+        .await?;
 
         Ok(OrderResult {
             order_id: order_id.to_string(),
@@ -355,10 +386,10 @@ impl Trader for IBKRTrader {
         let client = self.client.clone();
         let sym = symbol.to_string();
 
-        let fill = tokio::task::spawn_blocking(move || {
+        let fill = Self::with_ibkr_timeout("sell", Duration::from_secs(10), move || {
             Self::execute_order(&client, order_id, &contract, &order, &sym)
         })
-        .await??;
+        .await?;
 
         Ok(OrderResult {
             order_id: order_id.to_string(),
@@ -376,7 +407,7 @@ impl Trader for IBKRTrader {
 
         info!("IBKR cancelling order {}", order_id);
 
-        tokio::task::spawn_blocking(move || -> Result<()> {
+        Self::with_ibkr_timeout("cancel_order", Duration::from_secs(10), move || {
             let guard = client
                 .lock()
                 .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
@@ -406,15 +437,13 @@ impl Trader for IBKRTrader {
             }
             Ok(())
         })
-        .await??;
-
-        Ok(())
+        .await
     }
 
     async fn get_positions(&self) -> Result<Vec<BrokerPosition>> {
         let client = self.client.clone();
 
-        let positions = tokio::task::spawn_blocking(move || -> Result<Vec<BrokerPosition>> {
+        Self::with_ibkr_timeout("get_positions", Duration::from_secs(15), move || {
             let guard = client
                 .lock()
                 .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
@@ -446,15 +475,13 @@ impl Trader for IBKRTrader {
             }
             Ok(result)
         })
-        .await??;
-
-        Ok(positions)
+        .await
     }
 
     async fn get_account_summary(&self) -> Result<AccountSummary> {
         let client = self.client.clone();
 
-        tokio::task::spawn_blocking(move || -> Result<AccountSummary> {
+        Self::with_ibkr_timeout("get_account_summary", Duration::from_secs(15), move || {
             let guard = client
                 .lock()
                 .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
@@ -501,66 +528,69 @@ impl Trader for IBKRTrader {
 
             Ok(summary)
         })
-        .await?
+        .await
     }
 
     async fn get_account_summaries(&self) -> Result<HashMap<String, AccountSummary>> {
         let client = self.client.clone();
 
-        tokio::task::spawn_blocking(move || -> Result<HashMap<String, AccountSummary>> {
-            let guard = client
-                .lock()
-                .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
+        Self::with_ibkr_timeout(
+            "get_account_summaries",
+            Duration::from_secs(15),
+            move || {
+                let guard = client
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("IBKR lock poisoned: {}", e))?;
 
-            let tags = &[
-                AccountSummaryTags::NET_LIQUIDATION,
-                AccountSummaryTags::TOTAL_CASH_VALUE,
-                AccountSummaryTags::BUYING_POWER,
-            ];
-            let group = AccountGroup("All".to_string());
-            let subscription = guard
-                .0
-                .account_summary(&group, tags)
-                .map_err(|e| anyhow::anyhow!("IBKR account_summaries: {}", e))?;
+                let tags = &[
+                    AccountSummaryTags::NET_LIQUIDATION,
+                    AccountSummaryTags::TOTAL_CASH_VALUE,
+                    AccountSummaryTags::BUYING_POWER,
+                ];
+                let group = AccountGroup("All".to_string());
+                let subscription = guard
+                    .0
+                    .account_summary(&group, tags)
+                    .map_err(|e| anyhow::anyhow!("IBKR account_summaries: {}", e))?;
 
-            let mut summaries: HashMap<String, AccountSummary> = HashMap::new();
+                let mut summaries: HashMap<String, AccountSummary> = HashMap::new();
 
-            while let Some(update) = subscription.next() {
-                match update {
-                    AccountSummaryResult::Summary(s) => {
-                        let entry =
-                            summaries
-                                .entry(s.account.clone())
-                                .or_insert_with(|| AccountSummary {
+                while let Some(update) = subscription.next() {
+                    match update {
+                        AccountSummaryResult::Summary(s) => {
+                            let entry = summaries.entry(s.account.clone()).or_insert_with(|| {
+                                AccountSummary {
                                     currency: if s.currency.is_empty() {
                                         "USD".to_string()
                                     } else {
                                         s.currency.clone()
                                     },
                                     ..Default::default()
-                                });
-                        match s.tag.as_str() {
-                            "NetLiquidation" => {
-                                entry.net_liquidation = s.value.parse().unwrap_or(0.0);
+                                }
+                            });
+                            match s.tag.as_str() {
+                                "NetLiquidation" => {
+                                    entry.net_liquidation = s.value.parse().unwrap_or(0.0);
+                                }
+                                "TotalCashValue" => {
+                                    entry.cash = s.value.parse().unwrap_or(0.0);
+                                }
+                                "BuyingPower" => {
+                                    entry.buying_power = s.value.parse().unwrap_or(0.0);
+                                }
+                                _ => {}
                             }
-                            "TotalCashValue" => {
-                                entry.cash = s.value.parse().unwrap_or(0.0);
-                            }
-                            "BuyingPower" => {
-                                entry.buying_power = s.value.parse().unwrap_or(0.0);
-                            }
-                            _ => {}
+                        }
+                        AccountSummaryResult::End => {
+                            subscription.cancel();
+                            break;
                         }
                     }
-                    AccountSummaryResult::End => {
-                        subscription.cancel();
-                        break;
-                    }
                 }
-            }
 
-            Ok(summaries)
-        })
-        .await?
+                Ok(summaries)
+            },
+        )
+        .await
     }
 }

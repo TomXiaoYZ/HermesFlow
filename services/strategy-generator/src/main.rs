@@ -13,8 +13,10 @@ mod api;
 mod backtest;
 mod genetic;
 mod genome_decoder;
+mod health;
 mod llm_oracle;
 mod mcts;
+mod metrics;
 
 use backtest::StrategyMode;
 use backtest::{
@@ -187,8 +189,18 @@ pub struct MctsYamlConfig {
     pub max_length: usize,
     #[serde(default = "default_true")]
     pub use_max_reward: bool,
+    /// P10A: Scale factor for archive-based prior boosting (0.0 = disabled).
+    #[serde(default = "default_archive_boost")]
+    pub archive_boost_scale: f64,
+    /// P10E: Per-symbol override for use_max_reward (Extreme Bandit A/B test).
+    /// Symbols listed here use the specified value, overriding the global default.
+    #[serde(default)]
+    pub use_max_reward_overrides: HashMap<String, bool>,
 }
 
+fn default_archive_boost() -> f64 {
+    0.3
+}
 fn default_mcts_budget() -> usize {
     1000
 }
@@ -218,7 +230,20 @@ impl Default for MctsYamlConfig {
             exploration_c: default_mcts_exploration(),
             max_length: default_mcts_max_len(),
             use_max_reward: default_true(),
+            archive_boost_scale: default_archive_boost(),
+            use_max_reward_overrides: HashMap::new(),
         }
+    }
+}
+
+impl MctsYamlConfig {
+    /// P10E: Resolve use_max_reward for a specific symbol.
+    /// Per-symbol overrides take precedence over the global default.
+    pub fn resolve_use_max_reward(&self, symbol: &str) -> bool {
+        self.use_max_reward_overrides
+            .get(symbol)
+            .copied()
+            .unwrap_or(self.use_max_reward)
     }
 }
 
@@ -407,11 +432,9 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting Strategy Generator (Multi-Exchange Evolutionary Optimizer)...");
 
-    // Health check — single endpoint for the whole process
-    tokio::spawn(common::health::start_health_server(
-        "strategy-generator",
-        8084,
-    ));
+    // P10C: Register Prometheus metrics and start health+metrics server
+    metrics::register_metrics();
+    tokio::spawn(health::start_health_server());
 
     // Infrastructure
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -1377,13 +1400,16 @@ async fn run_symbol_evolution(
                 exploration_c: mcts_config.exploration_c,
                 seeds_per_round: mcts_config.seeds_per_round,
                 max_length: mcts_config.max_length,
-                use_max_reward: mcts_config.use_max_reward,
+                use_max_reward: mcts_config.resolve_use_max_reward(&symbol),
                 deception_ngram_size: 0,
                 deception_decay: 0.1,
             };
 
             let backtester_ref = &backtester;
             let symbol_ref = &symbol;
+            // P10A: Pass archive reference for prior boosting
+            let archive_ref = &subformula_archive;
+            let archive_boost = mcts_config.archive_boost_scale;
             let result = mcts_pool.install(|| {
                 mcts::search::run_mcts_round(
                     &action_space,
@@ -1402,6 +1428,12 @@ async fn run_symbol_evolution(
                         backtester_ref.evaluate_symbol_kfold(&mut temp, symbol_ref, k, mode);
                         temp.fitness
                     },
+                    if archive_boost > 0.0 {
+                        Some(archive_ref)
+                    } else {
+                        None
+                    },
+                    archive_boost,
                 )
             });
 
@@ -1427,6 +1459,9 @@ async fn run_symbol_evolution(
             mcts_injected_this_gen = seeds.len();
             if !seeds.is_empty() {
                 ga.inject_genomes(0, seeds);
+                metrics::MCTS_SEEDS_INJECTED
+                    .with_label_values(&[exchange.as_str(), symbol.as_str(), mode_str])
+                    .inc_by(mcts_injected_this_gen as u64);
                 info!(
                     "[{}:{}:{}] Gen {} MCTS: injected {}/{} seeds into L0 (budget={}, unique={})",
                     exchange,
@@ -1524,6 +1559,9 @@ async fn run_symbol_evolution(
                             exchange, symbol, mode_str, gen, l3_div, l4_div
                         );
                         diversity_trigger_count += 1;
+                        metrics::DIVERSITY_TRIGGERS
+                            .with_label_values(&[exchange.as_str(), symbol.as_str(), mode_str])
+                            .inc();
 
                         // Inject random genomes into L0
                         let random_genomes = ga.generate_random_genomes(
@@ -1708,6 +1746,26 @@ async fn run_symbol_evolution(
                     oracle_invocations,
                     oracle_injected_total,
                 );
+
+                // P10C: Update Prometheus gauges
+                let labels = [exchange.as_str(), symbol.as_str(), mode_str];
+                metrics::OOS_VALID_RATE
+                    .with_label_values(&labels)
+                    .set(oos_valid_rate);
+                metrics::IS_OOS_GAP
+                    .with_label_values(&labels)
+                    .set(mean_is_oos_gap);
+                metrics::TFT_RATE
+                    .with_label_values(&labels)
+                    .set(tft_tracker.rate());
+                metrics::GENERATION
+                    .with_label_values(&labels)
+                    .set(gen as f64);
+                metrics::BEST_OOS_PSR
+                    .with_label_values(&labels)
+                    .set(oos_psr);
+                metrics::ARCHIVE_SIZE.set(subformula_archive.total_size() as i64);
+                metrics::TOTAL_GENERATIONS.inc();
             }
 
             // Track TFT rate for LLM oracle trigger
@@ -1747,6 +1805,9 @@ async fn run_symbol_evolution(
                 );
 
                 diversity_trigger_count += 1;
+                metrics::DIVERSITY_TRIGGERS
+                    .with_label_values(&[exchange.as_str(), symbol.as_str(), mode_str])
+                    .inc();
                 gens_since_diversity_trigger = 0;
                 consecutive_zero_trade_gens = 0;
             }
@@ -1868,6 +1929,9 @@ async fn run_symbol_evolution(
                         Ok(mut result) => {
                             oracle_injected_this_gen = result.genomes.len();
                             oracle_invocations += 1;
+                            metrics::ORACLE_INVOCATIONS
+                                .with_label_values(&[exchange.as_str(), symbol.as_str(), mode_str])
+                                .inc();
                             last_oracle_gen = gen;
                             last_oracle_time = std::time::Instant::now();
                             info!(

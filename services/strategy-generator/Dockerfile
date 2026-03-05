@@ -58,5 +58,6 @@ RUN set -eux; \
 WORKDIR /app
 COPY --from=builder /app/target/release/strategy-generator .
 
+EXPOSE 8082 8084
 ENV RUST_LOG=info
 CMD ["./strategy-generator"]

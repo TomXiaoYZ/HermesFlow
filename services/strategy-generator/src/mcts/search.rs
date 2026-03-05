@@ -279,12 +279,17 @@ impl SubformulaArchive {
     }
 
     /// Get the top-N subformulas across all buckets (for MCTS prior injection).
-    #[allow(dead_code)] // API for MCTS policy prior boosting (future integration)
+    #[allow(dead_code)] // Used in tests and available for future cross-symbol prior transfer
     pub fn top_subformulas(&self, n: usize) -> Vec<&SubformulaEntry> {
         let mut all: Vec<&SubformulaEntry> = self.buckets.values().flatten().collect();
         all.sort_by(|a, b| b.oos_psr.total_cmp(&a.oos_psr));
         all.truncate(n);
         all
+    }
+
+    /// Iterate over all entries across all buckets (for archive-boosted prior search).
+    pub fn all_entries(&self) -> impl Iterator<Item = &SubformulaEntry> {
+        self.buckets.values().flatten()
     }
 }
 
@@ -305,11 +310,16 @@ pub struct MctsResult {
 ///
 /// `evaluate_fn` takes a complete RPN token sequence and returns a fitness score (e.g., PSR).
 /// Higher is better. Returns NaN or negative for invalid formulas.
+///
+/// P10A: When `archive` is provided with `archive_boost_scale > 0`, child priors
+/// are boosted if the action creates a suffix matching high-PSR subformulas.
 pub fn run_mcts_round<F>(
     action_space: &ActionSpace,
     policy: &dyn Policy,
     config: &MctsConfig,
     evaluate_fn: F,
+    archive: Option<&SubformulaArchive>,
+    archive_boost_scale: f64,
 ) -> MctsResult
 where
     F: Fn(&[u32]) -> f64,
@@ -361,7 +371,28 @@ where
 
         // Expand if this node has no children yet
         if arena.get(leaf).children.is_empty() {
-            let priors = policy.prior(&legal, stack_depth, &path_tokens);
+            let mut priors = policy.prior(&legal, stack_depth, &path_tokens);
+
+            // P10A: Apply archive-based prior boost if available
+            if let Some(arch) = archive {
+                if archive_boost_scale > 0.0 && arch.total_size() > 0 {
+                    let boosts = super::policy::boost_from_archive(
+                        &legal,
+                        &path_tokens,
+                        arch,
+                        archive_boost_scale,
+                    );
+                    for (p, b) in priors.iter_mut().zip(boosts.iter()) {
+                        *p *= b;
+                    }
+                    // Re-normalize
+                    let sum: f64 = priors.iter().sum();
+                    if sum > 0.0 {
+                        priors.iter_mut().for_each(|p| *p /= sum);
+                    }
+                }
+            }
+
             for (i, &action) in legal.iter().enumerate() {
                 let new_stack = action_space.stack_after_action(stack_depth, action);
                 let new_length = current_length + 1;
@@ -641,7 +672,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = run_mcts_round(&space, &policy, &config, length_fitness);
+        let result = run_mcts_round(&space, &policy, &config, length_fitness, None, 0.0);
 
         // Should find at least some formulas
         assert!(
@@ -663,7 +694,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = run_mcts_round(&space, &policy, &config, length_fitness);
+        let result = run_mcts_round(&space, &policy, &config, length_fitness, None, 0.0);
 
         for formula in &result.formulas {
             assert!(
@@ -759,7 +790,7 @@ mod tests {
             use_max_reward: true,
             ..Default::default()
         };
-        let result_max = run_mcts_round(&space, &policy, &config_max, needle_fitness);
+        let result_max = run_mcts_round(&space, &policy, &config_max, needle_fitness, None, 0.0);
 
         // Run with mean_reward mode
         let config_mean = MctsConfig {
@@ -769,7 +800,7 @@ mod tests {
             use_max_reward: false,
             ..Default::default()
         };
-        let result_mean = run_mcts_round(&space, &policy, &config_mean, needle_fitness);
+        let result_mean = run_mcts_round(&space, &policy, &config_mean, needle_fitness, None, 0.0);
 
         // Both should find formulas
         assert!(!result_max.formulas.is_empty());
@@ -865,15 +896,22 @@ mod tests {
             ..Default::default()
         };
 
-        let result = run_mcts_round(&space, &policy, &config, |tokens: &[u32]| {
-            // Reward formulas that use diverse features
-            let unique_features: std::collections::HashSet<u32> = tokens
-                .iter()
-                .filter(|&&t| (t as usize) < 25)
-                .copied()
-                .collect();
-            unique_features.len() as f64 / 5.0
-        });
+        let result = run_mcts_round(
+            &space,
+            &policy,
+            &config,
+            |tokens: &[u32]| {
+                // Reward formulas that use diverse features
+                let unique_features: std::collections::HashSet<u32> = tokens
+                    .iter()
+                    .filter(|&&t| (t as usize) < 25)
+                    .copied()
+                    .collect();
+                unique_features.len() as f64 / 5.0
+            },
+            None,
+            0.0,
+        );
 
         assert!(
             !result.formulas.is_empty(),
@@ -971,7 +1009,8 @@ mod tests {
             deception_ngram_size: 0,
             ..Default::default()
         };
-        let result_no_ds = run_mcts_round(&space, &policy, &config_no_ds, constant_fitness);
+        let result_no_ds =
+            run_mcts_round(&space, &policy, &config_no_ds, constant_fitness, None, 0.0);
 
         // With deception suppression
         let config_ds = MctsConfig {
@@ -982,7 +1021,7 @@ mod tests {
             deception_decay: 0.3,
             ..Default::default()
         };
-        let result_ds = run_mcts_round(&space, &policy, &config_ds, constant_fitness);
+        let result_ds = run_mcts_round(&space, &policy, &config_ds, constant_fitness, None, 0.0);
 
         // Deception suppression should produce at least as many unique formulas
         // (it penalizes repeated patterns, forcing exploration)
@@ -1013,15 +1052,22 @@ mod tests {
             ..Default::default()
         };
 
-        let result = run_mcts_round(&space, &policy, &config, |tokens: &[u32]| {
-            // Simple fitness: more unique features = better
-            let feats: std::collections::HashSet<u32> = tokens
-                .iter()
-                .filter(|&&t| (t as usize) < feat_offset)
-                .copied()
-                .collect();
-            feats.len() as f64 / 5.0
-        });
+        let result = run_mcts_round(
+            &space,
+            &policy,
+            &config,
+            |tokens: &[u32]| {
+                // Simple fitness: more unique features = better
+                let feats: std::collections::HashSet<u32> = tokens
+                    .iter()
+                    .filter(|&&t| (t as usize) < feat_offset)
+                    .copied()
+                    .collect();
+                feats.len() as f64 / 5.0
+            },
+            None,
+            0.0,
+        );
 
         for (i, formula) in result.formulas.iter().enumerate() {
             assert!(
@@ -1064,7 +1110,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = run_mcts_round(&space, &policy, &config, |_tokens: &[u32]| 0.5);
+        let result = run_mcts_round(&space, &policy, &config, |_tokens: &[u32]| 0.5, None, 0.0);
 
         for formula in &result.formulas {
             for &token in formula {
@@ -1195,5 +1241,47 @@ mod tests {
             OperatorClass::from_operator_offset(16),
             OperatorClass::CrossAsset
         ); // ts_corr
+    }
+
+    #[test]
+    fn test_mcts_with_archive_boost() {
+        let feat_offset = 3;
+        let space = ActionSpace::new(feat_offset);
+        let policy = UniformPolicy;
+        let config = MctsConfig {
+            budget: 200,
+            seeds_per_round: 3,
+            max_length: 10,
+            ..Default::default()
+        };
+
+        // Create archive with known high-PSR subformulas
+        let mut archive = SubformulaArchive::new(10, feat_offset);
+        archive.ingest_formula(&[0, 1, 3], 3.0, 1, "TEST"); // f0 f1 ADD
+
+        // Run with archive boost
+        let result_boosted = run_mcts_round(
+            &space,
+            &policy,
+            &config,
+            length_fitness,
+            Some(&archive),
+            0.3,
+        );
+        // Run without archive boost
+        let result_plain = run_mcts_round(&space, &policy, &config, length_fitness, None, 0.0);
+
+        // Both should produce valid formulas
+        assert!(!result_boosted.formulas.is_empty());
+        assert!(!result_plain.formulas.is_empty());
+    }
+
+    #[test]
+    fn test_all_entries_iterator() {
+        let mut archive = SubformulaArchive::new(10, 3);
+        archive.ingest_formula(&[0, 1, 3], 2.0, 1, "AAPL"); // f0 f1 ADD → 1 window of size 2+
+        let count = archive.all_entries().count();
+        assert!(count > 0, "archive should have entries after ingestion");
+        assert_eq!(count, archive.total_size());
     }
 }

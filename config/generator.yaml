@@ -127,6 +127,15 @@ mcts:
   exploration_c: 1.414
   max_length: 20
   use_max_reward: false
+  # P10A: SubformulaArchive -> MCTS prior boost.
+  # Scale factor for boosting actions matching high-PSR subformula patterns.
+  # 0.0 = disabled, 0.3 = moderate (recommended starting point).
+  archive_boost_scale: 0.3
+  # P10E: Per-symbol Extreme Bandit A/B test.
+  # Symbols listed here override the global use_max_reward setting.
+  # Compare TSLA (extreme bandit) vs AAPL (default mean reward) after 10K gens.
+  use_max_reward_overrides:
+    TSLA: true
 
 # P8-0: LLM-guided MCTS prior
 # Transforms blind MCTS exploration into semantically guided search

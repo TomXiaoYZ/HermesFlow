@@ -334,6 +334,7 @@ services:
       - AWS_REGION=${AWS_REGION:-us-east-1}
     ports:
       - "8082:8082"
+      - "8084:8084"  # P10C: Prometheus metrics
     volumes:
       - ./config:/app/config:ro
     depends_on:
