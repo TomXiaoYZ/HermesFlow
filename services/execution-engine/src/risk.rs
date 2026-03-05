@@ -233,17 +233,18 @@ async fn count_open_positions(client: &PgClient, exchange: &str, account_id: &st
     }
 }
 
+/// Estimate daily P&L using account equity change: (current net_liq - initial_capital).
+/// This replaces the broken cash-flow approach (SUM of sells − buys) that incorrectly
+/// counted new position entries as "losses".
+/// Returns 0.0 if data is unavailable (fail-open for paper trading).
 async fn calculate_daily_pnl(client: &PgClient) -> f64 {
-    let today = Utc::now().date_naive();
+    // Sum across all IBKR accounts: (cached_net_liq - initial_capital)
     let result = client
         .query_one(
-            "SELECT COALESCE(SUM(
-                CASE WHEN side = 'Sell' THEN filled_qty * avg_price
-                     ELSE -filled_qty * avg_price
-                END
-            ), 0)::FLOAT8 FROM trade_orders
-            WHERE status = 'Filled' AND DATE(created_at) = $1",
-            &[&today],
+            "SELECT COALESCE(SUM(cached_net_liq::FLOAT8 - initial_capital::FLOAT8), 0)::FLOAT8 \
+             FROM trading_accounts \
+             WHERE account_id LIKE 'ibkr_%' AND cached_net_liq > 0",
+            &[],
         )
         .await;
 
