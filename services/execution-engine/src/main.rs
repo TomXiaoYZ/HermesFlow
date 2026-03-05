@@ -22,7 +22,11 @@ async fn main() -> anyhow::Result<()> {
     // P7-3C: Check holiday coverage at startup
     execution_engine::shadow::check_holiday_coverage();
 
-    // Spawn health check server
+    // P10D-3: Initialize Prometheus metrics
+    common::metrics::init_metrics("execution-engine").expect("metrics init failed");
+    execution_engine::metrics::register_metrics();
+
+    // Spawn health check server (now includes /metrics endpoint via common::metrics feature)
     tokio::spawn(common::health::start_health_server(
         "execution-engine",
         8083,
@@ -184,10 +188,16 @@ async fn main() -> anyhow::Result<()> {
     {
         // Collect all available IBKR traders for account summary queries.
         // Each client connection only sees its own sub-account.
-        let traders: Vec<Arc<IBKRTrader>> = [ibkr_long_only.clone(), ibkr_long_short.clone()]
-            .into_iter()
-            .flatten()
-            .collect();
+        let mut traders: Vec<Arc<IBKRTrader>> = Vec::new();
+        let mut trader_labels: Vec<&'static str> = Vec::new();
+        if let Some(ref t) = ibkr_long_only {
+            traders.push(t.clone());
+            trader_labels.push("long_only");
+        }
+        if let Some(ref t) = ibkr_long_short {
+            traders.push(t.clone());
+            trader_labels.push("long_short");
+        }
 
         if !traders.is_empty() {
             let redis_url_clone = redis_url.clone();
@@ -241,31 +251,47 @@ async fn main() -> anyhow::Result<()> {
                 loop {
                     // ── Health check + reconnect with exponential backoff ──
                     for (i, trader) in traders.iter().enumerate() {
+                        let label = trader_labels[i];
                         if !trader.is_alive().await {
+                            execution_engine::metrics::IBKR_CONNECTED
+                                .with_label_values(&[label])
+                                .set(0.0);
                             if health[i].should_attempt() {
                                 health[i].last_attempt = Instant::now();
+                                execution_engine::metrics::IBKR_RECONNECT_TOTAL
+                                    .with_label_values(&[label])
+                                    .inc();
                                 match trader.reconnect().await {
                                     Ok(()) => {
-                                        info!("IBKR trader {} reconnected successfully", i);
+                                        info!("IBKR trader {} reconnected successfully", label);
                                         health[i].consecutive_failures = 0;
+                                        execution_engine::metrics::IBKR_CONNECTED
+                                            .with_label_values(&[label])
+                                            .set(1.0);
                                     }
                                     Err(e) => {
                                         health[i].consecutive_failures += 1;
                                         error!(
                                             "IBKR trader {} reconnect failed (attempt {}): {}",
-                                            i, health[i].consecutive_failures, e
+                                            label, health[i].consecutive_failures, e
                                         );
                                     }
                                 }
                             }
                         } else {
                             health[i].consecutive_failures = 0;
+                            execution_engine::metrics::IBKR_CONNECTED
+                                .with_label_values(&[label])
+                                .set(1.0);
                         }
                     }
 
-                    // Query each trader for its account summary (each sees its own sub-account)
+                    // Query each trader for account summary + positions (each sees its own sub-account)
                     let mut all_summaries = std::collections::HashMap::new();
-                    for trader in &traders {
+                    let mut positions = Vec::new();
+                    for (i, trader) in traders.iter().enumerate() {
+                        let sync_start = Instant::now();
+                        let label = trader_labels[i];
                         match trader.get_account_summaries().await {
                             Ok(sums) => {
                                 for (acct, summary) in sums {
@@ -274,17 +300,27 @@ async fn main() -> anyhow::Result<()> {
                             }
                             Err(e) => {
                                 warn!("IBKR account_summaries failed: {}", e);
+                                if e.to_string().contains("timed out") {
+                                    execution_engine::metrics::IBKR_API_TIMEOUT_TOTAL
+                                        .with_label_values(&[label, "get_account_summaries"])
+                                        .inc();
+                                }
                             }
                         }
-                    }
-
-                    // Positions from ALL traders (each gateway only sees its own sub-account)
-                    let mut positions = Vec::new();
-                    for trader in &traders {
                         match trader.get_positions().await {
                             Ok(pos) => positions.extend(pos),
-                            Err(e) => warn!("IBKR get_positions failed: {}", e),
+                            Err(e) => {
+                                warn!("IBKR get_positions failed: {}", e);
+                                if e.to_string().contains("timed out") {
+                                    execution_engine::metrics::IBKR_API_TIMEOUT_TOTAL
+                                        .with_label_values(&[label, "get_positions"])
+                                        .inc();
+                                }
+                            }
                         }
+                        execution_engine::metrics::IBKR_SYNC_DURATION
+                            .with_label_values(&[label])
+                            .set(sync_start.elapsed().as_secs_f64());
                     }
 
                     // Publish per-account portfolio updates with mode tag so

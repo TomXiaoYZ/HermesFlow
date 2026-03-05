@@ -434,7 +434,16 @@ async fn main() -> anyhow::Result<()> {
 
     // P10C: Register Prometheus metrics and start health+metrics server
     metrics::register_metrics();
+    let startup_instant = std::time::Instant::now();
     tokio::spawn(health::start_health_server());
+
+    // P10C: Periodically update process uptime gauge
+    tokio::spawn(async move {
+        loop {
+            metrics::UPTIME.set(startup_instant.elapsed().as_secs_f64());
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        }
+    });
 
     // Infrastructure
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -557,7 +566,9 @@ async fn main() -> anyhow::Result<()> {
                 let sym = symbol.clone();
                 let ex_name = ec.exchange.clone();
                 let handle = tokio::spawn(async move {
-                    if let Err(e) = run_symbol_evolution(
+                    // P10C: Track active evolution loop count
+                    metrics::ACTIVE_LOOPS.inc();
+                    let result = run_symbol_evolution(
                         pool,
                         &redis_url,
                         config,
@@ -571,8 +582,9 @@ async fn main() -> anyhow::Result<()> {
                         sym.clone(),
                         mode,
                     )
-                    .await
-                    {
+                    .await;
+                    metrics::ACTIVE_LOOPS.dec();
+                    if let Err(e) = result {
                         error!(
                             "[{}:{}:{}] Evolution loop failed: {}",
                             ex_name, sym, mode, e
@@ -1337,6 +1349,7 @@ async fn run_symbol_evolution(
 
     // Evolution loop
     loop {
+        let gen_timer = std::time::Instant::now();
         let gen = ga.generation;
 
         // Adaptive K: target ~300 bars per fold, K in [3, 8]
@@ -1766,6 +1779,9 @@ async fn run_symbol_evolution(
                     .set(oos_psr);
                 metrics::ARCHIVE_SIZE.set(subformula_archive.total_size() as i64);
                 metrics::TOTAL_GENERATIONS.inc();
+                metrics::GENERATION_DURATION
+                    .with_label_values(&labels)
+                    .set(gen_timer.elapsed().as_secs_f64());
             }
 
             // Track TFT rate for LLM oracle trigger
