@@ -327,22 +327,11 @@ impl CommandListener {
                         _ => self.ibkr_long_only_trader.as_ref(),
                     };
                     if let Some(trader) = ibkr_trader {
-                        // Pre-execution connection check
-                        if !trader.is_alive().await {
-                            let mode_label = signal.mode.as_deref().unwrap_or("long_only");
-                            warn!(
-                                "IBKR {} disconnected, rejecting signal {} for {}",
-                                mode_label, signal.id, signal.symbol
-                            );
-                            let msg =
-                                format!("IBKR {} connection lost, signal rejected", mode_label);
-                            let update = Self::make_failed_update(&signal, &msg);
-                            if let Err(e) = self.publish_update(&update) {
-                                error!("Failed to publish disconnected rejection: {}", e);
-                            }
-                            continue;
-                        }
-
+                        // Skip pre-execution is_alive() gate — ibapi may have
+                        // internally reconnected even when is_connected() returns
+                        // false.  Let the actual buy/sell call determine liveness;
+                        // a real connection failure will surface as an execution
+                        // error handled below.
                         let trader = trader.clone();
                         let sig = signal.clone();
                         let redis_client = self.client.clone();
