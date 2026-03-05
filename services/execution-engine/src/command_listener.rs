@@ -338,6 +338,25 @@ impl CommandListener {
                         let db = self.db.clone();
 
                         tokio::spawn(async move {
+                            // Pre-trade: verify IBKR connection, reconnect if needed
+                            if let Err(e) = trader.ensure_connected().await {
+                                error!(
+                                    "IBKR pre-trade reconnect failed for {}: {}",
+                                    sig.symbol, e
+                                );
+                                let update = Self::make_failed_update(
+                                    &sig,
+                                    &format!("IBKR connection unavailable: {}", e),
+                                );
+                                if let Ok(mut conn) = redis_client.get_connection() {
+                                    let json =
+                                        serde_json::to_string(&update).unwrap_or_default();
+                                    let _: std::result::Result<(), _> =
+                                        conn.publish("order_updates", json);
+                                }
+                                return;
+                            }
+
                             let res = match sig.side {
                                 common::events::OrderSide::Buy => {
                                     trader.buy(&sig.symbol, sig.quantity, &params).await

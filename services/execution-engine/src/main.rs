@@ -129,6 +129,65 @@ async fn main() -> anyhow::Result<()> {
         };
 
     // ========================================
+    // 1a. Sync-Dedicated IBKR Connections
+    // ========================================
+    // Separate connections for the background sync loop (account summaries + positions)
+    // to avoid Mutex contention with signal execution on the trading connections.
+    // Uses client_id + 100 to avoid collisions with trading client IDs.
+    let ibkr_sync_client_id_lo = ibkr_client_id_lo + 100;
+    let ibkr_sync_client_id_ls = ibkr_client_id_ls + 100;
+
+    let ibkr_lo_sync = if ibkr_long_only.is_some() {
+        info!(
+            "Initializing IBKR Sync Trader long_only ({}:{}, client_id={})...",
+            ibkr_host, ibkr_port, ibkr_sync_client_id_lo
+        );
+        match IBKRTrader::new(&ibkr_host, ibkr_port, ibkr_sync_client_id_lo).await {
+            Ok(t) => {
+                info!(
+                    "IBKR Sync Trader long_only connected (client_id={})",
+                    ibkr_sync_client_id_lo
+                );
+                Some(Arc::new(t))
+            }
+            Err(e) => {
+                warn!(
+                    "IBKR Sync Trader long_only failed (client_id={}), sharing trade connection: {}",
+                    ibkr_sync_client_id_lo, e
+                );
+                ibkr_long_only.clone()
+            }
+        }
+    } else {
+        None
+    };
+
+    let ibkr_ls_sync = if ibkr_long_short.is_some() {
+        info!(
+            "Initializing IBKR Sync Trader long_short ({}:{}, client_id={})...",
+            ibkr_host_ls, ibkr_port_ls, ibkr_sync_client_id_ls
+        );
+        match IBKRTrader::new(&ibkr_host_ls, ibkr_port_ls, ibkr_sync_client_id_ls).await {
+            Ok(t) => {
+                info!(
+                    "IBKR Sync Trader long_short connected (client_id={})",
+                    ibkr_sync_client_id_ls
+                );
+                Some(Arc::new(t))
+            }
+            Err(e) => {
+                warn!(
+                    "IBKR Sync Trader long_short failed (client_id={}), sharing trade connection: {}",
+                    ibkr_sync_client_id_ls, e
+                );
+                ibkr_long_short.clone()
+            }
+        }
+    } else {
+        None
+    };
+
+    // ========================================
     // 1b. Sync order ID counter with DB max to avoid uniqueness conflicts
     // ========================================
     if let Some(ref db_client) = db {
@@ -186,15 +245,15 @@ async fn main() -> anyhow::Result<()> {
     // 4. Background: IBKR Portfolio Sync (queries both traders for per-account data)
     // ========================================
     {
-        // Collect all available IBKR traders for account summary queries.
-        // Each client connection only sees its own sub-account.
+        // Use sync-dedicated traders to avoid Mutex contention with signal execution.
+        // Each sync trader has its own client connection (client_id + 100).
         let mut traders: Vec<Arc<IBKRTrader>> = Vec::new();
         let mut trader_labels: Vec<&'static str> = Vec::new();
-        if let Some(ref t) = ibkr_long_only {
+        if let Some(ref t) = ibkr_lo_sync {
             traders.push(t.clone());
             trader_labels.push("long_only");
         }
-        if let Some(ref t) = ibkr_long_short {
+        if let Some(ref t) = ibkr_ls_sync {
             traders.push(t.clone());
             trader_labels.push("long_short");
         }
@@ -239,7 +298,7 @@ async fn main() -> anyhow::Result<()> {
 
                     fn should_attempt(&self) -> bool {
                         let backoff =
-                            Duration::from_secs(30 * 2u64.pow(self.consecutive_failures.min(6)));
+                            Duration::from_secs(5 * 2u64.pow(self.consecutive_failures.min(3)));
                         self.last_attempt.elapsed() >= backoff
                     }
                 }
@@ -448,6 +507,47 @@ async fn main() -> anyhow::Result<()> {
 
                     sync_count += 1;
                     tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+            });
+        }
+    }
+
+    // ========================================
+    // 4b. Background: Trading Connection Watchdog
+    // ========================================
+    // Proactively monitors trading connections and reconnects before signals arrive.
+    // Runs every 10s — faster than the sync loop's 30s health check.
+    {
+        let mut trade_traders: Vec<(Arc<IBKRTrader>, &'static str)> = Vec::new();
+        if let Some(ref t) = ibkr_long_only {
+            trade_traders.push((t.clone(), "long_only"));
+        }
+        if let Some(ref t) = ibkr_long_short {
+            trade_traders.push((t.clone(), "long_short"));
+        }
+        if !trade_traders.is_empty() {
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    for (trader, label) in &trade_traders {
+                        if !trader.is_alive().await {
+                            warn!(
+                                "IBKR trade connection {} down, watchdog reconnecting...",
+                                label
+                            );
+                            match trader.reconnect().await {
+                                Ok(()) => {
+                                    info!("IBKR trade connection {} reconnected by watchdog", label)
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "IBKR trade connection {} watchdog reconnect failed: {}",
+                                        label, e
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
             });
         }

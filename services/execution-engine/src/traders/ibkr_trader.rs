@@ -208,6 +208,17 @@ impl IBKRTrader {
         Ok(())
     }
 
+    /// Verify the IBKR connection is alive; reconnect if needed.
+    /// Call before every trade to minimize stale-connection failures.
+    pub async fn ensure_connected(&self) -> Result<()> {
+        if !self.is_alive().await {
+            warn!("IBKR connection down, attempting pre-trade reconnect...");
+            self.reconnect().await
+        } else {
+            Ok(())
+        }
+    }
+
     fn build_contract(symbol: &str) -> Contract {
         let clean_symbol = symbol.strip_prefix("US.").unwrap_or(symbol);
         Contract::stock(clean_symbol).build()
@@ -337,7 +348,7 @@ impl Trader for IBKRTrader {
         let client = self.client.clone();
         let sym = symbol.to_string();
 
-        let fill = Self::with_ibkr_timeout("buy", Duration::from_secs(10), move || {
+        let fill = Self::with_ibkr_timeout("buy", Duration::from_secs(30), move || {
             Self::execute_order(&client, order_id, &contract, &order, &sym)
         })
         .await?;
@@ -386,7 +397,7 @@ impl Trader for IBKRTrader {
         let client = self.client.clone();
         let sym = symbol.to_string();
 
-        let fill = Self::with_ibkr_timeout("sell", Duration::from_secs(10), move || {
+        let fill = Self::with_ibkr_timeout("sell", Duration::from_secs(30), move || {
             Self::execute_order(&client, order_id, &contract, &order, &sym)
         })
         .await?;
